@@ -257,6 +257,7 @@ async def dashboard_page():
         rsi_oversold=vars.get("RSI_OVERSOLD", "40"),
         sl_multiplier=vars.get("SL_MULTIPLIER", "1.0"),
         tp_multiplier=vars.get("TP_MULTIPLIER", "2.0"),
+        min_profit_pct=vars.get("MIN_PROFIT_PCT", "0.5"),
         bot_running=BOT_RUNNING,
         autotrade_enabled=_autotrade_enabled_from_env(),
     )
@@ -273,6 +274,7 @@ async def api_update_env(
     rsi_oversold: str = Form(None),
     sl_multiplier: str = Form(None),
     tp_multiplier: str = Form(None),
+    min_profit_pct: str = Form(None),
 ):
     print("[env] POST /api/env: updating .env with form values")
     updates = {}
@@ -292,6 +294,8 @@ async def api_update_env(
         updates["SL_MULTIPLIER"] = sl_multiplier
     if tp_multiplier is not None:
         updates["TP_MULTIPLIER"] = tp_multiplier
+    if min_profit_pct is not None:
+        updates["MIN_PROFIT_PCT"] = min_profit_pct
     if updates:
         write_env_vars(updates)
         print(f"[env] Saved keys: {list(updates.keys())}")

@@ -34,6 +34,7 @@ TRADE_AMOUNT_USD = float(os.getenv("TRADE_AMOUNT_USD", "100"))
 LEVERAGE = float(os.getenv("LEVERAGE", "5"))
 SL_MULTIPLIER = float(os.getenv("SL_MULTIPLIER", "1.0"))
 TP_MULTIPLIER = float(os.getenv("TP_MULTIPLIER", "2.0"))
+MIN_PROFIT_PCT = float(os.getenv("MIN_PROFIT_PCT", "0.5"))
 
 # HTTP client only for closed PnL (SL detection); no longer used for positions or orders
 HTTP_CLIENT = HTTP(
@@ -652,7 +653,17 @@ def has_valid_entry_signal_now(df: pd.DataFrame) -> tuple[str | None, pd.Series 
     if pd.isna(md) or pd.isna(vd):
         return (None, None)
     close, open_ = float(row["close"]), float(row["open"])
+    high, low = float(row["high"]), float(row["low"])
     close_prev, open_prev = float(row_prev["close"]), float(row_prev["open"])
+    # Expected ROE % for min-profit filter (load dynamically like LEVERAGE)
+    range_ = high - low
+    tp_mult = float(os.getenv("TP_MULTIPLIER", "2.0"))
+    tp_dist = range_ * tp_mult
+    leverage = float(os.getenv("LEVERAGE", "5"))
+    min_profit_pct = float(os.getenv("MIN_PROFIT_PCT", "0.5"))
+    expected_profit_pct = (tp_dist / close) * leverage * 100 if close > 0 else 0.0
+    if expected_profit_pct < min_profit_pct:
+        return (None, None)
     # SHORT: current bullish (close > open), previous bullish (close_prev > open_prev)
     current_bullish = close > open_
     prev_bullish = close_prev > open_prev
@@ -792,7 +803,16 @@ def check_signals(df: pd.DataFrame) -> None:
     if pd.isna(md) or pd.isna(vd):
         return
     close, open_ = float(row["close"]), float(row["open"])
+    high, low = float(row["high"]), float(row["low"])
     close_prev, open_prev = float(row_prev["close"]), float(row_prev["open"])
+    range_ = high - low
+    tp_mult = float(os.getenv("TP_MULTIPLIER", "2.0"))
+    tp_dist = range_ * tp_mult
+    leverage = float(os.getenv("LEVERAGE", "5"))
+    min_profit_pct = float(os.getenv("MIN_PROFIT_PCT", "0.5"))
+    expected_profit_pct = (tp_dist / close) * leverage * 100 if close > 0 else 0.0
+    if expected_profit_pct < min_profit_pct:
+        return
     row_dict = row.to_dict() if hasattr(row, "to_dict") else dict(row)
     # SHORT: both candles bullish
     current_bullish = close > open_
@@ -846,6 +866,8 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
     row_prev = df.iloc[-3]
     close = float(row["close"])
     open_ = float(row["open"])
+    high = float(row["high"])
+    low = float(row["low"])
     close_prev = float(row_prev["close"])
     open_prev = float(row_prev["open"])
     rsi_val = row.get("RSI")
@@ -866,6 +888,15 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
     rsi_oversold_ok = rsi_float is not None and rsi_float < RSI_OVERSOLD
     rsi_overbought_ok = rsi_float is not None and rsi_float > RSI_OVERBOUGHT
 
+    # Expected ROE % for min-profit filter
+    range_ = high - low
+    tp_mult = float(os.getenv("TP_MULTIPLIER", "2.0"))
+    tp_dist = range_ * tp_mult
+    leverage = float(os.getenv("LEVERAGE", "5"))
+    min_profit_pct = float(os.getenv("MIN_PROFIT_PCT", "0.5"))
+    expected_profit_pct = (tp_dist / close) * leverage * 100 if close > 0 else 0.0
+    expected_profit_pct_ok = expected_profit_pct >= min_profit_pct
+
     long_rules = [
         {"name": "Current Candle Bearish (open > close)", "met": current_bearish},
         {"name": "Previous Candle Bearish", "met": prev_bearish},
@@ -873,6 +904,7 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
         {"name": "Momentum Decreasing", "met": md},
         {"name": "Volume Decreasing", "met": vd},
         {"name": f"RSI < {RSI_OVERSOLD}", "met": rsi_oversold_ok},
+        {"name": f"Expected Profit >= {min_profit_pct}%", "met": expected_profit_pct_ok},
     ]
     short_rules = [
         {"name": "Current Candle Bullish (close > open)", "met": current_bullish},
@@ -881,9 +913,10 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
         {"name": "Momentum Decreasing", "met": md},
         {"name": "Volume Decreasing", "met": vd},
         {"name": f"RSI > {RSI_OVERBOUGHT}", "met": rsi_overbought_ok},
+        {"name": f"Expected Profit >= {min_profit_pct}%", "met": expected_profit_pct_ok},
     ]
-    long_triggered = both_bearish and md and vd and rsi_oversold_ok
-    short_triggered = both_bullish and md and vd and rsi_overbought_ok
+    long_triggered = both_bearish and md and vd and rsi_oversold_ok and expected_profit_pct_ok
+    short_triggered = both_bullish and md and vd and rsi_overbought_ok and expected_profit_pct_ok
 
     if get_open_position():
         status = "Position Open"
@@ -902,6 +935,7 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
         "open": round(open_, 4),
         "close": round(close, 4),
         "volume": round(float(row.get("volume", 0)), 2),
+        "Expected_Profit_Pct": round(expected_profit_pct, 2),
     }
     state = {
         "symbol": SYMBOL,
