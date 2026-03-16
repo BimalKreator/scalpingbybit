@@ -40,7 +40,8 @@ HTTP_CLIENT = HTTP(
     api_secret=BYBIT_API_SECRET or "",
 )
 
-# In-memory store for kline rows; continuously updated
+# In-memory store for kline rows; continuously updated (capped at KLINES_MAX for memory)
+KLINES_MAX = 200
 KLINES = []
 
 # Track last candle we signaled on (start timestamp) so we only print once per closed candle
@@ -101,7 +102,7 @@ ws_trade: WebSocketTrading | None = None
 
 
 def kline_to_row(item: dict) -> dict:
-    """Turn one kline payload item into a flat dict for DataFrame."""
+    """Turn one kline payload item (WebSocket dict) into a flat dict for DataFrame."""
     return {
         "start": item["start"],
         "end": item["end"],
@@ -117,6 +118,62 @@ def kline_to_row(item: dict) -> dict:
     }
 
 
+def _kline_api_row_to_dict(arr: list) -> dict:
+    """Convert Bybit REST get_kline list item [start, open, high, low, close, volume, turnover] to our row dict."""
+    start_ms = int(arr[0])
+    return {
+        "start": start_ms,
+        "end": start_ms + 60000,  # 1m interval
+        "interval": "1",
+        "open": float(arr[1]),
+        "high": float(arr[2]),
+        "low": float(arr[3]),
+        "close": float(arr[4]),
+        "volume": float(arr[5]),
+        "turnover": float(arr[6]) if len(arr) > 6 else 0.0,
+        "confirm": True,
+        "timestamp": start_ms,
+    }
+
+
+def fetch_historical_klines() -> bool:
+    """
+    Fetch historical 1m klines from Bybit REST and initialize KLINES.
+    Ensures RSI and other indicators have enough data at startup.
+    Returns True on success.
+    """
+    global KLINES
+    get_kline = getattr(HTTP_CLIENT, "get_kline", None) or getattr(HTTP_CLIENT, "get_kline_list", None)
+    if get_kline is None:
+        print("Warning: HTTP client has no get_kline; starting with empty KLINES.")
+        return False
+    try:
+        resp = get_kline(category="linear", symbol=SYMBOL, interval="1", limit=100)
+        if resp.get("retCode") != 0:
+            print("Warning: get_kline failed:", resp.get("retMsg", "unknown"))
+            return False
+        lst = resp.get("result", {}).get("list", [])
+        if not lst:
+            print("Warning: get_kline returned no candles.")
+            return False
+        rows = []
+        for item in lst:
+            if isinstance(item, (list, tuple)) and len(item) >= 6:
+                rows.append(_kline_api_row_to_dict(list(item)))
+            elif isinstance(item, dict):
+                rows.append(kline_to_row(item))
+        if not rows:
+            return False
+        rows.sort(key=lambda r: r["start"])
+        KLINES.clear()
+        KLINES.extend(rows[-KLINES_MAX:])
+        print(f"Loaded {len(KLINES)} historical klines for {SYMBOL} (RSI will have data from first second).")
+        return True
+    except Exception as e:
+        print("Warning: fetch_historical_klines failed:", e)
+        return False
+
+
 def ensure_updated(rows: list) -> None:
     """Merge new/updated candles into KLINES by start time, then trim."""
     global KLINES
@@ -127,12 +184,15 @@ def ensure_updated(rows: list) -> None:
             KLINES[existing] = r
         else:
             KLINES.append(r)
-    if len(KLINES) > 500:
-        KLINES = KLINES[-500:]
+    if len(KLINES) > KLINES_MAX:
+        KLINES = KLINES[-KLINES_MAX:]
 
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute Weak Momentum Reversal indicators."""
+    """
+    Compute Weak Momentum Reversal indicators.
+    Uses the full available history so RSI (and shift-based fields) are stable as the dataframe grows.
+    """
     df = df.sort_values("start").reset_index(drop=True)
     df["RSI"] = ta.rsi(df["close"], length=RSI_LENGTH)
     df["body_size"] = (df["close"] - df["open"]).abs()
@@ -750,6 +810,8 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
     open_prev = float(row_prev["open"])
     rsi_val = row.get("RSI")
     rsi_float = float(rsi_val) if rsi_val is not None and not pd.isna(rsi_val) else None
+    if rsi_float is None:
+        print("Waiting for more data to calculate RSI...")
     md = bool(row.get("momentum_decreasing", False)) if not pd.isna(row.get("momentum_decreasing")) else False
     vd = bool(row.get("volume_decreasing", False)) if not pd.isna(row.get("volume_decreasing")) else False
     body = float(row["body_size"]) if "body_size" in row and not pd.isna(row.get("body_size")) else 0.0
@@ -883,6 +945,13 @@ async def main_async() -> None:
         print("Warning: could not fetch instrument info; using default qty_step=0.001")
     else:
         print("Instrument info loaded (qty_step, min_notional).")
+
+    # Load historical klines before WebSocket so RSI/indicators have data from first second
+    fetch_historical_klines()
+    if KLINES:
+        df_init = pd.DataFrame(KLINES)
+        df_init = compute_indicators(df_init)
+        _update_live_strategy_state(df_init)
 
     # 1) Public linear – klines
     ws_kline = WebSocket(

@@ -1,49 +1,65 @@
 {
   "symbol": "BTCUSDT",
-  "price": 74136.6,
+  "price": 73897.9,
   "indicators": {
-    "RSI": 47.67,
-    "momentum_decreasing": false,
+    "RSI": 45.85,
+    "momentum_decreasing": true,
     "volume_decreasing": false,
-    "body_size": 18.5,
-    "open": 74155.1,
-    "close": 74136.6,
-    "volume": 5.11
+    "body_size": 33.0,
+    "open": 73864.9,
+    "close": 73897.9,
+    "volume": 49.43
   },
   "conditions": {
     "long": [
       {
-        "name": "Candle Bearish (close < open)",
+        "name": "Current Candle Bearish (open > close)",
+        "met": false
+      },
+      {
+        "name": "Previous Candle Bearish",
         "met": true
       },
       {
-        "name": "Momentum Decreasing",
+        "name": "Both Candles Same Color (Bearish)",
         "met": false
+      },
+      {
+        "name": "Momentum Decreasing",
+        "met": true
       },
       {
         "name": "Volume Decreasing",
         "met": false
       },
       {
-        "name": "RSI < Oversold (40.0)",
+        "name": "RSI < 40.0",
         "met": false
       }
     ],
     "short": [
       {
-        "name": "Candle Bullish (close > open)",
+        "name": "Current Candle Bullish (close > open)",
+        "met": true
+      },
+      {
+        "name": "Previous Candle Bullish",
+        "met": false
+      },
+      {
+        "name": "Both Candles Same Color (Bullish)",
         "met": false
       },
       {
         "name": "Momentum Decreasing",
-        "met": false
+        "met": true
       },
       {
         "name": "Volume Decreasing",
         "met": false
       },
       {
-        "name": "RSI > Overbought (60.0)",
+        "name": "RSI > 60.0",
         "met": false
       }
     ]
