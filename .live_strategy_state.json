@@ -1,0 +1,52 @@
+{
+  "symbol": "BTCUSDT",
+  "price": 74136.6,
+  "indicators": {
+    "RSI": 47.67,
+    "momentum_decreasing": false,
+    "volume_decreasing": false,
+    "body_size": 18.5,
+    "open": 74155.1,
+    "close": 74136.6,
+    "volume": 5.11
+  },
+  "conditions": {
+    "long": [
+      {
+        "name": "Candle Bearish (close < open)",
+        "met": true
+      },
+      {
+        "name": "Momentum Decreasing",
+        "met": false
+      },
+      {
+        "name": "Volume Decreasing",
+        "met": false
+      },
+      {
+        "name": "RSI < Oversold (40.0)",
+        "met": false
+      }
+    ],
+    "short": [
+      {
+        "name": "Candle Bullish (close > open)",
+        "met": false
+      },
+      {
+        "name": "Momentum Decreasing",
+        "met": false
+      },
+      {
+        "name": "Volume Decreasing",
+        "met": false
+      },
+      {
+        "name": "RSI > Overbought (60.0)",
+        "met": false
+      }
+    ]
+  },
+  "status": "Waiting"
+}

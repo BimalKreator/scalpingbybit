@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Closed Trades (Logs) – Momentum Reversal</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet" />
+  <style>
+    body { font-family: 'DM Sans', system-ui, sans-serif; }
+    .safe-bottom { padding-bottom: env(safe-area-inset-bottom, 1rem); }
+  </style>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100 antialiased">
+  <div class="max-w-4xl mx-auto px-4 py-6 pb-8 safe-bottom">
+    <header class="flex items-center justify-between mb-8 flex-wrap gap-2">
+      <a href="/" class="text-xl font-semibold tracking-tight text-white">Momentum Reversal</a>
+      <nav class="flex items-center gap-4">
+        <a href="/" class="text-sm text-slate-400 hover:text-white transition">Dashboard</a>
+        <a href="/logs" class="text-sm text-emerald-400 font-medium">Closed Trades</a>
+        <a href="/backtest" class="text-sm text-slate-400 hover:text-white transition">Backtest</a>
+      </nav>
+    </header>
+
+    <section class="bg-slate-900/80 rounded-2xl p-5 shadow-xl border border-slate-800 mb-6">
+      <h2 class="text-sm font-semibold text-slate-200 mb-3">Closed Trades (Logs)</h2>
+      <p class="text-xs text-slate-500 mb-4">Last 50 closed positions from Bybit (linear).</p>
+      <div id="closed-trades-container">
+        <p class="text-slate-500 text-sm">Loading…</p>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    (function () {
+      const container = document.getElementById('closed-trades-container');
+      function formatNum(x) {
+        if (x === undefined || x === null || x === '') return '–';
+        const n = Number(x);
+        if (isNaN(n)) return String(x);
+        return n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 6 });
+      }
+      function toIST(ms) {
+        if (!ms || ms === '0') return '–';
+        const n = parseInt(ms, 10);
+        if (isNaN(n)) return '–';
+        return new Date(n).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+      }
+      fetch('/api/closed_trades')
+        .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+        .then(function (r) {
+          if (!r.ok || !Array.isArray(r.data)) {
+            container.innerHTML = '<p class="text-red-400 text-sm">Error loading closed trades.</p>';
+            return;
+          }
+          const list = r.data;
+          if (list.length === 0) {
+            container.innerHTML = '<p class="text-slate-500 text-sm">No closed trades in the last 7 days.</p>';
+            return;
+          }
+          // Responsive: desktop table, mobile cards
+          let tableHtml = '<div class="overflow-x-auto"><table class="w-full text-left text-sm border-collapse">' +
+            '<thead><tr class="text-slate-500 border-b border-slate-700">' +
+            '<th class="py-2 pr-2">Token</th><th class="py-2 pr-2">Side</th><th class="py-2 pr-2">Entry Time (IST)</th><th class="py-2 pr-2">Exit Time (IST)</th>' +
+            '<th class="py-2 pr-2">Entry</th><th class="py-2 pr-2">Exit</th><th class="py-2 pr-2">Leverage</th><th class="py-2 pr-2">Margin</th>' +
+            '<th class="py-2 pr-2">PnL</th><th class="py-2 pr-2">Fees</th><th class="py-2 pr-2">Exit Reason</th></tr></thead><tbody>';
+          list.forEach(function (row) {
+            const pnl = Number(row.closedPnl);
+            const pnlClass = pnl >= 0 ? 'text-emerald-400' : 'text-red-400';
+            const sideClass = (row.side || '').toUpperCase() === 'BUY' ? 'text-emerald-400' : 'text-red-400';
+            tableHtml += '<tr class="border-b border-slate-800">' +
+              '<td class="py-2 pr-2 font-medium">' + (row.symbol || '–') + '</td>' +
+              '<td class="py-2 pr-2 ' + sideClass + '">' + (row.side || '–') + '</td>' +
+              '<td class="py-2 pr-2 text-slate-300">' + toIST(row.createdTime) + '</td>' +
+              '<td class="py-2 pr-2 text-slate-300">' + toIST(row.updatedTime) + '</td>' +
+              '<td class="py-2 pr-2">' + (row.avgEntryPrice || '–') + '</td>' +
+              '<td class="py-2 pr-2">' + (row.avgExitPrice || '–') + '</td>' +
+              '<td class="py-2 pr-2">' + (row.leverage || '–') + '</td>' +
+              '<td class="py-2 pr-2">' + (row.marginUsed !== undefined && row.marginUsed !== '' ? formatNum(row.marginUsed) : '–') + '</td>' +
+              '<td class="py-2 pr-2 ' + pnlClass + ' font-medium">' + formatNum(row.closedPnl) + '</td>' +
+              '<td class="py-2 pr-2">' + formatNum(row.fees) + '</td>' +
+              '<td class="py-2 pr-2 text-slate-400">' + (row.exitReason || '–') + '</td></tr>';
+          });
+          tableHtml += '</tbody></table></div>';
+          container.innerHTML = tableHtml;
+        })
+        .catch(function (e) {
+          container.innerHTML = '<p class="text-red-400 text-sm">Error: ' + (e.message || 'Failed to load') + '</p>';
+        });
+    })();
+  </script>
+</body>
+</html>

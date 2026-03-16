@@ -81,11 +81,12 @@ def run_backtest(
     sl_multiplier: float = 1.0,
     tp_multiplier: float = 2.0,
     trade_amount_usd: float = 100.0,
+    leverage: float = 5.0,
     initial_capital: float = 10000.0,
 ) -> dict:
     """
     Run Weak Momentum Reversal on OHLCV DataFrame.
-    Uses fixed USD per trade: qty = trade_amount_usd / entry_price; P&L is in USD.
+    Uses target_qty = (trade_amount_usd * leverage) / entry_price; P&L is in USD.
     Returns dict with: total_pnl, max_drawdown, total_trades, profitable_trades, profitable_pct, profit_factor, equity_curve (list of {time, value}), trades (list).
     """
     if df.empty or len(df) < rsi_length + 2:
@@ -99,6 +100,7 @@ def run_backtest(
             "profit_factor": 0.0,
             "equity_curve": [],
             "trades": [],
+            "best_params": {"rsi_overbought": rsi_overbought, "rsi_oversold": rsi_oversold, "sl_multiplier": sl_multiplier, "tp_multiplier": tp_multiplier},
         }
     print(f"[backtest] Running single backtest: rsi_len={rsi_length}, ob={rsi_overbought}, os={rsi_oversold}, sl={sl_multiplier}, tp={tp_multiplier}")
     df = compute_indicators(df.copy(), rsi_length)
@@ -111,7 +113,7 @@ def run_backtest(
     side = ""
     sl_price = 0.0
     tp_price = 0.0
-    qty = 0.0  # dynamic: trade_amount_usd / entry_price per trade
+    qty = 0.0  # dynamic: (trade_amount_usd * leverage) / entry_price per trade
     # Use iloc for row access; signal on closed candle at i-1, check exit on candle i
     i = 1
     while i < len(df):
@@ -167,7 +169,7 @@ def run_backtest(
         # SHORT
         if close_prev > open_prev and md and vd and rsi > rsi_overbought:
             entry_price = close_prev
-            qty = trade_amount_usd / entry_price if entry_price else 0.0
+            qty = (trade_amount_usd * leverage) / entry_price if entry_price else 0.0
             sl_price = close_prev + (range_ * sl_multiplier)
             tp_price = close_prev - (range_ * tp_multiplier)
             side = "Sell"
@@ -177,7 +179,7 @@ def run_backtest(
         # LONG
         if close_prev < open_prev and md and vd and rsi < rsi_oversold:
             entry_price = close_prev
-            qty = trade_amount_usd / entry_price if entry_price else 0.0
+            qty = (trade_amount_usd * leverage) / entry_price if entry_price else 0.0
             sl_price = close_prev - (range_ * sl_multiplier)
             tp_price = close_prev + (range_ * tp_multiplier)
             side = "Buy"
@@ -201,6 +203,12 @@ def run_backtest(
     gross_loss = abs(sum(t["pnl"] for t in trades if t["pnl"] < 0))
     profit_factor = gross_profit / gross_loss if gross_loss else (float("inf") if gross_profit else 0.0)
     print(f"[backtest] Single run finished: trades={len(trades)}, total_pnl={total_pnl:.4f}, max_dd={max_dd:.4f}")
+    best_params = {
+        "rsi_overbought": rsi_overbought,
+        "rsi_oversold": rsi_oversold,
+        "sl_multiplier": sl_multiplier,
+        "tp_multiplier": tp_multiplier,
+    }
     return {
         "total_pnl": round(total_pnl, 4),
         "max_drawdown": round(max_dd, 4),
@@ -211,6 +219,7 @@ def run_backtest(
         "equity_curve": equity_curve,
         "trades": trades,
         "final_equity": round(equity, 2),
+        "best_params": best_params,
     }
 
 
@@ -263,6 +272,7 @@ def run_backtest_grid(
     sl_multiplier: float = 1.0,
     tp_multiplier: float = 2.0,
     trade_amount_usd: float = 100.0,
+    leverage: float = 5.0,
     initial_capital: float = 10000.0,
     optimize_by: str = "total_pnl",
     rsi_ob_min: float | None = None,
@@ -299,6 +309,7 @@ def run_backtest_grid(
             sl_multiplier=sl_multiplier,
             tp_multiplier=tp_multiplier,
             trade_amount_usd=trade_amount_usd,
+            leverage=leverage,
             initial_capital=initial_capital,
         )
     print(f"[backtest] Starting grid search: {len(param_combos)} combinations, optimize_by={optimize_by}")
@@ -317,6 +328,7 @@ def run_backtest_grid(
             sl_multiplier=combo.get("sl_multiplier", sl_multiplier),
             tp_multiplier=combo.get("tp_multiplier", tp_multiplier),
             trade_amount_usd=trade_amount_usd,
+            leverage=leverage,
             initial_capital=initial_capital,
         )
         if optimize_by == "total_pnl":
@@ -330,17 +342,24 @@ def run_backtest_grid(
             score = pf if isinstance(pf, (int, float)) else 0.0
         else:
             score = res["total_pnl"]
+        best_params = {
+            "rsi_overbought": combo.get("rsi_overbought", rsi_overbought),
+            "rsi_oversold": combo.get("rsi_oversold", rsi_oversold),
+            "sl_multiplier": combo.get("sl_multiplier", sl_multiplier),
+            "tp_multiplier": combo.get("tp_multiplier", tp_multiplier),
+        }
+        res_with_params = {**res, "best_params": best_params}
         if minimize:
             if res["max_drawdown"] < best_score:
                 best_score = res["max_drawdown"]
-                best = res
+                best = res_with_params
         else:
             if score > best_score:
                 best_score = score
-                best = res
+                best = res_with_params
     print(f"[backtest] Grid search finished. Best score ({optimize_by}) = {best_score}")
     return best if best is not None else run_backtest(
         df, rsi_length=rsi_length, rsi_overbought=rsi_overbought, rsi_oversold=rsi_oversold,
         sl_multiplier=sl_multiplier, tp_multiplier=tp_multiplier,
-        trade_amount_usd=trade_amount_usd, initial_capital=initial_capital,
+        trade_amount_usd=trade_amount_usd, leverage=leverage, initial_capital=initial_capital,
     )

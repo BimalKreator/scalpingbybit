@@ -1,9 +1,15 @@
 """
-FastAPI web app: dashboard (bot toggle + .env settings) and backtest UI with equity chart.
+FastAPI web app: dashboard (bot toggle + .env settings), account/positions, manual trading, backtest UI.
 """
 import asyncio
+import logging
+import math
 import os
+import time
 from pathlib import Path
+
+# Suppress uvicorn access log spam (GET /api/account 200, etc.) so bot logic prints are visible
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
 from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -65,9 +71,140 @@ def write_env_vars(updates: dict[str, str]) -> None:
         f.write("\n".join(out_lines) + "\n")
 
 
-# Reload env into process after write
-load_dotenv(ENV_PATH)
-load_dotenv(ENV_PATH_FALLBACK)
+# Load .env into process: use path that exists (same as get_env_path), and str() for compatibility
+_env_path = get_env_path()
+load_dotenv(str(_env_path))
+if _env_path != ENV_PATH_FALLBACK:
+    load_dotenv(str(ENV_PATH_FALLBACK))
+
+# Bybit HTTP client for account, positions, and manual chunk execution (REST-only)
+REFERENCE_BALANCE = 67.56  # Overall Profit = Current Balance - REFERENCE_BALANCE
+
+
+def _get_http_client():
+    """Build Pybit HTTP session: load .env first, then HTTP(testnet=False, api_key=..., api_secret=...)."""
+    load_dotenv(str(get_env_path()))
+    from pybit.unified_trading import HTTP
+    session = HTTP(
+        testnet=False,
+        api_key=os.getenv("BYBIT_API_KEY"),
+        api_secret=os.getenv("BYBIT_API_SECRET"),
+    )
+    return session
+
+
+def _get_instrument_lot(symbol: str) -> tuple[float, float]:
+    """Return (qty_step, min_order_qty) for symbol. Raises on failure."""
+    client = _get_http_client()
+    inst = client.get_instruments_info(category="linear", symbol=symbol)
+    if inst.get("retCode") != 0:
+        raise ValueError("Failed to get instrument info")
+    lot = (inst.get("result", {}).get("list") or [{}])[0].get("lotSizeFilter") or {}
+    qty_step = float(lot.get("qtyStep") or 0.001)
+    min_order_qty = float(lot.get("minOrderQty") or 0.001)
+    return (qty_step, min_order_qty)
+
+
+def _run_chunk_order_sync(symbol: str, side: str, total_qty: float) -> tuple[bool, str]:
+    """
+    Execute total_qty in chunks using REST only: L1 orderbook, Limit IOC, poll order history.
+    Applies minOrderQty, dust prevention, and qtyStep rounding.
+    Returns (success, error_message).
+    """
+    if total_qty <= 0:
+        return True, ""
+    client = _get_http_client()
+    min_notional = 6.0
+    liquidity_fraction = 0.5
+    loop_delay = 0.075
+    fill_poll_interval = 0.05
+    fill_poll_max = 8  # 0.4s total
+
+    try:
+        qty_step, min_order_qty = _get_instrument_lot(symbol)
+    except Exception as e:
+        return False, str(e)
+
+    remaining_qty = total_qty
+    while remaining_qty > 0:
+        try:
+            if remaining_qty < min_order_qty:
+                break
+            ob = client.get_orderbook(category="linear", symbol=symbol, limit=1)
+            if ob.get("retCode") != 0:
+                time.sleep(loop_delay)
+                continue
+            bids = (ob.get("result", {}).get("b") or [])[:1]
+            asks = (ob.get("result", {}).get("a") or [])[:1]
+            if side == "Buy":
+                if not asks:
+                    time.sleep(loop_delay)
+                    continue
+                price = float(asks[0][0])
+                top_qty = float(asks[0][1])
+            else:
+                if not bids:
+                    time.sleep(loop_delay)
+                    continue
+                price = float(bids[0][0])
+                top_qty = float(bids[0][1])
+
+            if price <= 0:
+                time.sleep(loop_delay)
+                continue
+            if remaining_qty * price < min_notional:
+                break
+            # Tentative chunk from liquidity
+            target_chunk = min(remaining_qty, top_qty * liquidity_fraction)
+            chunk_qty = target_chunk
+            # Rule 1 (Minimum Chunk)
+            chunk_qty = max(chunk_qty, min_order_qty)
+            chunk_qty = min(chunk_qty, remaining_qty)
+            # Rule 2 (Dust Prevention)
+            remainder_after = remaining_qty - chunk_qty
+            if remainder_after > 0 and remainder_after < min_order_qty:
+                chunk_qty = remaining_qty
+            # Rule 3 (Rounding)
+            chunk_qty = math.floor(chunk_qty / qty_step) * qty_step
+            chunk_qty = min(chunk_qty, remaining_qty)
+            if chunk_qty < min_order_qty:
+                break
+            print(f"Target Chunk: {target_chunk:.6f}, Adjusted Chunk (Min/Dust logic): {chunk_qty:.6f}, Remaining: {remaining_qty:.6f}")
+            price_str = f"{price:.2f}"
+            qty_str = f"{chunk_qty:.6f}".rstrip("0").rstrip(".")
+
+            order = client.place_order(
+                category="linear",
+                symbol=symbol,
+                side=side,
+                orderType="Limit",
+                qty=qty_str,
+                price=price_str,
+                timeInForce="IOC",
+            )
+            if order.get("retCode") != 0:
+                time.sleep(loop_delay)
+                continue
+            order_id = (order.get("result") or {}).get("orderId")
+            if not order_id:
+                time.sleep(loop_delay)
+                continue
+
+            filled = 0.0
+            for _ in range(fill_poll_max):
+                time.sleep(fill_poll_interval)
+                hist = client.get_order_history(category="linear", symbol=symbol, orderId=order_id, limit=1)
+                if hist.get("retCode") == 0:
+                    lst = (hist.get("result") or {}).get("list") or []
+                    if lst:
+                        filled = float(lst[0].get("cumExecQty") or 0)
+                        break
+            remaining_qty -= filled
+        except Exception as e:
+            return False, str(e)
+        time.sleep(loop_delay)
+    return True, ""
+
 
 app = FastAPI(title="Bybit Weak Momentum Reversal")
 templates_dir = Path(__file__).resolve().parent / "templates"
@@ -79,6 +216,8 @@ env_jinja = Environment(
 
 # In-memory bot running state (for dashboard toggle)
 BOT_RUNNING = False
+# Background task running main_async from main.py when System Power is ON
+_bot_task: asyncio.Task | None = None
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -86,25 +225,36 @@ async def index():
     return await dashboard_page()
 
 
+def _autotrade_enabled_from_env() -> bool:
+    """Read AUTO_TRADE_ENABLED from .env (True/False or true/false)."""
+    v = read_env_vars().get("AUTO_TRADE_ENABLED", "false").strip().lower()
+    return v in ("true", "1")
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard_page():
     vars = read_env_vars()
     template = env_jinja.get_template("dashboard.html")
     html = template.render(
-        trade_amount_usd=vars.get("TRADE_AMOUNT_USD", vars.get("TRADE_QTY", "0.001")),
+        trading_symbol=vars.get("TRADING_SYMBOL", vars.get("SYMBOL", "BTCUSDT")),
+        trade_amount_usd=vars.get("TRADE_AMOUNT_USD", vars.get("TRADE_QTY", "100")),
+        leverage=vars.get("LEVERAGE", "5"),
         rsi_length=vars.get("RSI_LENGTH", "14"),
         rsi_overbought=vars.get("RSI_OVERBOUGHT", "60"),
         rsi_oversold=vars.get("RSI_OVERSOLD", "40"),
         sl_multiplier=vars.get("SL_MULTIPLIER", "1.0"),
         tp_multiplier=vars.get("TP_MULTIPLIER", "2.0"),
         bot_running=BOT_RUNNING,
+        autotrade_enabled=_autotrade_enabled_from_env(),
     )
     return HTMLResponse(html)
 
 
 @app.post("/api/env")
 async def api_update_env(
+    trading_symbol: str = Form(None),
     trade_amount_usd: str = Form(None),
+    leverage: str = Form(None),
     rsi_length: str = Form(None),
     rsi_overbought: str = Form(None),
     rsi_oversold: str = Form(None),
@@ -113,8 +263,12 @@ async def api_update_env(
 ):
     print("[env] POST /api/env: updating .env with form values")
     updates = {}
+    if trading_symbol is not None:
+        updates["TRADING_SYMBOL"] = (trading_symbol or "BTCUSDT").strip().upper()
     if trade_amount_usd is not None:
         updates["TRADE_AMOUNT_USD"] = trade_amount_usd
+    if leverage is not None:
+        updates["LEVERAGE"] = leverage
     if rsi_length is not None:
         updates["RSI_LENGTH"] = rsi_length
     if rsi_overbought is not None:
@@ -132,9 +286,377 @@ async def api_update_env(
     return {"ok": True, "updated": list(updates.keys())}
 
 
+@app.get("/api/account")
+async def api_account():
+    """Fetch Available Balance and Overall Profit (Current Balance - 67.56)."""
+    _key = os.getenv("BYBIT_API_KEY")
+    print(f"[api/account] BYBIT_API_KEY (first 4 chars): {_key[:4] if _key else 'None'}")
+    try:
+        client = _get_http_client()
+        resp = client.get_wallet_balance(accountType="UNIFIED")
+        if resp.get("retCode") != 0:
+            msg = resp.get("retMsg", "Bybit API error")
+            print(f"[api/account] Bybit retCode != 0: {msg}")
+            return JSONResponse(status_code=502, content={"error": msg})
+        lst = (resp.get("result") or {}).get("list") or []
+        if not lst:
+            return {"availableBalance": 0.0, "overallProfit": -REFERENCE_BALANCE}
+        acc = lst[0]
+        total_equity = float(acc.get("totalEquity") or 0)
+        total_available = float(acc.get("totalAvailableBalance") or 0)
+        overall_profit = total_equity - REFERENCE_BALANCE
+        return {
+            "availableBalance": round(total_available, 2),
+            "overallProfit": round(overall_profit, 2),
+        }
+    except Exception as e:
+        print(f"[api/account] Exception: {e}")
+        print(f"Full Error: {repr(e)}")
+        return JSONResponse(status_code=502, content={"error": str(e)})
+
+
+@app.get("/api/positions")
+async def api_positions():
+    """Fetch linear USDT positions; return only active (size > 0) as symbol, side, entry, size, margin, liqPrice, unrealisedPnl."""
+    try:
+        session = _get_http_client()
+        response = session.get_positions(category="linear", settleCoin="USDT")
+        if response.get("retCode") != 0:
+            msg = response.get("retMsg", "Bybit API error")
+            print(f"[api/positions] Bybit retCode != 0: {msg}")
+            return JSONResponse(status_code=502, content={"error": msg})
+        positions = response.get("result", {}).get("list", [])
+        active_positions = [p for p in positions if float(p.get("size", 0) or 0) > 0]
+        out = []
+        for p in active_positions:
+            sl = p.get("stopLoss") or "0"
+            tp = p.get("takeProfit") or "0"
+            out.append({
+                "symbol": p.get("symbol", ""),
+                "side": p.get("side", ""),
+                "entryPrice": p.get("avgPrice", ""),
+                "size": p.get("size", ""),
+                "positionValue": p.get("positionIM") or p.get("positionValue", "0"),
+                "liqPrice": p.get("liqPrice") or "",
+                "stop_loss": "-" if (not sl or sl == "0" or str(sl).strip() == "") else str(sl),
+                "take_profit": "-" if (not tp or tp == "0" or str(tp).strip() == "") else str(tp),
+                "unrealisedPnl": p.get("unrealisedPnl", "0"),
+                "createdTime": p.get("createdTime", "0"),
+            })
+        return out
+    except Exception as e:
+        print(f"[api/positions] Exception: {e}")
+        print(f"Full Error: {repr(e)}")
+        return JSONResponse(status_code=502, content={"error": str(e)})
+
+
+def _map_exit_reason(rec: dict) -> str:
+    """Map Bybit execType/orderType to display exit reason."""
+    ex = (rec.get("execType") or "").strip()
+    ot = (rec.get("orderType") or "").strip()
+    if ex == "BustTrade":
+        return "Liquidation"
+    if ex == "Trade":
+        return "Manual Trade" if ot == "Market" else "SL/TP"
+    if ex == "SessionSettlePnL":
+        return "Settle"
+    if ex == "Settle":
+        return "Settle"
+    if ex == "MovePosition":
+        return "MovePosition"
+    return ex or "–"
+
+
+@app.get("/api/closed_trades")
+async def api_closed_trades():
+    """Fetch closed PnL from Bybit (linear, limit 50). Return formatted list for Closed Trades page."""
+    try:
+        client = _get_http_client()
+        resp = client.get_closed_pnl(category="linear", limit=50)
+        if resp.get("retCode") != 0:
+            msg = resp.get("retMsg", "Bybit API error")
+            return JSONResponse(status_code=502, content={"error": msg})
+        lst = resp.get("result", {}).get("list", [])
+        out = []
+        for r in lst:
+            qty = float(r.get("qty") or r.get("closedSize") or 0)
+            entry = float(r.get("avgEntryPrice") or 0)
+            lev = float(r.get("leverage") or 1)
+            cum_entry = float(r.get("cumEntryValue") or 0)
+            margin_used = (qty * entry) / lev if (qty and entry and lev) else (cum_entry / lev if (cum_entry and lev) else 0)
+            open_fee = float(r.get("openFee") or 0)
+            close_fee = float(r.get("closeFee") or 0)
+            fees = open_fee + close_fee
+            out.append({
+                "symbol": r.get("symbol", ""),
+                "side": r.get("side", ""),
+                "createdTime": r.get("createdTime", "0"),
+                "updatedTime": r.get("updatedTime", "0"),
+                "avgEntryPrice": r.get("avgEntryPrice", ""),
+                "avgExitPrice": r.get("avgExitPrice", ""),
+                "leverage": r.get("leverage", ""),
+                "marginUsed": round(margin_used, 4) if margin_used else "",
+                "closedPnl": r.get("closedPnl", "0"),
+                "fees": round(fees, 6),
+                "exitReason": _map_exit_reason(r),
+            })
+        return out
+    except Exception as e:
+        print(f"[api/closed_trades] Exception: {e}")
+        return JSONResponse(status_code=502, content={"error": str(e)})
+
+
+@app.get("/logs", response_class=HTMLResponse)
+async def logs_page():
+    """Closed Trades (Logs) page."""
+    template = env_jinja.get_template("logs.html")
+    return HTMLResponse(template.render())
+
+
+# Live Strategy Monitor: shared in-memory state with main.py (same process when bot runs via toggle)
+try:
+    from main import live_strategy_state
+except ImportError:
+    live_strategy_state = {
+        "symbol": "",
+        "price": 0.0,
+        "indicators": {},
+        "conditions": {"long": [], "short": []},
+        "status": "No data",
+    }
+
+_DEFAULT_STRATEGY_STATE = {
+    "symbol": "",
+    "price": 0.0,
+    "indicators": {},
+    "conditions": {"long": [], "short": []},
+    "status": "No data",
+}
+
+
+@app.get("/api/strategy/status")
+async def api_strategy_status():
+    """Return live strategy state from bot (same process: main.live_strategy_state)."""
+    return dict(live_strategy_state)
+
+
 @app.get("/api/bot/status")
 async def api_bot_status():
-    return {"running": BOT_RUNNING}
+    return {"running": BOT_RUNNING, "autotrade_enabled": _autotrade_enabled_from_env()}
+
+
+class AutotradeToggleBody(BaseModel):
+    enabled: bool
+
+
+@app.post("/api/bot/autotrade")
+async def api_bot_autotrade(body: AutotradeToggleBody):
+    """Update AUTO_TRADE_ENABLED in .env and return current state."""
+    value = "True" if body.enabled else "False"
+    write_env_vars({"AUTO_TRADE_ENABLED": value})
+    load_dotenv(get_env_path())
+    return {"autotrade_enabled": body.enabled}
+
+
+class ManualTradeBody(BaseModel):
+    symbol: str = "BTCUSDT"
+    usd_amount: float
+    leverage: float = 5.0
+    side: str  # "Buy" or "Sell"
+
+
+class CloseTradeBody(BaseModel):
+    symbol: str
+    side: str  # "Buy" or "Sell" (current position side)
+
+
+@app.post("/api/trade/manual")
+async def api_trade_manual(body: ManualTradeBody):
+    """Place manual trade via chunk execution. Accepts symbol, usd_amount, side."""
+    if body.side not in ("Buy", "Sell"):
+        raise HTTPException(status_code=400, detail="side must be Buy or Sell")
+    if body.usd_amount <= 0:
+        raise HTTPException(status_code=400, detail="usd_amount must be positive")
+    lev = max(1.0, min(100.0, float(body.leverage))) if body.leverage else 5.0
+    try:
+        client = _get_http_client()
+        try:
+            client.set_leverage(
+                category="linear",
+                symbol=body.symbol,
+                buyLeverage=str(int(lev)),
+                sellLeverage=str(int(lev)),
+            )
+        except Exception:
+            pass  # ignore if leverage already set to that value
+        ob = client.get_orderbook(category="linear", symbol=body.symbol, limit=1)
+        if ob.get("retCode") != 0:
+            raise HTTPException(status_code=502, detail="Failed to get orderbook")
+        result = ob.get("result") or {}
+        asks = (result.get("a") or [])[:1]
+        bids = (result.get("b") or [])[:1]
+        if body.side == "Buy" and asks:
+            price = float(asks[0][0])
+        elif body.side == "Sell" and bids:
+            price = float(bids[0][0])
+        else:
+            raise HTTPException(status_code=502, detail="No L1 price")
+        if price <= 0:
+            raise HTTPException(status_code=502, detail="Invalid price")
+        total_qty = (body.usd_amount * lev) / price
+        try:
+            qty_step, min_order_qty = _get_instrument_lot(body.symbol)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        total_qty = math.floor(total_qty / qty_step) * qty_step
+        if total_qty < min_order_qty:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Quantity {total_qty:.6f} below minOrderQty {min_order_qty}. Increase trade amount or leverage.",
+            )
+        success, err = await asyncio.to_thread(_run_chunk_order_sync, body.symbol, body.side, total_qty)
+        if not success:
+            raise HTTPException(status_code=400, detail=err or "Chunk execution failed")
+        return {"ok": True, "message": "Trade executed"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/trade/close")
+async def api_trade_close(body: CloseTradeBody):
+    """Close position for symbol by executing opposite side chunk order."""
+    if body.side not in ("Buy", "Sell"):
+        raise HTTPException(status_code=400, detail="side must be Buy or Sell")
+    try:
+        client = _get_http_client()
+        resp = client.get_positions(category="linear", symbol=body.symbol)
+        if resp.get("retCode") != 0:
+            raise HTTPException(status_code=502, detail=resp.get("retMsg", "Bybit API error"))
+        lst = (resp.get("result") or {}).get("list") or []
+        size = 0.0
+        for p in lst:
+            if (p.get("symbol") or "").upper() == (body.symbol or "").upper():
+                size = float(p.get("size") or 0)
+                break
+        if size <= 0:
+            raise HTTPException(status_code=400, detail="No open position for this symbol")
+        close_side = "Sell" if body.side == "Buy" else "Buy"
+        success, err = await asyncio.to_thread(_run_chunk_order_sync, body.symbol, close_side, size)
+        if not success:
+            raise HTTPException(status_code=400, detail=err or "Close failed")
+        return {"ok": True, "message": "Position closed"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class MockSignalBody(BaseModel):
+    symbol: str = "BTCUSDT"
+    side: str  # "Buy" or "Sell"
+    usd_amount: float
+    leverage: float = 5.0
+
+
+# Synthetic range (1% of price) for mock SL/TP when no candle is available
+MOCK_RANGE_PCT = 0.01
+
+
+@app.post("/api/trade/mock_signal")
+async def api_trade_mock_signal(body: MockSignalBody):
+    """Run auto-strategy execution (SL/TP, chunked entry, set SL/TP) using current ticker price. For testing."""
+    if body.side not in ("Buy", "Sell"):
+        raise HTTPException(status_code=400, detail="side must be Buy or Sell")
+    if body.usd_amount <= 0:
+        raise HTTPException(status_code=400, detail="usd_amount must be positive")
+    try:
+        load_dotenv(str(get_env_path()))
+        sl_mult = float(os.getenv("SL_MULTIPLIER", "1.0"))
+        tp_mult = float(os.getenv("TP_MULTIPLIER", "2.0"))
+        client = _get_http_client()
+        ob = client.get_orderbook(category="linear", symbol=body.symbol, limit=1)
+        if ob.get("retCode") != 0:
+            raise HTTPException(status_code=502, detail="Failed to get orderbook")
+        result = ob.get("result") or {}
+        asks = (result.get("a") or [])[:1]
+        bids = (result.get("b") or [])[:1]
+        if body.side == "Buy" and asks:
+            current_price = float(asks[0][0])
+        elif body.side == "Sell" and bids:
+            current_price = float(bids[0][0])
+        else:
+            raise HTTPException(status_code=502, detail="No L1 price")
+        if current_price <= 0:
+            raise HTTPException(status_code=502, detail="Invalid price")
+
+        range_ = current_price * MOCK_RANGE_PCT
+        close = current_price
+        if body.side == "Buy":
+            sl = close - (range_ * sl_mult)
+            tp = close + (range_ * tp_mult)
+        else:
+            sl = close + (range_ * sl_mult)
+            tp = close - (range_ * tp_mult)
+        sl_str = f"{sl:.2f}"
+        tp_str = f"{tp:.2f}"
+
+        qty_step, min_order_qty = _get_instrument_lot(body.symbol)
+        total_qty = (body.usd_amount * body.leverage) / current_price
+        total_qty = math.floor(total_qty / qty_step) * qty_step
+        if total_qty < min_order_qty:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Quantity {total_qty:.6f} below minOrderQty {min_order_qty}. Increase trade amount or leverage.",
+            )
+
+        print("[Mock Signal] Mock Signal Received.")
+        print(f"[Mock Signal] Calculated Entry: {current_price:.2f}")
+        print(f"[Mock Signal] Calculated SL: {sl_str}, TP: {tp_str}")
+        print("[Mock Signal] Starting Monitoring Loop (position stream will track).")
+
+        try:
+            client.set_leverage(
+                category="linear",
+                symbol=body.symbol,
+                buyLeverage=str(int(body.leverage)),
+                sellLeverage=str(int(body.leverage)),
+            )
+        except Exception:
+            pass
+        success, err = await asyncio.to_thread(
+            _run_chunk_order_sync, body.symbol, body.side, total_qty
+        )
+        if not success:
+            raise HTTPException(status_code=400, detail=err or "Chunk execution failed")
+        ok = await asyncio.to_thread(
+            lambda: _set_trading_stop_sync(client, body.symbol, sl_str, tp_str)
+        )
+        if ok:
+            print("[Mock Signal] SL/TP set successfully.")
+        else:
+            print("[Mock Signal] Warning: set_trading_stop failed.")
+        return {"ok": True, "message": "Mock signal executed"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _set_trading_stop_sync(client, symbol: str, stop_loss: str, take_profit: str) -> bool:
+    """Set position SL/TP via given client. Returns True on success."""
+    try:
+        resp = client.set_trading_stop(
+            category="linear",
+            symbol=symbol,
+            positionIdx=0,
+            stopLoss=stop_loss,
+            takeProfit=take_profit,
+        )
+        return resp.get("retCode") == 0
+    except Exception:
+        return False
 
 
 class BotToggleBody(BaseModel):
@@ -143,8 +665,23 @@ class BotToggleBody(BaseModel):
 
 @app.post("/api/bot/toggle")
 async def api_bot_toggle(body: BotToggleBody):
-    global BOT_RUNNING
-    BOT_RUNNING = body.on
+    global BOT_RUNNING, _bot_task
+    if body.on:
+        if _bot_task is None or _bot_task.done():
+            from main import main_async
+            _bot_task = asyncio.create_task(main_async())
+            print("[bot] Strategy task started (main_async).")
+        BOT_RUNNING = True
+    else:
+        if _bot_task is not None:
+            _bot_task.cancel()
+            try:
+                await _bot_task
+            except asyncio.CancelledError:
+                pass
+            _bot_task = None
+            print("[bot] Strategy task stopped.")
+        BOT_RUNNING = False
     print(f"[bot] POST /api/bot/toggle: bot running = {BOT_RUNNING}")
     return {"running": BOT_RUNNING}
 
@@ -166,6 +703,7 @@ class BacktestRequest(BaseModel):
     sl_multiplier: float = 1.0
     tp_multiplier: float = 2.0
     trade_amount_usd: float = 100.0
+    leverage: float = 5.0
     initial_capital: float = 10000.0
     optimize_by: str = "total_pnl"
     rsi_ob_min: float | None = None
@@ -205,6 +743,7 @@ def _run_backtest_sync(req: BacktestRequest):
         sl_multiplier=req.sl_multiplier,
         tp_multiplier=req.tp_multiplier,
         trade_amount_usd=req.trade_amount_usd,
+        leverage=req.leverage,
         initial_capital=req.initial_capital,
         optimize_by=req.optimize_by,
         rsi_ob_min=req.rsi_ob_min,
@@ -241,4 +780,11 @@ async def api_backtest(req: BacktestRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Disable access logs to avoid terminal spam from polling (e.g. GET /api/account every 2s)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        access_log=False,
+        log_level="error",
+    )

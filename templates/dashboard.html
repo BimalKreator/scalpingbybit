@@ -11,65 +11,220 @@
   <style>
     body { font-family: 'DM Sans', system-ui, sans-serif; }
     .safe-bottom { padding-bottom: env(safe-area-inset-bottom, 1rem); }
+    .card {
+      background-color: rgba(15, 23, 42, 0.8);
+      border-radius: 1rem;
+      padding: 1.25rem;
+      box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.1);
+      border: 1px solid rgb(30, 41, 59);
+    }
   </style>
 </head>
 <body class="min-h-screen bg-slate-950 text-slate-100 antialiased">
-  <div class="max-w-lg mx-auto px-4 py-6 pb-8 safe-bottom">
-    <header class="flex items-center justify-between mb-8">
+  <div class="max-w-6xl mx-auto px-4 py-6 pb-8 safe-bottom">
+    <!-- Header: nav visible at top -->
+    <header class="flex items-center justify-between mb-6 flex-wrap gap-2 border-b border-slate-800 pb-4">
       <a href="/" class="text-xl font-semibold tracking-tight text-white">Momentum Reversal</a>
-      <a href="/backtest" class="text-sm text-slate-400 hover:text-white transition">Backtest</a>
+      <nav class="flex items-center gap-4">
+        <a href="/" class="text-sm text-emerald-400 font-medium">Dashboard</a>
+        <a href="/logs" class="text-sm text-slate-400 hover:text-white transition">Closed Trades</a>
+        <a href="/backtest" class="text-sm text-slate-400 hover:text-white transition">Backtest</a>
+      </nav>
     </header>
 
-    <section class="bg-slate-900/80 rounded-2xl p-5 shadow-xl border border-slate-800 mb-6">
-      <div class="flex items-center justify-between mb-2">
-        <span class="text-sm font-medium text-slate-300">Trading Bot</span>
-        <button type="button" id="botToggle" role="switch" aria-checked="{{ 'true' if bot_running else 'false' }}"
-          class="relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 focus:ring-offset-slate-950 {% if bot_running %}bg-emerald-500{% else %}bg-slate-600{% endif %}">
-          <span class="pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow ring-0 transition {% if bot_running %}translate-x-5{% else %}translate-x-1{% endif %}"></span>
-        </button>
+    <!-- Row 1: Account Panel (full width, compact bar) -->
+    <section class="card mb-6">
+      <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Account</h2>
+      <div class="flex flex-wrap items-center gap-6">
+        <div class="flex items-baseline gap-2">
+          <span class="text-slate-500 text-sm">Available Balance</span>
+          <span id="availableBalance" class="text-lg font-bold text-white">--</span>
+        </div>
+        <div class="flex items-baseline gap-2">
+          <span class="text-slate-500 text-sm">Overall P&amp;L</span>
+          <span id="overallProfit" class="text-lg font-bold">--</span>
+        </div>
       </div>
-      <p class="text-xs text-slate-500">Turn the bot ON to run live on Bybit Testnet.</p>
     </section>
 
-    <section class="bg-slate-900/80 rounded-2xl p-5 shadow-xl border border-slate-800">
-      <h2 class="text-sm font-semibold text-slate-200 mb-4">Strategy parameters</h2>
-      <p class="text-xs text-slate-500 mb-4">Values are saved to your .env file.</p>
-      <form id="envForm" class="space-y-4">
-        <div>
-          <label for="trade_amount_usd" class="block text-xs font-medium text-slate-400 mb-1">Trade amount (USD)</label>
-          <input type="text" id="trade_amount_usd" name="trade_amount_usd" value="{{ trade_amount_usd }}"
-            class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="e.g. 100" />
+    <!-- Row 2: Active Positions (full width) -->
+    <section class="card mb-6">
+      <h2 class="text-sm font-semibold text-slate-200 mb-3">Active Positions</h2>
+      <div id="positions-grid" class="grid gap-4" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
+        <p class="text-slate-500 text-sm col-span-full">Loading…</p>
+      </div>
+    </section>
+
+    <!-- Row 3: 60% Live Monitor | 40% Manual Trade -->
+    <div class="grid grid-cols-1 lg:grid-cols-5 gap-6 mb-6">
+      <section class="card lg:col-span-3">
+        <h2 class="text-sm font-semibold text-slate-200 mb-4">Live Monitor</h2>
+        <div class="space-y-4">
+          <div class="grid grid-cols-2 gap-2 text-sm">
+            <div>
+              <p class="text-xs text-slate-500">Token</p>
+              <p id="liveToken" class="font-medium text-white">–</p>
+            </div>
+            <div>
+              <p class="text-xs text-slate-500">Current Price</p>
+              <p id="livePrice" class="font-medium text-white">–</p>
+            </div>
+          </div>
+          <div>
+            <p class="text-xs font-medium text-slate-400 mb-2">Live Indicators</p>
+            <div id="liveIndicators" class="rounded-xl bg-slate-800/80 border border-slate-700 p-3 text-xs space-y-1 text-slate-300">
+              <p class="text-slate-500">No data. Start the bot (main.py) to see live values.</p>
+            </div>
+          </div>
+          <div>
+            <p class="text-xs font-medium text-slate-400 mb-2">Entry Rules Checklist</p>
+            <div class="grid grid-cols-2 gap-3">
+              <div class="rounded-xl bg-slate-800/80 border border-slate-700 p-3">
+                <p class="text-xs text-emerald-400 font-medium mb-2">LONG</p>
+                <ul id="liveRulesLong" class="space-y-1 text-xs text-slate-300"></ul>
+              </div>
+              <div class="rounded-xl bg-slate-800/80 border border-slate-700 p-3">
+                <p class="text-xs text-red-400 font-medium mb-2">SHORT</p>
+                <ul id="liveRulesShort" class="space-y-1 text-xs text-slate-300"></ul>
+              </div>
+            </div>
+          </div>
+          <div>
+            <p class="text-xs text-slate-500">Status</p>
+            <p id="liveStatus" class="text-sm font-medium text-amber-400">Waiting</p>
+          </div>
         </div>
-        <div>
-          <label for="rsi_length" class="block text-xs font-medium text-slate-400 mb-1">RSI length</label>
-          <input type="text" id="rsi_length" name="rsi_length" value="{{ rsi_length }}"
-            class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="14" />
+      </section>
+      <section class="card lg:col-span-2">
+        <h2 class="text-sm font-semibold text-slate-200 mb-3">Manual Trade</h2>
+        <form id="manualTradeForm" class="space-y-3">
+          <div>
+            <label for="manualSymbol" class="block text-xs font-medium text-slate-400 mb-1">Symbol</label>
+            <input type="text" id="manualSymbol" name="symbol" value="BTCUSDT"
+              class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label for="manualAmount" class="block text-xs font-medium text-slate-400 mb-1">Amount (USD)</label>
+              <input type="number" id="manualAmount" name="usd_amount" step="0.01" min="0" placeholder="e.g. 10"
+                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
+            </div>
+            <div>
+              <label for="manualLeverage" class="block text-xs font-medium text-slate-400 mb-1">Leverage (x)</label>
+              <input type="number" id="manualLeverage" name="leverage" value="5" min="1" max="100" step="1" placeholder="5"
+                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
+            </div>
+          </div>
+          <div class="flex gap-3">
+            <button type="button" id="btnLong" class="flex-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-3 px-4 transition active:scale-[0.98]">
+              LONG
+            </button>
+            <button type="button" id="btnShort" class="flex-1 rounded-xl bg-red-600 hover:bg-red-500 text-white font-medium py-3 px-4 transition active:scale-[0.98]">
+              SHORT
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+
+    <!-- Row 4: 50% System Parameters | 50% Power Station -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+      <section class="card">
+        <h2 class="text-sm font-semibold text-slate-200 mb-4">System Parameters</h2>
+        <p class="text-xs text-slate-500 mb-4">Saved to .env. Trading Symbol, RSI, SL/TP multipliers.</p>
+        <form id="envForm" class="space-y-4">
+          <div>
+            <label for="trading_symbol" class="block text-xs font-medium text-slate-400 mb-1">Trading Symbol</label>
+            <input type="text" id="trading_symbol" name="trading_symbol" value="{{ trading_symbol }}"
+              class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="BTCUSDT" />
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label for="trade_amount_usd" class="block text-xs font-medium text-slate-400 mb-1">Trade amount (USD)</label>
+              <input type="text" id="trade_amount_usd" name="trade_amount_usd" value="{{ trade_amount_usd }}"
+                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="e.g. 100" />
+            </div>
+            <div>
+              <label for="leverage" class="block text-xs font-medium text-slate-400 mb-1">Leverage (x)</label>
+              <input type="number" id="leverage" name="leverage" value="{{ leverage }}" min="1" max="100" step="1" placeholder="5"
+                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label for="rsi_length" class="block text-xs font-medium text-slate-400 mb-1">RSI length</label>
+              <input type="text" id="rsi_length" name="rsi_length" value="{{ rsi_length }}"
+                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="14" />
+            </div>
+            <div>
+              <label for="rsi_overbought" class="block text-xs font-medium text-slate-400 mb-1">RSI overbought</label>
+              <input type="text" id="rsi_overbought" name="rsi_overbought" value="{{ rsi_overbought }}"
+                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="60" />
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label for="rsi_oversold" class="block text-xs font-medium text-slate-400 mb-1">RSI oversold</label>
+              <input type="text" id="rsi_oversold" name="rsi_oversold" value="{{ rsi_oversold }}"
+                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="40" />
+            </div>
+            <div>
+              <label for="sl_multiplier" class="block text-xs font-medium text-slate-400 mb-1">SL multiplier</label>
+              <input type="text" id="sl_multiplier" name="sl_multiplier" value="{{ sl_multiplier }}"
+                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="1.0" />
+            </div>
+          </div>
+          <div>
+            <label for="tp_multiplier" class="block text-xs font-medium text-slate-400 mb-1">TP multiplier</label>
+            <input type="text" id="tp_multiplier" name="tp_multiplier" value="{{ tp_multiplier }}"
+              class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="2.0" />
+          </div>
+          <button type="submit" class="w-full rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-3 px-4 transition active:scale-[0.98]">
+            Save to .env
+          </button>
+        </form>
+        <p id="saveStatus" class="mt-3 text-xs text-slate-500 hidden">Saved.</p>
+      </section>
+      <section class="card">
+        <h2 class="text-sm font-semibold text-slate-200 mb-4">Power Station</h2>
+        <p class="text-xs text-slate-500 mb-4">System power and auto-execution toggles.</p>
+        <div class="space-y-6">
+          <div class="flex items-center justify-between rounded-xl bg-slate-800/80 border border-slate-700 p-4">
+            <div>
+              <p class="text-sm font-medium text-slate-200">System Power</p>
+              <p class="text-xs text-slate-500">Start / stop main.py</p>
+            </div>
+            <button type="button" id="botToggle" role="switch" aria-checked="{{ 'true' if bot_running else 'false' }}"
+              class="relative inline-flex h-8 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 focus:ring-offset-slate-900 {% if bot_running %}bg-emerald-500{% else %}bg-slate-600{% endif %}">
+              <span class="pointer-events-none inline-block h-7 w-7 transform rounded-full bg-white shadow ring-0 transition {% if bot_running %}translate-x-6{% else %}translate-x-1{% endif %}"></span>
+            </button>
+          </div>
+          <div class="flex items-center justify-between rounded-xl bg-slate-800/80 border border-slate-700 p-4">
+            <div>
+              <p class="text-sm font-medium text-slate-200">Auto Trade</p>
+              <p class="text-xs text-slate-500">Toggle auto execution</p>
+            </div>
+            <button type="button" id="autotradeToggle" role="switch" aria-checked="{{ 'true' if autotrade_enabled else 'false' }}"
+              class="relative inline-flex h-8 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 focus:ring-offset-slate-900 {% if autotrade_enabled %}bg-amber-500{% else %}bg-slate-600{% endif %}">
+              <span class="pointer-events-none inline-block h-7 w-7 transform rounded-full bg-white shadow ring-0 transition {% if autotrade_enabled %}translate-x-6{% else %}translate-x-1{% endif %}"></span>
+            </button>
+          </div>
         </div>
-        <div>
-          <label for="rsi_overbought" class="block text-xs font-medium text-slate-400 mb-1">RSI overbought</label>
-          <input type="text" id="rsi_overbought" name="rsi_overbought" value="{{ rsi_overbought }}"
-            class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="60" />
-        </div>
-        <div>
-          <label for="rsi_oversold" class="block text-xs font-medium text-slate-400 mb-1">RSI oversold</label>
-          <input type="text" id="rsi_oversold" name="rsi_oversold" value="{{ rsi_oversold }}"
-            class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="40" />
-        </div>
-        <div>
-          <label for="sl_multiplier" class="block text-xs font-medium text-slate-400 mb-1">SL multiplier</label>
-          <input type="text" id="sl_multiplier" name="sl_multiplier" value="{{ sl_multiplier }}"
-            class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="1.0" />
-        </div>
-        <div>
-          <label for="tp_multiplier" class="block text-xs font-medium text-slate-400 mb-1">TP multiplier</label>
-          <input type="text" id="tp_multiplier" name="tp_multiplier" value="{{ tp_multiplier }}"
-            class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="2.0" />
-        </div>
-        <button type="submit" class="w-full rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-3 px-4 transition active:scale-[0.98]">
-          Save to .env
+      </section>
+    </div>
+
+    <!-- Row 5: Mock Trade Panel (full width) -->
+    <section class="card">
+      <h2 class="text-sm font-semibold text-slate-200 mb-2">Mock Trade Panel</h2>
+      <p class="text-xs text-slate-500 mb-3">Debug: Test Auto Strategy. Uses Manual Trade inputs; runs chunked entry + SL/TP.</p>
+      <div class="flex flex-wrap gap-3">
+        <button type="button" id="btnMockLong" class="rounded-xl bg-emerald-600/80 hover:bg-emerald-500/80 text-white font-medium py-3 px-5 transition active:scale-[0.98] text-sm">
+          Test Auto LONG
         </button>
-      </form>
-      <p id="saveStatus" class="mt-3 text-xs text-slate-500 hidden">Saved.</p>
+        <button type="button" id="btnMockShort" class="rounded-xl bg-red-600/80 hover:bg-red-500/80 text-white font-medium py-3 px-5 transition active:scale-[0.98] text-sm">
+          Test Auto SHORT
+        </button>
+      </div>
     </section>
   </div>
 
@@ -77,6 +232,273 @@
     const botToggle = document.getElementById('botToggle');
     const envForm = document.getElementById('envForm');
     const saveStatus = document.getElementById('saveStatus');
+    const availableBalanceEl = document.getElementById('availableBalance');
+    const overallProfitEl = document.getElementById('overallProfit');
+    const positionsGrid = document.getElementById('positions-grid');
+    const manualSymbol = document.getElementById('manualSymbol');
+    const manualAmount = document.getElementById('manualAmount');
+    const manualLeverage = document.getElementById('manualLeverage');
+    const btnLong = document.getElementById('btnLong');
+    const btnShort = document.getElementById('btnShort');
+    const btnMockLong = document.getElementById('btnMockLong');
+    const btnMockShort = document.getElementById('btnMockShort');
+    const autotradeToggle = document.getElementById('autotradeToggle');
+
+    function applyBotStatus(data) {
+      const running = !!data.running;
+      const autotrade = !!data.autotrade_enabled;
+      botToggle.setAttribute('aria-checked', running ? 'true' : 'false');
+      botToggle.classList.toggle('bg-emerald-500', running);
+      botToggle.classList.toggle('bg-slate-600', !running);
+      botToggle.querySelector('span').classList.toggle('translate-x-6', running);
+      botToggle.querySelector('span').classList.toggle('translate-x-1', !running);
+      autotradeToggle.setAttribute('aria-checked', autotrade ? 'true' : 'false');
+      autotradeToggle.classList.toggle('bg-amber-500', autotrade);
+      autotradeToggle.classList.toggle('bg-slate-600', !autotrade);
+      autotradeToggle.querySelector('span').classList.toggle('translate-x-6', autotrade);
+      autotradeToggle.querySelector('span').classList.toggle('translate-x-1', !autotrade);
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+      fetch('/api/bot/status')
+        .then(function (res) { return res.json(); })
+        .then(applyBotStatus)
+        .catch(function () {});
+      pollLiveStrategy();
+      setInterval(pollLiveStrategy, 1500);
+    });
+
+    function updateLiveStrategyPanel(data) {
+      document.getElementById('liveToken').textContent = data.symbol || '–';
+      document.getElementById('livePrice').textContent = (data.price != null && data.price !== '') ? formatNum(data.price) : '–';
+      document.getElementById('liveStatus').textContent = data.status || 'Waiting';
+      var statusEl = document.getElementById('liveStatus');
+      statusEl.classList.remove('text-amber-400', 'text-emerald-400', 'text-red-400', 'text-slate-400');
+      if (data.status === 'Long Signal') statusEl.classList.add('text-emerald-400');
+      else if (data.status === 'Short Signal') statusEl.classList.add('text-red-400');
+      else if (data.status === 'Position Open') statusEl.classList.add('text-amber-400');
+      else statusEl.classList.add('text-slate-400');
+
+      var ind = data.indicators || {};
+      if (Object.keys(ind).length === 0) {
+        document.getElementById('liveIndicators').innerHTML = '<p class="text-slate-500">No data. Start the bot (main.py) to see live values.</p>';
+      } else {
+        var lines = [];
+        if (ind.RSI != null) lines.push('RSI: ' + formatNum(ind.RSI));
+        if (ind.open != null) lines.push('Open: ' + formatNum(ind.open));
+        if (ind.close != null) lines.push('Close: ' + formatNum(ind.close));
+        if (ind.body_size != null) lines.push('Body size: ' + formatNum(ind.body_size));
+        if (ind.volume != null) lines.push('Volume: ' + formatNum(ind.volume));
+        lines.push('Momentum decreasing: ' + (ind.momentum_decreasing ? 'Yes' : 'No'));
+        lines.push('Volume decreasing: ' + (ind.volume_decreasing ? 'Yes' : 'No'));
+        document.getElementById('liveIndicators').innerHTML = lines.map(function (l) { return '<p class="leading-tight">' + l + '</p>'; }).join('');
+      }
+
+      function ruleLi(r) {
+        var icon = (r.met ? '🟢' : '🔴');
+        return '<li class="flex items-center gap-2"><span>' + icon + '</span> ' + (r.name || '') + '</li>';
+      }
+      var longRules = (data.conditions && data.conditions.long) || [];
+      var shortRules = (data.conditions && data.conditions.short) || [];
+      document.getElementById('liveRulesLong').innerHTML = longRules.length ? longRules.map(ruleLi).join('') : '<li class="text-slate-500">No rules yet</li>';
+      document.getElementById('liveRulesShort').innerHTML = shortRules.length ? shortRules.map(ruleLi).join('') : '<li class="text-slate-500">No rules yet</li>';
+    }
+
+    function pollLiveStrategy() {
+      fetch('/api/strategy/status')
+        .then(function (res) { return res.json(); })
+        .then(updateLiveStrategyPanel)
+        .catch(function () {
+          document.getElementById('liveStatus').textContent = 'No data';
+          document.getElementById('liveIndicators').innerHTML = '<p class="text-slate-500">Could not load strategy status.</p>';
+        });
+    }
+
+    function formatNum(v) {
+      if (v === null || v === undefined || v === '') return '--';
+      const n = Number(v);
+      return isNaN(n) ? String(v) : (Math.round(n * 100) / 100).toFixed(2);
+    }
+
+    async function pollAccount() {
+      try {
+        const res = await fetch('/api/account');
+        if (!res.ok) throw new Error(res.statusText);
+        const data = await res.json();
+        availableBalanceEl.textContent = formatNum(data.availableBalance) + ' USD';
+        const profit = data.overallProfit != null ? Number(data.overallProfit) : NaN;
+        overallProfitEl.textContent = (isNaN(profit) ? '--' : (profit >= 0 ? '+' : '') + formatNum(profit)) + ' USD';
+        overallProfitEl.classList.remove('text-emerald-400', 'text-red-400');
+        if (!isNaN(profit)) overallProfitEl.classList.add(profit >= 0 ? 'text-emerald-400' : 'text-red-400');
+      } catch (e) {
+        availableBalanceEl.textContent = 'Error';
+        overallProfitEl.textContent = '--';
+      }
+    }
+
+    async function pollPositions() {
+      try {
+        const res = await fetch('/api/positions');
+        const data = await res.json();
+        positionsGrid.innerHTML = '';
+        if (!res.ok || !Array.isArray(data)) {
+          positionsGrid.innerHTML = '<p class="text-slate-500 text-sm col-span-full">Error loading positions</p>';
+          return;
+        }
+        var list = data;
+        if (list.length === 0) {
+          positionsGrid.innerHTML = '<p class="text-slate-500 text-sm col-span-full">No active positions</p>';
+          return;
+        }
+        list.forEach(function (p) {
+          const uPnl = Number(p.unrealisedPnl);
+          const uPnlClass = uPnl >= 0 ? 'text-emerald-400' : 'text-red-400';
+          const sideClass = (p.side || '').toUpperCase() === 'BUY' ? 'text-emerald-400' : 'text-red-400';
+          const ct = p.createdTime;
+          const entryTimeIST = (ct && ct !== '0') ? new Date(parseInt(ct)).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '–';
+          const card = document.createElement('div');
+          card.className = 'rounded-xl bg-slate-800/90 border border-slate-700 p-4 flex flex-col gap-3';
+          card.innerHTML =
+            '<div class="flex justify-between items-baseline">' +
+              '<span class="text-lg font-bold text-white">' + (p.symbol || '') + '</span>' +
+              '<span class="font-medium ' + sideClass + '">' + (p.side || '') + '</span>' +
+            '</div>' +
+            '<p class="text-xs text-slate-400"><strong>Entry Time:</strong> ' + entryTimeIST + '</p>' +
+            '<div class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">' +
+              '<span class="text-slate-500">Entry</span><span class="text-slate-200">' + (p.entryPrice || '–') + '</span>' +
+              '<span class="text-slate-500">Qty</span><span class="text-slate-200">' + (p.size || '–') + '</span>' +
+              '<span class="text-slate-500">Margin</span><span class="text-slate-200">' + (p.positionValue || '–') + '</span>' +
+              '<span class="text-slate-500">Liq Price</span><span class="text-slate-200">' + (p.liqPrice || '–') + '</span>' +
+              '<span class="text-slate-500">SL Price</span><span class="text-slate-200">' + (p.stop_loss || '–') + '</span>' +
+              '<span class="text-slate-500">Target (TP)</span><span class="text-slate-200">' + (p.take_profit || '–') + '</span>' +
+              '<span class="text-slate-500">uPNL</span><span class="' + uPnlClass + ' font-medium">' + formatNum(p.unrealisedPnl) + '</span>' +
+            '</div>' +
+            '<button type="button" class="closePos w-full mt-1 rounded-lg bg-slate-700 hover:bg-slate-600 text-white text-sm font-medium py-2 px-3 transition" data-symbol="' + (p.symbol || '') + '" data-side="' + (p.side || '') + '">Close Position</button>';
+          positionsGrid.appendChild(card);
+        });
+        positionsGrid.querySelectorAll('.closePos').forEach(function (btn) {
+          btn.addEventListener('click', closePosition);
+        });
+      } catch (e) {
+        positionsGrid.innerHTML = '<p class="text-slate-500 text-sm col-span-full">Error loading positions</p>';
+      }
+    }
+
+    function closePosition(ev) {
+      const btn = ev.target;
+      const symbol = btn.getAttribute('data-symbol');
+      const side = btn.getAttribute('data-side');
+      if (!symbol || !side) return;
+      btn.disabled = true;
+      fetch('/api/trade/close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: symbol, side: side })
+      })
+        .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+        .then(function (r) {
+          if (r.ok && r.data && r.data.ok) {
+            alert('Position closed successfully.');
+            pollPositions();
+            pollAccount();
+          } else {
+            alert('Close failed: ' + ((r.data && (r.data.detail || r.data.message)) || 'Unknown error'));
+          }
+        })
+        .catch(function (e) {
+          alert('Close failed: ' + e.message);
+        })
+        .finally(function () { btn.disabled = false; });
+    }
+
+    btnLong.addEventListener('click', function () {
+      const symbol = (manualSymbol.value || 'BTCUSDT').trim().toUpperCase();
+      const usd = parseFloat(manualAmount.value);
+      const lev = parseFloat(manualLeverage.value) || 5;
+      if (isNaN(usd) || usd <= 0) { alert('Enter a valid trade amount (USD).'); return; }
+      btnLong.disabled = true;
+      fetch('/api/trade/manual', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: symbol, usd_amount: usd, leverage: lev, side: 'Buy' })
+      })
+        .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+        .then(function (r) {
+          if (r.ok && r.data.ok) {
+            alert('LONG order executed.');
+            pollPositions();
+            pollAccount();
+          } else {
+            alert('Trade failed: ' + (r.data.detail || r.data.message || 'Unknown error'));
+          }
+        })
+        .catch(function (e) {
+          alert('Trade failed: ' + e.message);
+        })
+        .finally(function () { btnLong.disabled = false; });
+    });
+
+    btnShort.addEventListener('click', function () {
+      const symbol = (manualSymbol.value || 'BTCUSDT').trim().toUpperCase();
+      const usd = parseFloat(manualAmount.value);
+      const lev = parseFloat(manualLeverage.value) || 5;
+      if (isNaN(usd) || usd <= 0) { alert('Enter a valid trade amount (USD).'); return; }
+      btnShort.disabled = true;
+      fetch('/api/trade/manual', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: symbol, usd_amount: usd, leverage: lev, side: 'Sell' })
+      })
+        .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+        .then(function (r) {
+          if (r.ok && r.data.ok) {
+            alert('SHORT order executed.');
+            pollPositions();
+            pollAccount();
+          } else {
+            alert('Trade failed: ' + (r.data.detail || r.data.message || 'Unknown error'));
+          }
+        })
+        .catch(function (e) {
+          alert('Trade failed: ' + e.message);
+        })
+        .finally(function () { btnShort.disabled = false; });
+    });
+
+    function sendMockSignal(side) {
+      const symbol = (manualSymbol.value || 'BTCUSDT').trim().toUpperCase();
+      const usd = parseFloat(manualAmount.value);
+      const lev = parseFloat(manualLeverage.value) || 5;
+      if (isNaN(usd) || usd <= 0) { alert('Enter a valid trade amount (USD) in Manual Trade panel.'); return; }
+      const btn = side === 'Buy' ? btnMockLong : btnMockShort;
+      btn.disabled = true;
+      fetch('/api/trade/mock_signal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: symbol, side: side, usd_amount: usd, leverage: lev })
+      })
+        .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+        .then(function (r) {
+          if (r.ok && r.data && r.data.ok) {
+            alert('Mock signal executed. Check terminal for logs.');
+            pollPositions();
+            pollAccount();
+          } else {
+            alert('Mock signal failed: ' + ((r.data && (r.data.detail || r.data.message)) || 'Unknown error'));
+          }
+        })
+        .catch(function (e) {
+          alert('Mock signal failed: ' + e.message);
+        })
+        .finally(function () { btn.disabled = false; });
+    }
+    btnMockLong.addEventListener('click', function () { sendMockSignal('Buy'); });
+    btnMockShort.addEventListener('click', function () { sendMockSignal('Sell'); });
+
+    setInterval(pollAccount, 2000);
+    setInterval(pollPositions, 2000);
+    pollAccount();
+    pollPositions();
 
     botToggle.addEventListener('click', async () => {
       const on = botToggle.getAttribute('aria-checked') !== 'true';
@@ -86,11 +508,32 @@
         body: JSON.stringify({ on })
       });
       const data = await res.json();
-      botToggle.setAttribute('aria-checked', data.running ? 'true' : 'false');
-      botToggle.classList.toggle('bg-emerald-500', data.running);
-      botToggle.classList.toggle('bg-slate-600', !data.running);
-      botToggle.querySelector('span').classList.toggle('translate-x-5', data.running);
-      botToggle.querySelector('span').classList.toggle('translate-x-1', !data.running);
+      const running = !!data.running;
+      botToggle.setAttribute('aria-checked', running ? 'true' : 'false');
+      botToggle.classList.toggle('bg-emerald-500', running);
+      botToggle.classList.toggle('bg-slate-600', !running);
+      botToggle.querySelector('span').classList.toggle('translate-x-6', running);
+      botToggle.querySelector('span').classList.toggle('translate-x-1', !running);
+    });
+
+    autotradeToggle.addEventListener('click', async () => {
+      const enabled = autotradeToggle.getAttribute('aria-checked') !== 'true';
+      try {
+        const res = await fetch('/api/bot/autotrade', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled })
+        });
+        const data = await res.json();
+        const on = !!data.autotrade_enabled;
+        autotradeToggle.setAttribute('aria-checked', on ? 'true' : 'false');
+        autotradeToggle.classList.toggle('bg-amber-500', on);
+        autotradeToggle.classList.toggle('bg-slate-600', !on);
+        autotradeToggle.querySelector('span').classList.toggle('translate-x-6', on);
+        autotradeToggle.querySelector('span').classList.toggle('translate-x-1', !on);
+      } catch (e) {
+        alert('Failed to update Auto Trade: ' + e.message);
+      }
     });
 
     envForm.addEventListener('submit', async (e) => {
