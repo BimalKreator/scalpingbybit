@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Dashboard – Weak Momentum Reversal</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet" />
+  <style>
+    body { font-family: 'DM Sans', system-ui, sans-serif; }
+    .safe-bottom { padding-bottom: env(safe-area-inset-bottom, 1rem); }
+  </style>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100 antialiased">
+  <div class="max-w-lg mx-auto px-4 py-6 pb-8 safe-bottom">
+    <header class="flex items-center justify-between mb-8">
+      <a href="/" class="text-xl font-semibold tracking-tight text-white">Momentum Reversal</a>
+      <a href="/backtest" class="text-sm text-slate-400 hover:text-white transition">Backtest</a>
+    </header>
+
+    <section class="bg-slate-900/80 rounded-2xl p-5 shadow-xl border border-slate-800 mb-6">
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-sm font-medium text-slate-300">Trading Bot</span>
+        <button type="button" id="botToggle" role="switch" aria-checked="{{ 'true' if bot_running else 'false' }}"
+          class="relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 focus:ring-offset-slate-950 {% if bot_running %}bg-emerald-500{% else %}bg-slate-600{% endif %}">
+          <span class="pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow ring-0 transition {% if bot_running %}translate-x-5{% else %}translate-x-1{% endif %}"></span>
+        </button>
+      </div>
+      <p class="text-xs text-slate-500">Turn the bot ON to run live on Bybit Testnet.</p>
+    </section>
+
+    <section class="bg-slate-900/80 rounded-2xl p-5 shadow-xl border border-slate-800">
+      <h2 class="text-sm font-semibold text-slate-200 mb-4">Strategy parameters</h2>
+      <p class="text-xs text-slate-500 mb-4">Values are saved to your .env file.</p>
+      <form id="envForm" class="space-y-4">
+        <div>
+          <label for="trade_amount_usd" class="block text-xs font-medium text-slate-400 mb-1">Trade amount (USD)</label>
+          <input type="text" id="trade_amount_usd" name="trade_amount_usd" value="{{ trade_amount_usd }}"
+            class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="e.g. 100" />
+        </div>
+        <div>
+          <label for="rsi_length" class="block text-xs font-medium text-slate-400 mb-1">RSI length</label>
+          <input type="text" id="rsi_length" name="rsi_length" value="{{ rsi_length }}"
+            class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="14" />
+        </div>
+        <div>
+          <label for="rsi_overbought" class="block text-xs font-medium text-slate-400 mb-1">RSI overbought</label>
+          <input type="text" id="rsi_overbought" name="rsi_overbought" value="{{ rsi_overbought }}"
+            class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="60" />
+        </div>
+        <div>
+          <label for="rsi_oversold" class="block text-xs font-medium text-slate-400 mb-1">RSI oversold</label>
+          <input type="text" id="rsi_oversold" name="rsi_oversold" value="{{ rsi_oversold }}"
+            class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="40" />
+        </div>
+        <div>
+          <label for="sl_multiplier" class="block text-xs font-medium text-slate-400 mb-1">SL multiplier</label>
+          <input type="text" id="sl_multiplier" name="sl_multiplier" value="{{ sl_multiplier }}"
+            class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="1.0" />
+        </div>
+        <div>
+          <label for="tp_multiplier" class="block text-xs font-medium text-slate-400 mb-1">TP multiplier</label>
+          <input type="text" id="tp_multiplier" name="tp_multiplier" value="{{ tp_multiplier }}"
+            class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="2.0" />
+        </div>
+        <button type="submit" class="w-full rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-3 px-4 transition active:scale-[0.98]">
+          Save to .env
+        </button>
+      </form>
+      <p id="saveStatus" class="mt-3 text-xs text-slate-500 hidden">Saved.</p>
+    </section>
+  </div>
+
+  <script>
+    const botToggle = document.getElementById('botToggle');
+    const envForm = document.getElementById('envForm');
+    const saveStatus = document.getElementById('saveStatus');
+
+    botToggle.addEventListener('click', async () => {
+      const on = botToggle.getAttribute('aria-checked') !== 'true';
+      const res = await fetch('/api/bot/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ on })
+      });
+      const data = await res.json();
+      botToggle.setAttribute('aria-checked', data.running ? 'true' : 'false');
+      botToggle.classList.toggle('bg-emerald-500', data.running);
+      botToggle.classList.toggle('bg-slate-600', !data.running);
+      botToggle.querySelector('span').classList.toggle('translate-x-5', data.running);
+      botToggle.querySelector('span').classList.toggle('translate-x-1', !data.running);
+    });
+
+    envForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fd = new FormData(envForm);
+      const res = await fetch('/api/env', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.ok) {
+        saveStatus.textContent = 'Saved.';
+        saveStatus.classList.remove('hidden');
+        setTimeout(() => saveStatus.classList.add('hidden'), 2000);
+      }
+    });
+  </script>
+</body>
+</html>
