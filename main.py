@@ -8,6 +8,7 @@ import math
 import threading
 import time
 from datetime import datetime
+import requests
 import pandas as pd
 import pandas_ta as ta
 from pybit.unified_trading import WebSocket, WebSocketTrading
@@ -15,9 +16,10 @@ from pybit.unified_trading import HTTP
 from dotenv import load_dotenv
 import os
 
+
 # Load API keys and strategy params from .env (also try 'env' if .env is missing)
-load_dotenv()
-load_dotenv("env")
+load_dotenv(override=True)
+load_dotenv("env", override=True)
 
 BYBIT_API_KEY = os.getenv("BYBIT_API_KEY")
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
@@ -54,6 +56,7 @@ _last_sl_price: float | None = None
 _last_tp_price: float | None = None
 _last_position_was_reverse: bool = False
 _monitor_had_position: bool = False
+_manual_reversal_allowed: bool = False
 
 # Real-time position state from private WebSocket (linear, our SYMBOL only)
 _position_size: float = 0.0
@@ -197,6 +200,7 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["RSI"] = ta.rsi(df["close"], length=RSI_LENGTH)
     df["body_size"] = (df["close"] - df["open"]).abs()
     df["momentum_decreasing"] = df["body_size"] < df["body_size"].shift(1)
+    # Volume rule: strictly volume < volume_prev (no equality)
     df["volume_decreasing"] = df["volume"] < df["volume"].shift(1)
     return df
 
@@ -407,7 +411,7 @@ async def execute_chunk_order(side: str, total_qty: float) -> None:
 
         if order_id is None or ret_code != 0:
             await asyncio.sleep(loop_delay)
-            continue
+            break
 
         fill_future: asyncio.Future[float] = loop.create_future()
         with _pending_fills_lock:
@@ -424,6 +428,8 @@ async def execute_chunk_order(side: str, total_qty: float) -> None:
             with _pending_fills_lock:
                 _pending_fills.pop(order_id, None)
 
+        if filled_qty == 0:
+            break
         remaining_qty -= filled_qty
         await asyncio.sleep(loop_delay)
 
@@ -506,8 +512,8 @@ async def execute_strategy_signal(
         print("[Mock Signal] Invalid current_price, usd_amount or leverage. Aborting.")
         return
 
-    load_dotenv()
-    load_dotenv("env")
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
     sl_mult = float(os.getenv("SL_MULTIPLIER", "1.0"))
     tp_mult = float(os.getenv("TP_MULTIPLIER", "2.0"))
     range_ = current_price * MOCK_RANGE_PCT
@@ -570,10 +576,22 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
     sl_str = f"{sl:.2f}"
     tp_str = f"{tp:.2f}"
 
-    load_dotenv()
-    load_dotenv("env")
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
     trade_amount_usd = float(os.getenv("TRADE_AMOUNT_USD", "100"))
     leverage = float(os.getenv("LEVERAGE", "5"))
+    # Balance safety: do not trade if trade amount exceeds available balance
+    try:
+        resp = HTTP_CLIENT.get_wallet_balance(accountType="UNIFIED")
+        if resp.get("retCode") == 0:
+            lst = (resp.get("result") or {}).get("list") or []
+            available = float(lst[0].get("totalAvailableBalance", 0)) if lst else 0.0
+            if trade_amount_usd > available:
+                print(f"[BALANCE ERROR] Trade amount ${trade_amount_usd:.2f} exceeds available balance ${available:.2f}. Skipping trade.")
+                return
+    except Exception as e:
+        print(f"[BALANCE ERROR] Failed to fetch wallet balance: {e}. Skipping trade.")
+        return
     b_bid, b_ask, _, _ = _get_orderbook_l1()
     current_price = b_ask if side == "Buy" else b_bid
     if current_price <= 0:
@@ -648,32 +666,37 @@ def has_valid_entry_signal_now(df: pd.DataFrame) -> tuple[str | None, pd.Series 
     return (None, None)
 
 
+def register_manual_trade(side: str, entry_price: float, sl_price: float, tp_price: float, allow_reversal: bool) -> None:
+    """Register a manual trade so reversal logic can use its SL/TP and allow reversal when Auto-Trade is OFF."""
+    global _last_position_side, _last_sl_price, _last_tp_price, _last_position_was_reverse, _last_signal_candle, _manual_reversal_allowed
+    _last_position_side = side
+    _last_sl_price = sl_price
+    _last_tp_price = tp_price
+    _last_position_was_reverse = False
+    _manual_reversal_allowed = allow_reversal
+    sl_mult = float(os.getenv("SL_MULTIPLIER", "1.0"))
+    sl_dist = abs(entry_price - sl_price)
+    fake_range = sl_dist / sl_mult if sl_mult > 0 else sl_dist
+    _last_signal_candle = {"high": entry_price + fake_range, "low": entry_price, "close": entry_price}
+
+
 def _was_closed_by_sl() -> bool:
-    """True if the most recently closed position was closed by stop loss (HTTP closed PnL)."""
+    """
+    True if the closed position was likely closed by stop loss.
+    Uses local orderbook price (no API): current_price = mid of bid/ask;
+    if current price is closer to (or same distance as) last SL than to last TP, treat as SL close.
+    Ensures instant reversal triggering without API delays.
+    """
     global _last_sl_price, _last_tp_price
     if _last_sl_price is None or _last_tp_price is None:
         return False
-    try:
-        get_closed = getattr(HTTP_CLIENT, "get_closed_pnl", None) or getattr(
-            HTTP_CLIENT, "get_closed_pnl_list", None
-        )
-        if get_closed is None:
-            return False
-        resp = get_closed(category="linear", symbol=SYMBOL, limit=1)
-        if resp.get("retCode") != 0:
-            return False
-        lst = resp.get("result", {}).get("list", [])
-        if not lst:
-            return False
-        rec = lst[0]
-        exit_price = float(rec.get("avgExitPrice", 0) or rec.get("exitPrice", 0) or 0)
-        if exit_price <= 0:
-            return False
-        dist_sl = abs(exit_price - _last_sl_price)
-        dist_tp = abs(exit_price - _last_tp_price)
-        return dist_sl <= dist_tp
-    except Exception:
+    b_bid, b_ask, _, _ = _get_orderbook_l1()
+    if b_bid <= 0 or b_ask <= 0:
         return False
+    current_price = (b_bid + b_ask) / 2
+    dist_sl = abs(current_price - _last_sl_price)
+    dist_tp = abs(current_price - _last_tp_price)
+    return dist_sl <= dist_tp
 
 
 def on_position_closed() -> None:
@@ -683,7 +706,7 @@ def on_position_closed() -> None:
     If closed by SL: immediately enter reversal (opposite side, same Signal_Range) or take new strategy signal.
     Limit: only one reversal per stop-out; if reversal also hits SL, wait for fresh signal.
     """
-    global _monitor_had_position, _last_position_side, _last_signal_candle, _last_position_was_reverse, _loop, _signal_queue
+    global _monitor_had_position, _last_position_side, _last_signal_candle, _last_position_was_reverse, _loop, _signal_queue, _manual_reversal_allowed
     if _last_position_side is None or _last_signal_candle is None or _loop is None or _signal_queue is None:
         return
     if not _was_closed_by_sl():
@@ -691,7 +714,7 @@ def on_position_closed() -> None:
     if _last_position_was_reverse:
         print("Reverse trade hit SL – no further reverse (limit 1 reverse per loss).")
         return
-    if not _is_autotrade_enabled():
+    if not _is_autotrade_enabled() and not _manual_reversal_allowed:
         print("Signal detected but Auto Trade is OFF. Skipping execution.")
         return
     df = pd.DataFrame(KLINES)
@@ -702,10 +725,12 @@ def on_position_closed() -> None:
         print("New valid entry signal after SL – taking new signal, cancelling reverse.")
         row_dict = row.to_dict() if hasattr(row, "to_dict") else dict(row)
         _loop.call_soon_threadsafe(_signal_queue.put_nowait, ("entry", side, row_dict, False))
+        _manual_reversal_allowed = False
         return
     reverse_side = "Sell" if _last_position_side == "Buy" else "Buy"
     print("No new signal after SL – placing reverse trade (same candle range).")
     _loop.call_soon_threadsafe(_signal_queue.put_nowait, ("entry", reverse_side, _last_signal_candle, True))
+    _manual_reversal_allowed = False
 
 
 def handle_position_message(message: dict) -> None:
@@ -738,8 +763,8 @@ def handle_position_message(message: dict) -> None:
 
 def _is_autotrade_enabled() -> bool:
     """Reload .env and return True if AUTO_TRADE_ENABLED is True/true/1."""
-    load_dotenv()
-    load_dotenv("env")
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
     v = os.getenv("AUTO_TRADE_ENABLED", "false").strip().lower()
     return v in ("true", "1")
 
@@ -775,6 +800,7 @@ def check_signals(df: pd.DataFrame) -> None:
     if current_bullish and prev_bullish and md and vd and rsi > RSI_OVERBOUGHT:
         print(f"[{datetime.now().isoformat()}] 🔴 SHORT SIGNAL DETECTED ({SYMBOL})")
         LAST_SIGNAL_CANDLE_START = candle_start
+        _persist_last_signal_candle_start(candle_start)
         if not _is_autotrade_enabled():
             print("Signal detected but Auto Trade is OFF. Skipping execution.")
             return
@@ -786,6 +812,7 @@ def check_signals(df: pd.DataFrame) -> None:
     if current_bearish and prev_bearish and md and vd and rsi < RSI_OVERSOLD:
         print(f"[{datetime.now().isoformat()}] 🟢 LONG SIGNAL DETECTED ({SYMBOL})")
         LAST_SIGNAL_CANDLE_START = candle_start
+        _persist_last_signal_candle_start(candle_start)
         if not _is_autotrade_enabled():
             print("Signal detected but Auto Trade is OFF. Skipping execution.")
             return
@@ -797,9 +824,22 @@ def check_signals(df: pd.DataFrame) -> None:
 DISPLAY_COLUMNS = ["close", "volume", "volume_decreasing", "RSI", "momentum_decreasing"]
 
 
+def _persist_last_signal_candle_start(candle_start: int) -> None:
+    """Write LAST_SIGNAL_CANDLE_START to .live_strategy_state.json so restarts don't repeat signal on same candle."""
+    global live_strategy_state
+    with _live_state_lock:
+        snapshot = dict(live_strategy_state)
+        snapshot["last_signal_candle_start"] = candle_start
+    try:
+        with open(_LIVE_STATE_PATH, "w", encoding="utf-8") as f:
+            _json.dump(snapshot, f, indent=2)
+    except Exception as e:
+        print(f"Warning: could not persist last_signal_candle_start: {e}")
+
+
 def _update_live_strategy_state(df: pd.DataFrame) -> None:
     """Update live_strategy_state from latest closed candle; rules match entry logic (both candles same color, etc.)."""
-    global live_strategy_state
+    global live_strategy_state, LAST_SIGNAL_CANDLE_START
     if len(df) < 3:
         return
     row = df.iloc[-2]
@@ -869,6 +909,7 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
         "indicators": indicators,
         "conditions": {"long": long_rules, "short": short_rules},
         "status": status,
+        "last_signal_candle_start": LAST_SIGNAL_CANDLE_START,
     }
     with _live_state_lock:
         live_strategy_state.clear()
@@ -921,7 +962,12 @@ async def _signal_consumer() -> None:
 
 async def main_async() -> None:
     """Entry point for the strategy loop. Can be run via asyncio.run() or asyncio.create_task() from app."""
-    global ws_kline, ws_orderbook, ws_private, ws_trade, _loop, _signal_queue
+    # Log public IP to verify server is using IPv4
+    try:
+        print(f"SERVER PUBLIC IP: {requests.get('https://api.ipify.org', timeout=5).text}")
+    except Exception as e:
+        print(f"SERVER PUBLIC IP: (fetch failed: {e})")
+    global ws_kline, ws_orderbook, ws_private, ws_trade, _loop, _signal_queue, LAST_SIGNAL_CANDLE_START
     api_key = BYBIT_API_KEY or ""
     api_secret = BYBIT_API_SECRET or ""
     if not api_key or not api_secret:
@@ -929,6 +975,17 @@ async def main_async() -> None:
         return
 
     print(f"STRATEGY START: Monitoring {SYMBOL}")
+    # Load last signal candle from file so we don't repeat signal on same candle after restart
+    try:
+        if _LIVE_STATE_PATH.exists():
+            with open(_LIVE_STATE_PATH, "r", encoding="utf-8") as f:
+                loaded = _json.load(f)
+            prev = loaded.get("last_signal_candle_start")
+            if prev is not None:
+                LAST_SIGNAL_CANDLE_START = int(prev)
+                print(f"[bot] Loaded last_signal_candle_start from file: {LAST_SIGNAL_CANDLE_START}")
+    except Exception as e:
+        print(f"[bot] Could not load last_signal_candle_start: {e}")
     _loop = asyncio.get_running_loop()
     _signal_queue = asyncio.Queue()
     with _live_state_lock:

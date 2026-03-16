@@ -214,10 +214,23 @@ env_jinja = Environment(
 )
 
 
-# In-memory bot running state (for dashboard toggle)
-BOT_RUNNING = False
+# In-memory bot running state (for dashboard toggle); True by default so PM2 restarts always keep the bot active
+BOT_RUNNING = True
 # Background task running main_async from main.py when System Power is ON
 _bot_task: asyncio.Task | None = None
+
+
+@app.on_event("startup")
+async def startup_start_bot():
+    """Start the strategy task (main_async) automatically when the server/PM2 starts.
+    Sets bot running state so the dashboard UI shows System Power as ON by default."""
+    global BOT_RUNNING, _bot_task
+    BOT_RUNNING = True
+    if _bot_task is None or _bot_task.done():
+        from main import main_async
+        _bot_task = asyncio.create_task(main_async())
+        print("[bot] Strategy task started on startup (main_async).")
+    print("[bot] Startup: bot running = True (System Power ON)")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -463,6 +476,9 @@ class ManualTradeBody(BaseModel):
     usd_amount: float
     leverage: float = 5.0
     side: str  # "Buy" or "Sell"
+    sl_pct: float = 0.5
+    tp_pct: float = 1.0
+    allow_reversal: bool = False
 
 
 class CloseTradeBody(BaseModel):
@@ -517,6 +533,18 @@ async def api_trade_manual(body: ManualTradeBody):
         success, err = await asyncio.to_thread(_run_chunk_order_sync, body.symbol, body.side, total_qty)
         if not success:
             raise HTTPException(status_code=400, detail=err or "Chunk execution failed")
+        # Set SL/TP after successful chunk execution (percentage-based from manual form)
+        sl_dist = price * (body.sl_pct / 100.0)
+        tp_dist = price * (body.tp_pct / 100.0)
+        if body.side == "Buy":
+            sl, tp = price - sl_dist, price + tp_dist
+        else:
+            sl, tp = price + sl_dist, price - tp_dist
+        sl_str = f"{sl:.2f}"
+        tp_str = f"{tp:.2f}"
+        await asyncio.to_thread(lambda: _set_trading_stop_sync(client, body.symbol, sl_str, tp_str))
+        from main import register_manual_trade
+        register_manual_trade(body.side, price, sl, tp, body.allow_reversal)
         return {"ok": True, "message": "Trade executed"}
     except HTTPException:
         raise

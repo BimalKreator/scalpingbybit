@@ -115,6 +115,23 @@
                 class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
             </div>
           </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label for="manualSlPct" class="block text-xs font-medium text-slate-400 mb-1">SL (%)</label>
+              <input type="number" id="manualSlPct" name="sl_pct" value="0.5" min="0" step="0.01" placeholder="0.5"
+                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
+            </div>
+            <div>
+              <label for="manualTpPct" class="block text-xs font-medium text-slate-400 mb-1">TP (%)</label>
+              <input type="number" id="manualTpPct" name="tp_pct" value="1.0" min="0" step="0.01" placeholder="1.0"
+                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <input type="checkbox" id="manualAllowReversal" name="allow_reversal" checked
+              class="rounded border-slate-600 bg-slate-800 text-emerald-500 focus:ring-emerald-500" />
+            <label for="manualAllowReversal" class="text-xs font-medium text-slate-400">Allow Reversal on SL</label>
+          </div>
           <div class="flex gap-3">
             <button type="button" id="btnLong" class="flex-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-3 px-4 transition active:scale-[0.98]">
               LONG
@@ -411,16 +428,23 @@
         .finally(function () { btn.disabled = false; });
     }
 
+    const manualSlPct = document.getElementById('manualSlPct');
+    const manualTpPct = document.getElementById('manualTpPct');
+    const manualAllowReversal = document.getElementById('manualAllowReversal');
+
     btnLong.addEventListener('click', function () {
       const symbol = (manualSymbol.value || 'BTCUSDT').trim().toUpperCase();
       const usd = parseFloat(manualAmount.value);
       const lev = parseFloat(manualLeverage.value) || 5;
+      const slPct = parseFloat(manualSlPct.value) || 0.5;
+      const tpPct = parseFloat(manualTpPct.value) || 1.0;
+      const allowReversal = manualAllowReversal.checked;
       if (isNaN(usd) || usd <= 0) { alert('Enter a valid trade amount (USD).'); return; }
       btnLong.disabled = true;
       fetch('/api/trade/manual', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol: symbol, usd_amount: usd, leverage: lev, side: 'Buy' })
+        body: JSON.stringify({ symbol: symbol, usd_amount: usd, leverage: lev, side: 'Buy', sl_pct: slPct, tp_pct: tpPct, allow_reversal: allowReversal })
       })
         .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
         .then(function (r) {
@@ -442,12 +466,15 @@
       const symbol = (manualSymbol.value || 'BTCUSDT').trim().toUpperCase();
       const usd = parseFloat(manualAmount.value);
       const lev = parseFloat(manualLeverage.value) || 5;
+      const slPct = parseFloat(manualSlPct.value) || 0.5;
+      const tpPct = parseFloat(manualTpPct.value) || 1.0;
+      const allowReversal = manualAllowReversal.checked;
       if (isNaN(usd) || usd <= 0) { alert('Enter a valid trade amount (USD).'); return; }
       btnShort.disabled = true;
       fetch('/api/trade/manual', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol: symbol, usd_amount: usd, leverage: lev, side: 'Sell' })
+        body: JSON.stringify({ symbol: symbol, usd_amount: usd, leverage: lev, side: 'Sell', sl_pct: slPct, tp_pct: tpPct, allow_reversal: allowReversal })
       })
         .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
         .then(function (r) {
