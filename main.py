@@ -400,19 +400,26 @@ def _position_risk_payload() -> dict:
         size = max(_min_order_qty, position_value_usd / ent)
     sl_risk_usd = abs(ent - slf) * size
     tp_gain_usd = abs(tpf - ent) * size
-    # Bar: 0% = SL (left, red), 100% = TP (right, green)
-    if side.lower() == "sell":
-        span = slf - tpf
-        if span < 1e-12:
-            span = 1e-12
-        entry_pct = max(0.0, min(100.0, (slf - ent) / span * 100.0))
-        live_pct = max(0.0, min(100.0, (slf - float(mid)) / span * 100.0))
+    # Progress bar: 0% = SL (left), 100% = TP (right). Explicit LONG vs SHORT math for dashboard.
+    live_mid = float(mid)
+    side_l = side.lower()
+    is_short = side_l in ("sell", "short")
+    if is_short:
+        full_range = slf - tpf
+        if full_range > 0:
+            entry_pct = ((slf - ent) / full_range) * 100.0
+            live_mid_pct = ((slf - live_mid) / full_range) * 100.0
+        else:
+            entry_pct = 50.0
+            live_mid_pct = 50.0
     else:
-        span = tpf - slf
-        if span < 1e-12:
-            span = 1e-12
-        entry_pct = max(0.0, min(100.0, (ent - slf) / span * 100.0))
-        live_pct = max(0.0, min(100.0, (float(mid) - slf) / span * 100.0))
+        full_range = tpf - slf
+        if full_range > 0:
+            entry_pct = ((ent - slf) / full_range) * 100.0
+            live_mid_pct = ((live_mid - slf) / full_range) * 100.0
+        else:
+            entry_pct = 50.0
+            live_mid_pct = 50.0
     return {
         "open": True,
         "has_levels": True,
@@ -424,9 +431,9 @@ def _position_risk_payload() -> dict:
         "sl_amount_usd": round(-sl_risk_usd, 6),
         "tp_amount_usd": round(tp_gain_usd, 6),
         "position_value_usd": round(position_value_usd, 2),
-        "live_mid": round(float(mid), 4),
-        "entry_pct": round(entry_pct, 2),
-        "live_mid_pct": round(live_pct, 2),
+        "live_mid": round(live_mid, 4),
+        "entry_pct": round(float(entry_pct), 2),
+        "live_mid_pct": round(float(live_mid_pct), 2),
     }
 
 
