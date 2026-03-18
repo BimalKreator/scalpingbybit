@@ -1,21 +1,21 @@
 {
   "symbol": "BTCUSDT",
-  "price": 73992.5,
+  "price": 74127.5,
   "indicators": {
-    "RSI": 54.64,
-    "momentum_decreasing": false,
-    "volume_decreasing": false,
-    "body_size": 21.5,
-    "open": 73971.0,
-    "close": 73992.5,
-    "volume": 4976.0,
-    "Expected_Profit_Pct": 0.1
+    "RSI": 86.98,
+    "momentum_decreasing": true,
+    "volume_decreasing": true,
+    "body_size": 0.5,
+    "open": 74128.0,
+    "close": 74127.5,
+    "volume": 2151.0,
+    "Expected_Profit_Pct": 0.02
   },
   "conditions": {
     "long": [
       {
         "name": "Current Candle Bearish (open > close)",
-        "met": false
+        "met": true
       },
       {
         "name": "Previous Candle Bearish",
@@ -27,11 +27,11 @@
       },
       {
         "name": "Momentum Decreasing",
-        "met": false
+        "met": true
       },
       {
         "name": "Volume Decreasing",
-        "met": false
+        "met": true
       },
       {
         "name": "RSI < 40.0",
@@ -39,13 +39,13 @@
       },
       {
         "name": "Expected Profit >= 0.04%",
-        "met": true
+        "met": false
       }
     ],
     "short": [
       {
         "name": "Current Candle Bullish (close > open)",
-        "met": true
+        "met": false
       },
       {
         "name": "Previous Candle Bullish",
@@ -53,47 +53,36 @@
       },
       {
         "name": "Both Candles Same Color (Bullish)",
-        "met": true
+        "met": false
       },
       {
         "name": "Momentum Decreasing",
-        "met": false
+        "met": true
       },
       {
         "name": "Volume Decreasing",
-        "met": false
+        "met": true
       },
       {
         "name": "RSI > 60.0",
-        "met": false
+        "met": true
       },
       {
         "name": "Expected Profit >= 0.04%",
-        "met": true
+        "met": false
       }
     ]
   },
   "status": "Position Open",
-  "last_signal_candle_start": 1773821520000,
+  "last_signal_candle_start": 1773824940000,
   "position_risk": {
     "open": true,
-    "has_levels": true,
-    "side": "Buy",
-    "entry_price": 73777.0,
-    "size": 1.0,
-    "sl_price": 73759.0,
-    "tp_price": 73831.0,
-    "sl_amount_usd": -0.024398,
-    "tp_amount_usd": 0.073194,
-    "position_value_usd": 100.0,
-    "live_mid": 73997.0,
-    "entry_pct": 25.0,
-    "live_mid_pct": 100.0
+    "has_levels": false
   },
-  "sl_price": 73759.0,
-  "tp_price": 73831.0,
-  "entry_price": 73777.0,
-  "position_size": 1.0,
-  "sl_amount_usd": -0.024398,
-  "tp_amount_usd": 0.073194
+  "sl_price": null,
+  "tp_price": null,
+  "entry_price": null,
+  "position_size": 0.0,
+  "sl_amount_usd": null,
+  "tp_amount_usd": null
 }

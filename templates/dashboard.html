@@ -246,18 +246,23 @@
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
       <section class="card">
         <h2 class="text-sm font-semibold text-slate-200 mb-4">Strategy Parameters</h2>
-        <p class="text-xs text-slate-500 mb-4">Saved to .env. Symbol, size, RSI, SL/TP multipliers, min profit %.</p>
+        <p class="text-xs text-slate-500 mb-4">Saved to .env. Symbol, size, opening balance, RSI, SL/TP multipliers, min profit %.</p>
         <form id="envForm" class="space-y-4">
           <div>
             <label for="trading_symbol" class="block text-xs font-medium text-slate-400 mb-1">Trading Symbol</label>
             <input type="text" id="trading_symbol" name="trading_symbol" value="{{ trading_symbol }}"
               class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="BTCUSDT" />
           </div>
-          <div class="grid grid-cols-2 gap-3">
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label for="trade_amount_usd" class="block text-xs font-medium text-slate-400 mb-1">Trade amount (USD)</label>
               <input type="text" id="trade_amount_usd" name="trade_amount_usd" value="{{ trade_amount_usd }}"
                 class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="e.g. 100" />
+            </div>
+            <div>
+              <label for="initial_capital" class="block text-xs font-medium text-slate-400 mb-1">Opening balance / Initial capital</label>
+              <input type="text" id="initial_capital" name="initial_capital" value="{{ initial_capital }}"
+                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="e.g. 10000" />
             </div>
             <div>
               <label for="leverage" class="block text-xs font-medium text-slate-400 mb-1">Leverage (x)</label>

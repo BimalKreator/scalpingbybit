@@ -126,7 +126,6 @@ if _env_path != ENV_PATH_FALLBACK:
     load_dotenv(str(ENV_PATH_FALLBACK))
 
 # Bybit HTTP client for account, positions, and manual chunk execution (REST-only)
-REFERENCE_BALANCE = 67.56  # Overall Profit = Current Balance - REFERENCE_BALANCE
 
 
 def _app_exchange_id() -> str:
@@ -241,6 +240,7 @@ async def dashboard_page():
         sl_multiplier=vars.get("SL_MULTIPLIER", "1.0"),
         tp_multiplier=vars.get("TP_MULTIPLIER", "2.0"),
         min_profit_pct=vars.get("MIN_PROFIT_PCT", "0.5"),
+        initial_capital=vars.get("INITIAL_CAPITAL", "0.0"),
         bot_running=BOT_RUNNING,
         autotrade_enabled=_autotrade_enabled_from_env(),
     )
@@ -263,6 +263,7 @@ async def api_update_env(
     sl_multiplier: str = Form(None),
     tp_multiplier: str = Form(None),
     min_profit_pct: str = Form(None),
+    initial_capital: str = Form(None),
 ):
     print("[env] POST /api/env: updating .env with form values")
     updates = {}
@@ -295,6 +296,8 @@ async def api_update_env(
         updates["TP_MULTIPLIER"] = tp_multiplier
     if min_profit_pct is not None:
         updates["MIN_PROFIT_PCT"] = min_profit_pct
+    if initial_capital is not None:
+        updates["INITIAL_CAPITAL"] = (initial_capital or "0.0").strip()
     if updates:
         write_env_vars(updates)
         print(f"[env] Saved keys: {list(updates.keys())}")
@@ -304,7 +307,11 @@ async def api_update_env(
 
 @app.get("/api/account")
 async def api_account():
-    """Fetch Available Balance and Overall Profit (Current Balance - 67.56)."""
+    """Available balance + overall profit (equity/net_equity − INITIAL_CAPITAL from .env)."""
+    try:
+        initial_capital = float(read_env_vars().get("INITIAL_CAPITAL", "0.0") or "0.0")
+    except (TypeError, ValueError):
+        initial_capital = 0.0
     if _app_exchange_id() == "delta_india":
         k, s = _delta_keys()
         print(f"[api/account] Delta keys present: {bool(k and s)}")
@@ -324,13 +331,15 @@ async def api_account():
             total_available = 0.0
             if isinstance(rows, list):
                 for w in rows:
-                    try:
-                        total_available += float(w.get("available_balance") or 0)
-                    except (TypeError, ValueError):
-                        pass
+                    asset_sym = str(w.get("asset_symbol", "")).upper()
+                    if asset_sym in ("USDT", "USD"):
+                        try:
+                            total_available += float(w.get("available_balance") or 0)
+                        except (TypeError, ValueError):
+                            pass
             if total_available <= 0 and net_equity > 0:
                 total_available = net_equity
-            overall_profit = net_equity - REFERENCE_BALANCE
+            overall_profit = net_equity - initial_capital
             return {
                 "availableBalance": round(total_available, 2),
                 "overallProfit": round(overall_profit, 2),
@@ -349,11 +358,11 @@ async def api_account():
             return JSONResponse(status_code=502, content={"error": msg})
         lst = (resp.get("result") or {}).get("list") or []
         if not lst:
-            return {"availableBalance": 0.0, "overallProfit": -REFERENCE_BALANCE}
+            return {"availableBalance": 0.0, "overallProfit": round(-initial_capital, 2)}
         acc = lst[0]
         total_equity = float(acc.get("totalEquity") or 0)
         total_available = float(acc.get("totalAvailableBalance") or 0)
-        overall_profit = total_equity - REFERENCE_BALANCE
+        overall_profit = total_equity - initial_capital
         return {
             "availableBalance": round(total_available, 2),
             "overallProfit": round(overall_profit, 2),
