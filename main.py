@@ -358,13 +358,25 @@ async def _async_local_sl_tp_close(trigger_mid: float) -> None:
 
 
 def _position_risk_payload() -> dict:
-    """SL/TP dollar risk and bar geometry for dashboard (live_mid from L1)."""
+    """
+    Dashboard risk bar from bot-local SL/TP (_last_sl_price / _last_tp_price), not exchange stops.
+    has_levels when local prices are valid (> 0). Dollar risk = |entry−sl|×size, reward = |tp−entry|×size.
+    """
     if not get_open_position():
         return {"open": False}
-    sl = _last_sl_price
-    tp = _last_tp_price
-    if sl is None or tp is None:
-        return {"open": True, "has_levels": False}
+    try:
+        slf = float(_last_sl_price) if _last_sl_price is not None else None
+        tpf = float(_last_tp_price) if _last_tp_price is not None else None
+    except (TypeError, ValueError):
+        slf, tpf = None, None
+    has_levels = bool(
+        slf is not None
+        and tpf is not None
+        and slf > 0
+        and tpf > 0
+    )
+    if not has_levels:
+        return {"open": True, "has_levels": False, "side": _last_position_side}
     with _position_lock:
         size = float(_position_size)
         entry = _position_entry_price
@@ -374,43 +386,41 @@ def _position_risk_payload() -> dict:
     if entry is None or entry <= 0:
         entry = mid
     if entry is None or entry <= 0:
-        return {"open": True, "has_levels": False, "side": _last_position_side}
+        entry = (slf + tpf) / 2.0
     if mid is None or mid <= 0:
         mid = float(entry)
     side = (_last_position_side or "Buy").strip()
+    ent = float(entry)
     load_dotenv(override=True)
     load_dotenv("env", override=True)
     trade_amt = float(os.getenv("TRADE_AMOUNT_USD", os.getenv("trade_amount", "100")))
     lev = float(os.getenv("LEVERAGE", os.getenv("leverage", "10")))
     position_value_usd = trade_amt * lev
-    ent = float(entry)
-    if ent <= 0:
-        return {"open": True, "has_levels": False, "side": side}
-    sl_pct_move = abs(ent - float(sl)) / ent
-    tp_pct_move = abs(float(tp) - ent) / ent
-    sl_risk_usd = sl_pct_move * position_value_usd
-    tp_gain_usd = tp_pct_move * position_value_usd
+    if size <= 1e-18 and ent > 0:
+        size = max(_min_order_qty, position_value_usd / ent)
+    sl_risk_usd = abs(ent - slf) * size
+    tp_gain_usd = abs(tpf - ent) * size
     # Bar: 0% = SL (left, red), 100% = TP (right, green)
     if side.lower() == "sell":
-        span = float(sl) - float(tp)
+        span = slf - tpf
         if span < 1e-12:
             span = 1e-12
-        entry_pct = max(0.0, min(100.0, (float(sl) - float(entry)) / span * 100.0))
-        live_pct = max(0.0, min(100.0, (float(sl) - float(mid)) / span * 100.0))
+        entry_pct = max(0.0, min(100.0, (slf - ent) / span * 100.0))
+        live_pct = max(0.0, min(100.0, (slf - float(mid)) / span * 100.0))
     else:
-        span = float(tp) - float(sl)
+        span = tpf - slf
         if span < 1e-12:
             span = 1e-12
-        entry_pct = max(0.0, min(100.0, (float(entry) - float(sl)) / span * 100.0))
-        live_pct = max(0.0, min(100.0, (float(mid) - float(sl)) / span * 100.0))
+        entry_pct = max(0.0, min(100.0, (ent - slf) / span * 100.0))
+        live_pct = max(0.0, min(100.0, (float(mid) - slf) / span * 100.0))
     return {
         "open": True,
         "has_levels": True,
         "side": side,
-        "entry_price": round(float(entry), 4),
+        "entry_price": round(ent, 4),
         "size": round(size, 6),
-        "sl_price": round(float(sl), 4),
-        "tp_price": round(float(tp), 4),
+        "sl_price": round(slf, 4),
+        "tp_price": round(tpf, 4),
         "sl_amount_usd": round(-sl_risk_usd, 6),
         "tp_amount_usd": round(tp_gain_usd, 6),
         "position_value_usd": round(position_value_usd, 2),
