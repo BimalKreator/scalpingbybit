@@ -46,9 +46,9 @@ def _parse_range_to_ts(start_date: str, end_date: str) -> tuple[int, int]:
     return int(to_dt(s).timestamp()), int(to_dt(e).timestamp())
 
 
-def fetch_klines_delta(symbol: str, start_str: str, end_str: str) -> pd.DataFrame:
+def _fetch_klines_delta_uncached(symbol: str, start_str: str, end_str: str) -> pd.DataFrame:
     """
-    Fetch 1m candles from https://api.delta.exchange/v2/history/candles.
+    Fetch 1m candles from https://api.delta.exchange/v2/history/candles (no local cache).
     Paginates in chunks of up to 1000 bars; start/end in seconds.
     """
     sym = _delta_symbol(symbol)
@@ -123,13 +123,26 @@ def fetch_klines_delta(symbol: str, start_str: str, end_str: str) -> pd.DataFram
     return df
 
 
-def fetch_klines_bybit(
+def fetch_klines_delta(symbol: str, start_str: str, end_str: str) -> pd.DataFrame:
+    """1m Delta candles with local CSV cache (data/historical_klines_{SYMBOL}_delta_india_1m.csv)."""
+    from data_manager import load_klines_with_cache
+
+    return load_klines_with_cache(
+        "delta_india",
+        symbol,
+        start_str,
+        end_str,
+        _fetch_klines_delta_uncached,
+    )
+
+
+def _fetch_klines_bybit_uncached(
     symbol: str,
     start_date: str,
     end_date: str,
     timeframe: str = "1m",
 ) -> pd.DataFrame:
-    """Fetch historical OHLCV from Bybit (linear perpetual) via CCXT."""
+    """Fetch historical OHLCV from Bybit (linear perpetual) via CCXT — uncached."""
     print(f"[fetch Bybit] symbol={symbol}, start={start_date}, end={end_date}")
     exchange = ccxt.bybit({"options": {"defaultType": "linear"}})
     if "Z" not in start_date and "+" not in start_date:
@@ -163,6 +176,24 @@ def fetch_klines_bybit(
         df[col] = pd.to_numeric(df[col], errors="coerce")
     print(f"[fetch Bybit] rows={len(df)}")
     return df
+
+
+def fetch_klines_bybit(
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    timeframe: str = "1m",
+) -> pd.DataFrame:
+    """1m Bybit candles with local CSV cache (data/historical_klines_{SYMBOL}_bybit_1m.csv)."""
+    from data_manager import load_klines_with_cache
+
+    return load_klines_with_cache(
+        "bybit",
+        symbol,
+        start_date,
+        end_date,
+        lambda s, a, b: _fetch_klines_bybit_uncached(s, a, b, timeframe),
+    )
 
 
 def compute_indicators(
