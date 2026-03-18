@@ -129,7 +129,15 @@ def _autotrade_enabled_from_env() -> bool:
 async def dashboard_page():
     vars = read_env_vars()
     template = env_jinja.get_template("dashboard.html")
+    ex = (vars.get("EXCHANGE_ID") or "bybit").strip().lower()
+    if ex not in ("bybit", "delta_india"):
+        ex = "bybit"
     html = template.render(
+        exchange_id=ex,
+        bybit_api_key=vars.get("BYBIT_API_KEY", ""),
+        bybit_api_secret=vars.get("BYBIT_API_SECRET", ""),
+        delta_api_key=vars.get("DELTA_API_KEY", ""),
+        delta_api_secret=vars.get("DELTA_API_SECRET", ""),
         trading_symbol=vars.get("TRADING_SYMBOL", vars.get("SYMBOL", "BTCUSDT")),
         trade_amount_usd=vars.get("TRADE_AMOUNT_USD", vars.get("TRADE_QTY", "100")),
         leverage=vars.get("LEVERAGE", "5"),
@@ -147,6 +155,11 @@ async def dashboard_page():
 
 @app.post("/api/env")
 async def api_update_env(
+    exchange_id: str = Form(None),
+    bybit_api_key: str = Form(None),
+    bybit_api_secret: str = Form(None),
+    delta_api_key: str = Form(None),
+    delta_api_secret: str = Form(None),
     trading_symbol: str = Form(None),
     trade_amount_usd: str = Form(None),
     leverage: str = Form(None),
@@ -159,6 +172,17 @@ async def api_update_env(
 ):
     print("[env] POST /api/env: updating .env with form values")
     updates = {}
+    if exchange_id is not None:
+        ex = (exchange_id or "bybit").strip().lower()
+        updates["EXCHANGE_ID"] = ex if ex in ("bybit", "delta_india") else "bybit"
+    if bybit_api_key is not None:
+        updates["BYBIT_API_KEY"] = bybit_api_key.strip()
+    if bybit_api_secret is not None:
+        updates["BYBIT_API_SECRET"] = bybit_api_secret.strip()
+    if delta_api_key is not None:
+        updates["DELTA_API_KEY"] = delta_api_key.strip()
+    if delta_api_secret is not None:
+        updates["DELTA_API_SECRET"] = delta_api_secret.strip()
     if trading_symbol is not None:
         updates["TRADING_SYMBOL"] = (trading_symbol or "BTCUSDT").strip().upper()
     if trade_amount_usd is not None:

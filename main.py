@@ -23,6 +23,7 @@ load_dotenv("env", override=True)
 
 BYBIT_API_KEY = os.getenv("BYBIT_API_KEY")
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
+EXCHANGE_ID = os.getenv("EXCHANGE_ID", "bybit").lower()
 
 # Strategy parameters (from .env)
 SYMBOL = os.getenv("TRADING_SYMBOL") or os.getenv("SYMBOL", "BTCUSDT")

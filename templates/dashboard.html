@@ -151,6 +151,37 @@
         <p class="text-xs text-slate-500 mb-4">Saved to .env. Trading Symbol, RSI, SL/TP multipliers.</p>
         <form id="envForm" class="space-y-4">
           <div>
+            <label for="exchange_id" class="block text-xs font-medium text-slate-400 mb-1">Exchange</label>
+            <select id="exchange_id" name="exchange_id"
+              class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition">
+              <option value="bybit" {% if exchange_id == 'bybit' %}selected{% endif %}>bybit (Default)</option>
+              <option value="delta_india" {% if exchange_id == 'delta_india' %}selected{% endif %}>delta_india</option>
+            </select>
+          </div>
+          <div class="rounded-xl border border-slate-700 bg-slate-800/50 p-4 space-y-3">
+            <p class="text-xs font-semibold text-slate-300">API Keys</p>
+            <div>
+              <label for="bybit_api_key" class="block text-xs font-medium text-slate-400 mb-1">Bybit API Key</label>
+              <input type="text" id="bybit_api_key" name="bybit_api_key" value="{{ bybit_api_key }}" autocomplete="off"
+                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition font-mono text-sm" placeholder="BYBIT_API_KEY" />
+            </div>
+            <div>
+              <label for="bybit_api_secret" class="block text-xs font-medium text-slate-400 mb-1">Bybit API Secret</label>
+              <input type="password" id="bybit_api_secret" name="bybit_api_secret" value="{{ bybit_api_secret }}" autocomplete="off"
+                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition font-mono text-sm" placeholder="BYBIT_API_SECRET" />
+            </div>
+            <div>
+              <label for="delta_api_key" class="block text-xs font-medium text-slate-400 mb-1">Delta India API Key</label>
+              <input type="text" id="delta_api_key" name="delta_api_key" value="{{ delta_api_key }}" autocomplete="off"
+                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition font-mono text-sm" placeholder="DELTA_API_KEY" />
+            </div>
+            <div>
+              <label for="delta_api_secret" class="block text-xs font-medium text-slate-400 mb-1">Delta India API Secret</label>
+              <input type="password" id="delta_api_secret" name="delta_api_secret" value="{{ delta_api_secret }}" autocomplete="off"
+                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition font-mono text-sm" placeholder="DELTA_API_SECRET" />
+            </div>
+          </div>
+          <div>
             <label for="trading_symbol" class="block text-xs font-medium text-slate-400 mb-1">Trading Symbol</label>
             <input type="text" id="trading_symbol" name="trading_symbol" value="{{ trading_symbol }}"
               class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="BTCUSDT" />
