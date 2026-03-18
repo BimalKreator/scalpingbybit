@@ -24,6 +24,14 @@ from bybit_client import (
     _map_exit_reason,
     execute_chunk_order_rest,
 )
+from delta_client import (
+    _delta_request,
+    fetch_instrument_info_delta,
+    _set_position_sl_tp_sync_delta,
+    get_delta_product_id,
+    get_delta_ticker_l1,
+    normalize_delta_symbol,
+)
 
 # Env file: prefer .env, fallback to "env"
 ENV_PATH = Path(__file__).resolve().parent / ".env"
@@ -85,6 +93,58 @@ if _env_path != ENV_PATH_FALLBACK:
 
 # Bybit HTTP client for account, positions, and manual chunk execution (REST-only)
 REFERENCE_BALANCE = 67.56  # Overall Profit = Current Balance - REFERENCE_BALANCE
+
+
+def _app_exchange_id() -> str:
+    load_dotenv(str(get_env_path()))
+    ex = (os.getenv("EXCHANGE_ID") or "bybit").strip().lower()
+    return ex if ex in ("bybit", "delta_india") else "bybit"
+
+
+def _delta_keys() -> tuple[str, str]:
+    load_dotenv(str(get_env_path()))
+    return (os.getenv("DELTA_API_KEY") or "").strip(), (os.getenv("DELTA_API_SECRET") or "").strip()
+
+
+def _delta_round_price(price: float, tick: float) -> float:
+    if tick and tick > 0:
+        return round(round(price / tick) * tick, 10)
+    return round(price, 2)
+
+
+def _delta_positions_to_ui_rows(raw: dict | list | None) -> list[dict]:
+    """Normalize Delta margined-positions API to dashboard field names."""
+    if not raw or not isinstance(raw, dict) or not raw.get("success"):
+        return []
+    lst = raw.get("result")
+    if not isinstance(lst, list):
+        return []
+    out = []
+    for p in lst:
+        try:
+            sz = float(p.get("size") or 0)
+        except (TypeError, ValueError):
+            continue
+        if abs(sz) < 1e-12:
+            continue
+        psym = str(p.get("product_symbol") or "")
+        sym_ui = psym.replace("USD", "USDT") if psym.endswith("USD") else psym
+        side = "Buy" if sz > 0 else "Sell"
+        entry = str(p.get("entry_price") or "0")
+        unreal = p.get("unrealized_pnl") or p.get("unrealised_pnl") or p.get("realized_pnl") or "0"
+        out.append({
+            "symbol": sym_ui,
+            "side": side,
+            "entryPrice": entry,
+            "size": str(abs(sz)),
+            "positionValue": str(p.get("margin") or "0"),
+            "liqPrice": str(p.get("liquidation_price") or ""),
+            "stop_loss": "-",
+            "take_profit": "-",
+            "unrealisedPnl": str(unreal),
+            "createdTime": str(p.get("updated_at") or p.get("timestamp") or "0"),
+        })
+    return out
 
 
 app = FastAPI(title="Bybit Weak Momentum Reversal")
@@ -211,6 +271,39 @@ async def api_update_env(
 @app.get("/api/account")
 async def api_account():
     """Fetch Available Balance and Overall Profit (Current Balance - 67.56)."""
+    if _app_exchange_id() == "delta_india":
+        k, s = _delta_keys()
+        print(f"[api/account] Delta keys present: {bool(k and s)}")
+        if not k or not s:
+            return JSONResponse(status_code=502, content={"error": "DELTA_API_KEY / DELTA_API_SECRET required"})
+        try:
+            data = await asyncio.to_thread(_delta_request, "GET", "/v2/wallet/balances", k, s)
+            if not data or not isinstance(data, dict) or not data.get("success"):
+                msg = (data or {}).get("error", {}).get("message") if isinstance(data, dict) else None
+                return JSONResponse(
+                    status_code=502,
+                    content={"error": str(msg or data or "Delta wallet error")},
+                )
+            meta = data.get("meta") or {}
+            net_equity = float(meta.get("net_equity") or 0)
+            rows = data.get("result") or []
+            total_available = 0.0
+            if isinstance(rows, list):
+                for w in rows:
+                    try:
+                        total_available += float(w.get("available_balance") or 0)
+                    except (TypeError, ValueError):
+                        pass
+            if total_available <= 0 and net_equity > 0:
+                total_available = net_equity
+            overall_profit = net_equity - REFERENCE_BALANCE
+            return {
+                "availableBalance": round(total_available, 2),
+                "overallProfit": round(overall_profit, 2),
+            }
+        except Exception as e:
+            print(f"[api/account] Delta exception: {e}")
+            return JSONResponse(status_code=502, content={"error": str(e)})
     _key = os.getenv("BYBIT_API_KEY")
     print(f"[api/account] BYBIT_API_KEY (first 4 chars): {_key[:4] if _key else 'None'}")
     try:
@@ -239,7 +332,23 @@ async def api_account():
 
 @app.get("/api/positions")
 async def api_positions():
-    """Fetch linear USDT positions; return only active (size > 0) as symbol, side, entry, size, margin, liqPrice, unrealisedPnl."""
+    """Fetch open positions; shape matches dashboard (symbol, side, entryPrice, size, …)."""
+    if _app_exchange_id() == "delta_india":
+        k, s = _delta_keys()
+        if not k or not s:
+            return JSONResponse(status_code=502, content={"error": "DELTA_API_KEY / DELTA_API_SECRET required"})
+        try:
+            # Full list of open positions (single-product GET /v2/positions is not sufficient for UI)
+            raw = await asyncio.to_thread(_delta_request, "GET", "/v2/positions/margined", k, s)
+            if not raw or not isinstance(raw, dict) or not raw.get("success"):
+                msg = (raw or {}).get("error", {}) if isinstance(raw, dict) else {}
+                if isinstance(msg, dict):
+                    msg = msg.get("message") or raw
+                return JSONResponse(status_code=502, content={"error": str(msg or "Delta positions error")})
+            return _delta_positions_to_ui_rows(raw)
+        except Exception as e:
+            print(f"[api/positions] Delta: {e}")
+            return JSONResponse(status_code=502, content={"error": str(e)})
     try:
         session = _get_http_client()
         response = session.get_positions(category="linear", settleCoin="USDT")
@@ -387,6 +496,64 @@ async def api_trade_manual(body: ManualTradeBody):
         raise HTTPException(status_code=400, detail="usd_amount must be positive")
     lev = max(1.0, min(100.0, float(body.leverage))) if body.leverage else 5.0
     try:
+        if _app_exchange_id() == "delta_india":
+            k, sec = _delta_keys()
+            if not k or not sec:
+                raise HTTPException(status_code=502, detail="DELTA_API_KEY / DELTA_API_SECRET required")
+            ok_inst, tick, cv, _mnv = await asyncio.to_thread(
+                fetch_instrument_info_delta, body.symbol
+            )
+            if not ok_inst or tick is None or cv is None or float(cv) <= 0:
+                raise HTTPException(status_code=502, detail="Delta product not found for symbol")
+            tick_f = float(tick)
+            cv_f = float(cv)
+            pid = get_delta_product_id()
+            dsym = normalize_delta_symbol(body.symbol)
+            l1 = await asyncio.to_thread(get_delta_ticker_l1, body.symbol)
+            if not l1:
+                raise HTTPException(status_code=502, detail="Delta ticker unavailable")
+            bid, ask, mid = l1
+            price = float(ask if body.side == "Buy" else bid)
+            if price <= 0:
+                price = mid
+            contracts = int((body.usd_amount * lev) / (cv_f * price))
+            contracts = max(1, contracts)
+            order_body = {
+                "product_id": pid,
+                "product_symbol": dsym,
+                "size": contracts,
+                "side": "buy" if body.side == "Buy" else "sell",
+                "order_type": "market_order",
+            }
+            resp = await asyncio.to_thread(
+                lambda b=order_body: _delta_request(
+                    "POST", "/v2/orders", k, sec, json_body=b
+                )
+            )
+            if not resp or not isinstance(resp, dict) or not resp.get("success"):
+                err = (resp or {}).get("error", {}) if isinstance(resp, dict) else {}
+                detail = err.get("message") if isinstance(err, dict) else str(resp)
+                raise HTTPException(status_code=400, detail=detail or "Delta order failed")
+            sl_dist = price * (body.sl_pct / 100.0)
+            tp_dist = price * (body.tp_pct / 100.0)
+            if body.side == "Buy":
+                sl, tp = price - sl_dist, price + tp_dist
+            else:
+                sl, tp = price + sl_dist, price - tp_dist
+            sl = _delta_round_price(sl, tick_f)
+            tp = _delta_round_price(tp, tick_f)
+            sl_str = f"{sl:g}"
+            tp_str = f"{tp:g}"
+            await asyncio.to_thread(
+                lambda: _set_position_sl_tp_sync_delta(
+                    None, body.symbol, "linear", sl_str, tp_str, entry_side=body.side
+                )
+            )
+            from main import register_manual_trade
+
+            register_manual_trade(body.side, price, sl, tp, body.allow_reversal)
+            return {"ok": True, "message": "Trade executed (Delta)"}
+
         client = _get_http_client()
         try:
             client.set_leverage(
@@ -450,6 +617,45 @@ async def api_trade_close(body: CloseTradeBody):
     if body.side not in ("Buy", "Sell"):
         raise HTTPException(status_code=400, detail="side must be Buy or Sell")
     try:
+        if _app_exchange_id() == "delta_india":
+            k, sec = _delta_keys()
+            if not k or not sec:
+                raise HTTPException(status_code=502, detail="Delta API keys required")
+            raw = await asyncio.to_thread(_delta_request, "GET", "/v2/positions/margined", k, sec)
+            if not raw or not isinstance(raw, dict) or not raw.get("success"):
+                raise HTTPException(status_code=502, detail="Delta positions error")
+            want = normalize_delta_symbol(body.symbol)
+            pos = None
+            for p in raw.get("result") or []:
+                ps = str(p.get("product_symbol") or "")
+                if normalize_delta_symbol(ps) == want or ps.upper() == (body.symbol or "").upper().replace("USDT", "USD"):
+                    pos = p
+                    break
+            if not pos:
+                raise HTTPException(status_code=400, detail="No open position for this symbol")
+            sz = float(pos.get("size") or 0)
+            if abs(sz) < 1e-12:
+                raise HTTPException(status_code=400, detail="No open position for this symbol")
+            pid = int(pos.get("product_id") or 0)
+            psym = str(pos.get("product_symbol") or want)
+            n = int(abs(sz))
+            close_body = {
+                "product_id": pid,
+                "product_symbol": psym,
+                "size": n,
+                "side": "sell" if sz > 0 else "buy",
+                "order_type": "market_order",
+                "reduce_only": True,
+            }
+            resp = await asyncio.to_thread(
+                lambda b=close_body: _delta_request("POST", "/v2/orders", k, sec, json_body=b)
+            )
+            if not resp or not isinstance(resp, dict) or not resp.get("success"):
+                err = (resp or {}).get("error", {}) if isinstance(resp, dict) else {}
+                detail = err.get("message") if isinstance(err, dict) else str(resp)
+                raise HTTPException(status_code=400, detail=detail or "Delta close failed")
+            return {"ok": True, "message": "Position closed (Delta)"}
+
         client = _get_http_client()
         resp = client.get_positions(category="linear", symbol=body.symbol)
         if resp.get("retCode") != 0:

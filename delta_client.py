@@ -550,3 +550,42 @@ class DeltaLiveStream:
     def stop(self) -> None:
         """Sync no-op; use await stop_async() from async context."""
         self._running = False
+
+
+def get_delta_ticker_l1(symbol: str) -> tuple[float, float, float] | None:
+    """
+    Public L1 from ticker: (best_bid, best_ask, mid_fallback).
+    Returns None on failure.
+    """
+    dsym = normalize_delta_symbol(symbol)
+    try:
+        r = requests.get(
+            f"{_REST_BASE_INDIA}/v2/tickers/{dsym}",
+            headers={"Accept": "application/json"},
+            timeout=20,
+        )
+        j = r.json()
+        if not j.get("success"):
+            return None
+        res = j.get("result") or {}
+        q = res.get("quotes") or {}
+        bid = float(q.get("best_bid") or 0)
+        ask = float(q.get("best_ask") or 0)
+        mark = float(res.get("mark_price") or res.get("close") or 0)
+        if bid <= 0 and ask <= 0 and mark > 0:
+            return (mark, mark, mark)
+        if bid <= 0:
+            bid = mark or ask
+        if ask <= 0:
+            ask = mark or bid
+        if bid <= 0 or ask <= 0:
+            return None
+        return (bid, ask, (bid + ask) / 2)
+    except Exception as e:
+        print(f"[Delta] get_delta_ticker_l1: {e}")
+        return None
+
+
+# Aliases for app.py multi-exchange routing
+fetch_instrument_info_delta = fetch_instrument_info
+_set_position_sl_tp_sync_delta = _set_position_sl_tp_sync
