@@ -135,6 +135,90 @@ live_strategy_state = {
     "position_risk": {"open": False},
 }
 
+
+def _read_live_state_json_safe() -> dict:
+    """Load .live_strategy_state.json; empty dict if missing or invalid."""
+    if not _LIVE_STATE_PATH.is_file():
+        return {}
+    try:
+        with open(_LIVE_STATE_PATH, "r", encoding="utf-8") as f:
+            raw = _json.load(f)
+        return raw if isinstance(raw, dict) else {}
+    except Exception as e:
+        print(f"[sl_tp_tracker] Ignoring unreadable state file: {e}")
+        return {}
+
+
+def _merge_sl_tp_tracker_into_dict(d: dict) -> None:
+    """Persisted local SL/TP keys for restarts (not exchange stops)."""
+    try:
+        sl = float(_last_sl_price) if _last_sl_price is not None else 0.0
+        tp = float(_last_tp_price) if _last_tp_price is not None else 0.0
+    except (TypeError, ValueError):
+        sl, tp = 0.0, 0.0
+    if sl > 0 and tp > 0:
+        d["last_sl_price"] = sl
+        d["last_tp_price"] = tp
+        side = (_last_position_side or "").strip()
+        d["last_position_side"] = side if side else ""
+    else:
+        d["last_sl_price"] = 0.0
+        d["last_tp_price"] = 0.0
+        d["last_position_side"] = ""
+
+
+def _flush_live_state_file_with_tracker() -> None:
+    """Write live_strategy_state + SL/TP tracker fields to disk."""
+    try:
+        with _live_state_lock:
+            snap = dict(live_strategy_state)
+            _merge_sl_tp_tracker_into_dict(snap)
+        with open(_LIVE_STATE_PATH, "w", encoding="utf-8") as f:
+            _json.dump(snap, f, indent=2)
+    except Exception as e:
+        print(f"[sl_tp_tracker] Could not write state file: {e}")
+
+
+def _load_sl_tp_tracker_from_file_on_startup() -> None:
+    """Restore _last_sl_price / _last_tp_price / side before WS (if file valid)."""
+    global _last_sl_price, _last_tp_price, _last_position_side
+    try:
+        data = _read_live_state_json_safe()
+        sl = data.get("last_sl_price")
+        tp = data.get("last_tp_price")
+        side_raw = data.get("last_position_side")
+        slf = float(sl) if sl is not None else 0.0
+        tpf = float(tp) if tp is not None else 0.0
+        side = (str(side_raw).strip() if side_raw is not None else "")
+        if slf > 0 and tpf > 0 and side:
+            sll = side.lower()
+            if sll in ("buy", "sell"):
+                _last_sl_price = slf
+                _last_tp_price = tpf
+                _last_position_side = "Buy" if sll == "buy" else "Sell"
+                print(
+                    f"[bot] Restored local SL/TP from disk: SL={slf:g} TP={tpf:g} side={_last_position_side}"
+                )
+    except Exception as e:
+        print(f"[bot] SL/TP tracker load error (using defaults): {e}")
+
+
+def _clear_sl_tp_tracker_on_file_and_globals() -> None:
+    """Reset persisted SL/TP after position is flat (size 0)."""
+    global _last_sl_price, _last_tp_price
+    _last_sl_price = None
+    _last_tp_price = None
+    try:
+        data = _read_live_state_json_safe()
+        data["last_sl_price"] = 0.0
+        data["last_tp_price"] = 0.0
+        data["last_position_side"] = ""
+        with open(_LIVE_STATE_PATH, "w", encoding="utf-8") as f:
+            _json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"[sl_tp_tracker] Could not persist tracker clear: {e}")
+
+
 # Average entry from exchange WS (or set on fill / manual)
 _position_entry_price: float | None = None
 
@@ -748,6 +832,7 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
         _last_position_was_reverse = is_reverse
         _position_entry_price = current_price
         _sync_position_risk_to_state()
+        _flush_live_state_file_with_tracker()
     else:
         print("Warning: set_trading_stop failed for SL/TP")
 
@@ -825,6 +910,7 @@ def register_manual_trade(
         fake_range = sl_dist / sl_mult if sl_mult > 1e-12 else sl_dist
         _last_signal_candle = {"high": float(entry_price) + fake_range, "low": float(entry_price), "close": float(entry_price)}
     _sync_position_risk_to_state()
+    _flush_live_state_file_with_tracker()
 
 
 def _was_closed_by_sl() -> bool:
@@ -879,11 +965,13 @@ def handle_position_message(message: dict) -> None:
     data = message.get("data") or []
     size_for_symbol = 0.0
     entry_from_ws: float | None = None
+    symbol_seen = False
     for item in data:
         if item.get("category") != "linear":
             continue
         if item.get("symbol") != SYMBOL:
             continue
+        symbol_seen = True
         try:
             size_for_symbol = float(item.get("size") or 0)
         except (TypeError, ValueError):
@@ -898,6 +986,9 @@ def handle_position_message(message: dict) -> None:
                 except (TypeError, ValueError):
                     pass
         break
+    if not symbol_seen:
+        _sync_position_risk_to_state()
+        return
     with _position_lock:
         had_before = _position_size > 0
         has_now = size_for_symbol > 0
@@ -912,8 +1003,16 @@ def handle_position_message(message: dict) -> None:
         if had_before and size_for_symbol == 0:
             _monitor_had_position = False
             on_position_closed()
+            _clear_sl_tp_tracker_on_file_and_globals()
         elif size_for_symbol > 0:
             _monitor_had_position = True
+        elif (
+            not had_before
+            and size_for_symbol <= 0
+            and (_last_sl_price is not None or _last_tp_price is not None)
+        ):
+            # Stale tracker on disk while exchange reports flat (e.g. restart after close)
+            _clear_sl_tp_tracker_on_file_and_globals()
     _sync_position_risk_to_state()
 
 
@@ -994,6 +1093,7 @@ def _persist_last_signal_candle_start(candle_start: int) -> None:
     with _live_state_lock:
         snapshot = dict(live_strategy_state)
         snapshot["last_signal_candle_start"] = candle_start
+        _merge_sl_tp_tracker_into_dict(snapshot)
     try:
         with open(_LIVE_STATE_PATH, "w", encoding="utf-8") as f:
             _json.dump(snapshot, f, indent=2)
@@ -1094,6 +1194,7 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
         live_strategy_state.update(state)
         _apply_position_risk_to_state_dict(live_strategy_state)
         snapshot = dict(live_strategy_state)
+        _merge_sl_tp_tracker_into_dict(snapshot)
     try:
         with open(_LIVE_STATE_PATH, "w", encoding="utf-8") as f:
             _json.dump(snapshot, f, indent=2)
@@ -1167,12 +1268,14 @@ async def main_async() -> None:
         if _LIVE_STATE_PATH.exists():
             with open(_LIVE_STATE_PATH, "r", encoding="utf-8") as f:
                 loaded = _json.load(f)
-            prev = loaded.get("last_signal_candle_start")
-            if prev is not None:
-                LAST_SIGNAL_CANDLE_START = int(prev)
-                print(f"[bot] Loaded last_signal_candle_start from file: {LAST_SIGNAL_CANDLE_START}")
+            if isinstance(loaded, dict):
+                prev = loaded.get("last_signal_candle_start")
+                if prev is not None:
+                    LAST_SIGNAL_CANDLE_START = int(prev)
+                    print(f"[bot] Loaded last_signal_candle_start from file: {LAST_SIGNAL_CANDLE_START}")
     except Exception as e:
         print(f"[bot] Could not load last_signal_candle_start: {e}")
+    _load_sl_tp_tracker_from_file_on_startup()
     _loop = asyncio.get_running_loop()
     _signal_queue = asyncio.Queue()
     with _live_state_lock:
@@ -1244,16 +1347,19 @@ async def main_async() -> None:
 
     # Write initial live strategy state so dashboard can show symbol/status before first kline
     try:
+        init_snap = {
+            "symbol": SYMBOL,
+            "price": 0.0,
+            "indicators": {},
+            "conditions": {"long": [], "short": []},
+            "status": "Waiting",
+        }
+        merged = {**_read_live_state_json_safe(), **init_snap}
+        _merge_sl_tp_tracker_into_dict(merged)
         with open(_LIVE_STATE_PATH, "w", encoding="utf-8") as f:
-            _json.dump({
-                "symbol": SYMBOL,
-                "price": 0.0,
-                "indicators": {},
-                "conditions": {"long": [], "short": []},
-                "status": "Waiting",
-            }, f, indent=2)
-    except Exception:
-        pass
+            _json.dump(merged, f, indent=2)
+    except Exception as e:
+        print(f"[bot] Initial state write failed: {e}")
 
     consumer = asyncio.create_task(_signal_consumer())
     print("Running (async chunk execution). Ctrl+C to stop.\n")
