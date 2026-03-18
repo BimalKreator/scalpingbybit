@@ -1,21 +1,21 @@
 {
   "symbol": "BTCUSDT",
-  "price": 74127.5,
+  "price": 74158.0,
   "indicators": {
-    "RSI": 86.98,
+    "RSI": 72.3,
     "momentum_decreasing": true,
-    "volume_decreasing": true,
-    "body_size": 0.5,
-    "open": 74128.0,
-    "close": 74127.5,
-    "volume": 2151.0,
-    "Expected_Profit_Pct": 0.02
+    "volume_decreasing": false,
+    "body_size": 7.0,
+    "open": 74151.0,
+    "close": 74158.0,
+    "volume": 2577.0,
+    "Expected_Profit_Pct": 0.03
   },
   "conditions": {
     "long": [
       {
         "name": "Current Candle Bearish (open > close)",
-        "met": true
+        "met": false
       },
       {
         "name": "Previous Candle Bearish",
@@ -31,7 +31,7 @@
       },
       {
         "name": "Volume Decreasing",
-        "met": true
+        "met": false
       },
       {
         "name": "RSI < 40.0",
@@ -45,7 +45,7 @@
     "short": [
       {
         "name": "Current Candle Bullish (close > open)",
-        "met": false
+        "met": true
       },
       {
         "name": "Previous Candle Bullish",
@@ -53,7 +53,7 @@
       },
       {
         "name": "Both Candles Same Color (Bullish)",
-        "met": false
+        "met": true
       },
       {
         "name": "Momentum Decreasing",
@@ -61,7 +61,7 @@
       },
       {
         "name": "Volume Decreasing",
-        "met": true
+        "met": false
       },
       {
         "name": "RSI > 60.0",
@@ -74,15 +74,26 @@
     ]
   },
   "status": "Position Open",
-  "last_signal_candle_start": 1773824940000,
+  "last_signal_candle_start": 1773826260000,
   "position_risk": {
     "open": true,
-    "has_levels": false
+    "has_levels": true,
+    "side": "Sell",
+    "entry_price": 74165.0,
+    "size": 1.0,
+    "sl_price": 74172.25,
+    "tp_price": 74121.5,
+    "sl_amount_usd": -0.009776,
+    "tp_amount_usd": 0.058653,
+    "position_value_usd": 100.0,
+    "live_mid": 74138.0,
+    "entry_pct": 14.29,
+    "live_mid_pct": 67.49
   },
-  "sl_price": null,
-  "tp_price": null,
-  "entry_price": null,
-  "position_size": 0.0,
-  "sl_amount_usd": null,
-  "tp_amount_usd": null
+  "sl_price": 74172.25,
+  "tp_price": 74121.5,
+  "entry_price": 74165.0,
+  "position_size": 1.0,
+  "sl_amount_usd": -0.009776,
+  "tp_amount_usd": 0.058653
 }

@@ -832,9 +832,9 @@ def _was_closed_by_sl() -> bool:
 def on_position_closed() -> None:
     """
     Run when position stream reports size 0 for SYMBOL (position closed).
-    SL hit is detected via position stream (size 0) + closed PnL API (exit price nearer to SL than TP).
-    If closed by SL: immediately enter reversal (opposite side, same Signal_Range) or take new strategy signal.
-    Limit: only one reversal per stop-out; if reversal also hits SL, wait for fresh signal.
+    After SL: always queue reversal (opposite side, same signal candle range) — never superseded by a
+    fresh strategy signal at the same moment (momentum continuation / fake reversal logic).
+    Limit: if the *reversal* leg also hits SL, no second reverse (wait for next signal).
     """
     global _monitor_had_position, _last_position_side, _last_signal_candle, _last_position_was_reverse, _loop, _signal_queue, _manual_reversal_allowed
     if _last_position_side is None or _last_signal_candle is None or _loop is None or _signal_queue is None:
@@ -845,24 +845,13 @@ def on_position_closed() -> None:
         print("Reverse trade hit SL – no further reverse (limit 1 reverse per loss).")
         return
     if not _is_autotrade_enabled() and not _manual_reversal_allowed:
-        print("Signal detected but Auto Trade is OFF. Skipping execution.")
-        return
-    df = pd.DataFrame(KLINES)
-    if not df.empty:
-        df = compute_indicators(df)
-    side, row = has_valid_entry_signal_now(df)
-    if side is not None and row is not None:
-        if _is_autotrade_enabled():
-            print("New valid entry signal after SL – taking new signal, cancelling reverse.")
-            row_dict = row.to_dict() if hasattr(row, "to_dict") else dict(row)
-            _loop.call_soon_threadsafe(_signal_queue.put_nowait, ("entry", side, row_dict, False))
-            _manual_reversal_allowed = False
-            return
-        print("Fresh signal after SL but Auto Trade OFF — reverse/manual path only.")
-    if not _is_autotrade_enabled() and not _manual_reversal_allowed:
+        print("Auto Trade is OFF and manual reversal not allowed; skipping post-SL reversal.")
         return
     reverse_side = "Sell" if _last_position_side == "Buy" else "Buy"
-    print("Placing reverse trade (same signal candle range).")
+    print(
+        f"Stop loss on {_last_position_side} — queueing REVERSAL {reverse_side} "
+        "(priority over any concurrent strategy signals; same signal range)."
+    )
     _loop.call_soon_threadsafe(_signal_queue.put_nowait, ("entry", reverse_side, _last_signal_candle, True))
     _manual_reversal_allowed = False
 
