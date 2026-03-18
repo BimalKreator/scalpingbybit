@@ -68,7 +68,12 @@ def _delta_request(
         elif method.upper() == "POST":
             r = requests.post(url, headers=headers, data=payload if payload else None, timeout=30)
         elif method.upper() == "DELETE":
-            r = requests.delete(url, headers=headers, timeout=30)
+            if json_body is not None:
+                r = requests.delete(
+                    url, headers=headers, data=payload, timeout=30
+                )
+            else:
+                r = requests.delete(url, headers=headers, timeout=30)
         else:
             r = requests.request(method.upper(), url, headers=headers, data=payload or None, timeout=30)
         return r.json() if r.text else {}
@@ -223,6 +228,13 @@ def fetch_signal_candle_high_low_delta(symbol: str) -> tuple[float, float]:
     return hi, lo
 
 
+def _delta_tick_price_str(price: float, tick: float) -> str:
+    t = max(float(tick), 1e-12)
+    q = round(price / t) * t
+    s = f"{q:.10f}".rstrip("0").rstrip(".")
+    return s if s else "0"
+
+
 async def execute_chunk_order_ws(
     side: str,
     total_qty: float,
@@ -235,8 +247,9 @@ async def execute_chunk_order_ws(
     pending_fills_dict: dict,
     pending_fills_lock: threading.Lock,
     http_client: Any,
+    is_entry: bool = False,
 ) -> None:
-    """Place Delta market order; poll until filled."""
+    """Delta: entry = post_only limit + amend + market remainder; exit = market."""
     api_key = os.getenv("DELTA_API_KEY") or ""
     api_secret = os.getenv("DELTA_API_SECRET") or ""
     if not api_key or not api_secret or _DELTA_PRODUCT_ID <= 0:
@@ -257,10 +270,140 @@ async def execute_chunk_order_ws(
         return
 
     d_side = "buy" if side == "Buy" else "sell"
+    need = int(contracts)
+    tick = get_delta_tick_size()
+    pid = int(_DELTA_PRODUCT_ID)
+
+    if is_entry:
+        oid: int | None = None
+        for _po in range(3):
+            bb, ba, _, _ = get_l1_func()
+            if side == "Buy":
+                if bb <= 0:
+                    await asyncio.sleep(0.05)
+                    continue
+                lp = _delta_tick_price_str(bb, tick)
+            else:
+                if ba <= 0:
+                    await asyncio.sleep(0.05)
+                    continue
+                lp = _delta_tick_price_str(ba, tick)
+            body = {
+                "product_id": pid,
+                "product_symbol": _DELTA_SYMBOL,
+                "size": need,
+                "side": d_side,
+                "order_type": "limit_order",
+                "limit_price": lp,
+                "post_only": True,
+            }
+            snap = {**body}
+            resp = await loop.run_in_executor(
+                None,
+                lambda: _delta_request(
+                    "POST", "/v2/orders", api_key, api_secret, json_body=snap
+                ),
+            )
+            if resp and resp.get("success") and (resp.get("result") or {}).get("id"):
+                oid = int(resp["result"]["id"])
+                break
+            await asyncio.sleep(0.05)
+        if oid is None:
+            print("[Delta] PostOnly entry failed 3x; market fallback full size.")
+        else:
+            last_unfilled = need
+            for _am in range(3):
+                await asyncio.sleep(0.5)
+                oj = await loop.run_in_executor(
+                    None,
+                    lambda i=oid: _delta_request(
+                        "GET", f"/v2/orders/{i}", api_key, api_secret
+                    ),
+                )
+                if not oj or not oj.get("success"):
+                    continue
+                r = oj.get("result") or {}
+                last_unfilled = int(float(r.get("unfilled_size") or 0))
+                st = str(r.get("state") or "").lower()
+                if last_unfilled <= 0 or st == "closed":
+                    print(f"[Delta] Entry maker filled order {oid}.")
+                    return
+                bb, ba, _, _ = get_l1_func()
+                nlp = _delta_tick_price_str(
+                    bb if side == "Buy" else ba, tick
+                )
+                batch = {
+                    "product_id": pid,
+                    "product_symbol": _DELTA_SYMBOL,
+                    "orders": [
+                        {
+                            "id": oid,
+                            "limit_price": nlp,
+                            "size": last_unfilled,
+                            "post_only": True,
+                        }
+                    ],
+                }
+                bsnap = {**batch, "orders": [dict(batch["orders"][0])]}
+                await loop.run_in_executor(
+                    None,
+                    lambda: _delta_request(
+                        "PUT", "/v2/orders/batch", api_key, api_secret, json_body=bsnap
+                    ),
+                )
+            await loop.run_in_executor(
+                None,
+                lambda i=oid: _delta_request(
+                    "DELETE",
+                    "/v2/orders",
+                    api_key,
+                    api_secret,
+                    json_body={"id": i, "product_id": pid},
+                ),
+            )
+            await asyncio.sleep(0.2)
+            if last_unfilled > 0:
+                print(
+                    f"[Delta] Entry market fallback {last_unfilled} contracts (post-only remainder)."
+                )
+                mb = {
+                    "product_id": pid,
+                    "product_symbol": _DELTA_SYMBOL,
+                    "size": last_unfilled,
+                    "side": d_side,
+                    "order_type": "market_order",
+                }
+                msnap = {**mb}
+                mresp = await loop.run_in_executor(
+                    None,
+                    lambda: _delta_request(
+                        "POST", "/v2/orders", api_key, api_secret, json_body=msnap
+                    ),
+                )
+                mid = (mresp or {}).get("result", {}).get("id") if isinstance(
+                    mresp, dict
+                ) else None
+                if mid:
+                    for _ in range(50):
+                        await asyncio.sleep(0.12)
+                        ojson = await loop.run_in_executor(
+                            None,
+                            lambda i=int(mid): _delta_request(
+                                "GET", f"/v2/orders/{i}", api_key, api_secret
+                            ),
+                        )
+                        if isinstance(ojson, dict) and ojson.get("success"):
+                            r2 = ojson.get("result") or {}
+                            if float(r2.get("unfilled_size") or 0) <= 0 or r2.get(
+                                "state"
+                            ) == "closed":
+                                break
+            return
+
     body = {
-        "product_id": int(_DELTA_PRODUCT_ID),
+        "product_id": pid,
         "product_symbol": _DELTA_SYMBOL,
-        "size": int(contracts),
+        "size": need,
         "side": d_side,
         "order_type": "market_order",
     }
@@ -271,25 +414,25 @@ async def execute_chunk_order_ws(
     if not resp or not resp.get("success"):
         print(f"[Delta] market order failed: {resp}")
         return
-    oid = (resp.get("result") or {}).get("id")
-    if not oid:
+    oid_m = (resp.get("result") or {}).get("id")
+    if not oid_m:
         return
     for _ in range(50):
         await asyncio.sleep(0.12)
         filled = await loop.run_in_executor(
             None,
-            lambda i=int(oid): _get_order_filled_qty_rest(str(i), symbol, None),
+            lambda i=int(oid_m): _get_order_filled_qty_rest(str(i), symbol, None),
         )
         ojson = await loop.run_in_executor(
             None,
-            lambda i=int(oid): _delta_request("GET", f"/v2/orders/{i}", api_key, api_secret),
+            lambda i=int(oid_m): _delta_request("GET", f"/v2/orders/{i}", api_key, api_secret),
         )
         if isinstance(ojson, dict) and ojson.get("success"):
             r = ojson.get("result") or {}
             if float(r.get("unfilled_size") or 0) <= 0 or r.get("state") == "closed":
-                print(f"[Delta] Market order {oid} filled ~{filled} contracts.")
+                print(f"[Delta] Market order {oid_m} filled ~{filled} contracts.")
                 return
-    print("[Delta] Market order fill poll timeout for order", oid)
+    print("[Delta] Market order fill poll timeout for order", oid_m)
 
 
 def _set_position_sl_tp_sync(

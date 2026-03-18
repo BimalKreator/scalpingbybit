@@ -125,26 +125,34 @@ def _set_position_sl_tp_sync(
         return False
 
 
-def execute_chunk_order_rest(symbol: str, side: str, total_qty: float) -> tuple[bool, str]:
-    """
-    Execute total_qty in chunks using REST only: L1 orderbook, Limit IOC, poll order history.
-    Applies minOrderQty, dust prevention, and qtyStep rounding.
-    Returns (success, error_message).
-    """
-    if total_qty <= 0:
-        return True, ""
-    client = _get_http_client()
+def _bybit_cum_exec_qty(client: HTTP, symbol: str, order_id: str) -> float:
+    try:
+        h = client.get_order_history(category="linear", symbol=symbol, orderId=order_id, limit=1)
+        if h.get("retCode") != 0:
+            return 0.0
+        lst = (h.get("result") or {}).get("list") or []
+        if not lst:
+            return 0.0
+        return float(lst[0].get("cumExecQty") or 0)
+    except Exception:
+        return 0.0
+
+
+def _execute_chunk_order_rest_ioc(
+    symbol: str,
+    side: str,
+    total_qty: float,
+    client: HTTP,
+    qty_step: float,
+    min_order_qty: float,
+) -> tuple[bool, str, float]:
+    """Aggressive Limit IOC chunks. Returns (ok, err, qty_filled)."""
     min_notional = 6.0
     liquidity_fraction = 0.5
     loop_delay = 0.075
     fill_poll_interval = 0.05
     fill_poll_max = 8
-
-    try:
-        qty_step, min_order_qty = _get_instrument_lot(symbol, client)
-    except Exception as e:
-        return False, str(e)
-
+    start = float(total_qty)
     remaining_qty = total_qty
     while remaining_qty > 0:
         try:
@@ -168,16 +176,13 @@ def execute_chunk_order_rest(symbol: str, side: str, total_qty: float) -> tuple[
                     continue
                 price = float(bids[0][0])
                 top_qty = float(bids[0][1])
-
             if price <= 0:
                 time.sleep(loop_delay)
                 continue
             if remaining_qty * price < min_notional:
                 break
             target_chunk = min(remaining_qty, top_qty * liquidity_fraction)
-            chunk_qty = target_chunk
-            chunk_qty = max(chunk_qty, min_order_qty)
-            chunk_qty = min(chunk_qty, remaining_qty)
+            chunk_qty = max(min_order_qty, min(target_chunk, remaining_qty))
             remainder_after = remaining_qty - chunk_qty
             if remainder_after > 0 and remainder_after < min_order_qty:
                 chunk_qty = remaining_qty
@@ -185,12 +190,8 @@ def execute_chunk_order_rest(symbol: str, side: str, total_qty: float) -> tuple[
             chunk_qty = min(chunk_qty, remaining_qty)
             if chunk_qty < min_order_qty:
                 break
-            print(
-                f"Target Chunk: {target_chunk:.6f}, Adjusted Chunk (Min/Dust logic): {chunk_qty:.6f}, Remaining: {remaining_qty:.6f}"
-            )
             price_str = f"{price:.2f}"
             qty_str = f"{chunk_qty:.6f}".rstrip("0").rstrip(".")
-
             order = client.place_order(
                 category="linear",
                 symbol=symbol,
@@ -207,7 +208,6 @@ def execute_chunk_order_rest(symbol: str, side: str, total_qty: float) -> tuple[
             if not order_id:
                 time.sleep(loop_delay)
                 continue
-
             filled = 0.0
             for _ in range(fill_poll_max):
                 time.sleep(fill_poll_interval)
@@ -218,6 +218,180 @@ def execute_chunk_order_rest(symbol: str, side: str, total_qty: float) -> tuple[
                         filled = float(lst[0].get("cumExecQty") or 0)
                         break
             remaining_qty -= filled
+        except Exception as e:
+            return False, str(e), start - remaining_qty
+        time.sleep(loop_delay)
+    return True, "", start - remaining_qty
+
+
+def _rest_entry_maker_chunk_bybit(
+    client: HTTP,
+    symbol: str,
+    side: str,
+    chunk_qty: float,
+    qty_step: float,
+    min_order_qty: float,
+) -> float:
+    """PostOnly + up to 3 amends + cancel + IOC remainder. Returns filled qty for this chunk."""
+    need = float(chunk_qty)
+    if need < min_order_qty:
+        return 0.0
+    qty_str = f"{need:.6f}".rstrip("0").rstrip(".")
+    order_id: str | None = None
+    for _po in range(3):
+        ob = client.get_orderbook(category="linear", symbol=symbol, limit=1)
+        if ob.get("retCode") != 0:
+            time.sleep(0.05)
+            continue
+        bids = (ob.get("result", {}).get("b") or [])[:1]
+        asks = (ob.get("result", {}).get("a") or [])[:1]
+        if side == "Buy":
+            if not bids:
+                time.sleep(0.05)
+                continue
+            price_str = f"{float(bids[0][0]):.2f}"
+        else:
+            if not asks:
+                time.sleep(0.05)
+                continue
+            price_str = f"{float(asks[0][0]):.2f}"
+        order = client.place_order(
+            category="linear",
+            symbol=symbol,
+            side=side,
+            orderType="Limit",
+            qty=qty_str,
+            price=price_str,
+            timeInForce="PostOnly",
+        )
+        if order.get("retCode") == 0:
+            order_id = (order.get("result") or {}).get("orderId")
+            if order_id:
+                break
+        time.sleep(0.05)
+
+    if not order_id:
+        ok, err, f = _execute_chunk_order_rest_ioc(
+            symbol, side, need, client, qty_step, min_order_qty
+        )
+        return f if ok else 0.0
+
+    cum = 0.0
+    for _ in range(3):
+        time.sleep(0.5)
+        cum = _bybit_cum_exec_qty(client, symbol, order_id)
+        if cum >= need - 1e-9:
+            return min(cum, need)
+        ob = client.get_orderbook(category="linear", symbol=symbol, limit=1)
+        if ob.get("retCode") != 0:
+            continue
+        bids = (ob.get("result", {}).get("b") or [])[:1]
+        asks = (ob.get("result", {}).get("a") or [])[:1]
+        if side == "Buy" and bids:
+            np = f"{float(bids[0][0]):.2f}"
+        elif side == "Sell" and asks:
+            np = f"{float(asks[0][0]):.2f}"
+        else:
+            continue
+        try:
+            client.amend_order(
+                category="linear", symbol=symbol, orderId=order_id, price=np
+            )
+        except Exception:
+            pass
+
+    time.sleep(0.15)
+    cum = max(cum, _bybit_cum_exec_qty(client, symbol, order_id))
+    try:
+        client.cancel_order(category="linear", symbol=symbol, orderId=order_id)
+    except Exception:
+        pass
+    time.sleep(0.1)
+    cum = max(cum, _bybit_cum_exec_qty(client, symbol, order_id))
+    left = need - cum
+    left = math.floor(max(0.0, left) / qty_step) * qty_step
+    if left >= min_order_qty:
+        ok, _err, f2 = _execute_chunk_order_rest_ioc(
+            symbol, side, left, client, qty_step, min_order_qty
+        )
+        cum += f2 if ok else 0.0
+    return min(cum, need)
+
+
+def execute_chunk_order_rest(
+    symbol: str, side: str, total_qty: float, is_entry: bool = False
+) -> tuple[bool, str]:
+    """
+    Execute total_qty: if is_entry, PostOnly+amend per chunk then IOC remainder; else IOC only.
+    Returns (success, error_message).
+    """
+    if total_qty <= 0:
+        return True, ""
+    client = _get_http_client()
+    min_notional = 6.0
+    liquidity_fraction = 0.5
+    loop_delay = 0.075
+    fill_poll_interval = 0.05
+    fill_poll_max = 8
+
+    try:
+        qty_step, min_order_qty = _get_instrument_lot(symbol, client)
+    except Exception as e:
+        return False, str(e)
+
+    if not is_entry:
+        ok, err, _f = _execute_chunk_order_rest_ioc(
+            symbol, side, total_qty, client, qty_step, min_order_qty
+        )
+        return ok, err
+
+    remaining_qty = total_qty
+    while remaining_qty >= min_order_qty:
+        try:
+            ob = client.get_orderbook(category="linear", symbol=symbol, limit=1)
+            if ob.get("retCode") != 0:
+                time.sleep(loop_delay)
+                continue
+            bids = (ob.get("result", {}).get("b") or [])[:1]
+            asks = (ob.get("result", {}).get("a") or [])[:1]
+            if side == "Buy":
+                if not asks:
+                    time.sleep(loop_delay)
+                    continue
+                price = float(asks[0][0])
+                top_qty = float(asks[0][1])
+            else:
+                if not bids:
+                    time.sleep(loop_delay)
+                    continue
+                price = float(bids[0][0])
+                top_qty = float(bids[0][1])
+            if price <= 0 or remaining_qty * price < min_notional:
+                break
+            target_chunk = min(remaining_qty, top_qty * liquidity_fraction)
+            chunk_qty = max(min_order_qty, min(target_chunk, remaining_qty))
+            if remaining_qty - chunk_qty > 0 and remaining_qty - chunk_qty < min_order_qty:
+                chunk_qty = remaining_qty
+            chunk_qty = math.floor(chunk_qty / qty_step) * qty_step
+            chunk_qty = min(chunk_qty, remaining_qty)
+            if chunk_qty < min_order_qty:
+                break
+            print(
+                f"[Entry maker REST] chunk {chunk_qty:.6f} of {remaining_qty:.6f} remaining"
+            )
+            filled = _rest_entry_maker_chunk_bybit(
+                client, symbol, side, chunk_qty, qty_step, min_order_qty
+            )
+            remaining_qty -= filled
+            if filled <= 0:
+                ok_ioc, _e, f_ioc = _execute_chunk_order_rest_ioc(
+                    symbol, side, remaining_qty, client, qty_step, min_order_qty
+                )
+                remaining_qty -= f_ioc if ok_ioc else 0
+                if f_ioc <= 0:
+                    break
+                time.sleep(loop_delay)
+                continue
         except Exception as e:
             return False, str(e)
         time.sleep(loop_delay)
@@ -273,16 +447,73 @@ async def execute_chunk_order_ws(
     ws_trade: Any,
     pending_fills_dict: dict[str, tuple[asyncio.Future[float], float]],
     pending_fills_lock: threading.Lock,
-    http_client: HTTP,
+    http_client: HTTP | None,
+    is_entry: bool = False,
 ) -> None:
     """
-    Chunk execution via WS Limit IOC + execution stream fills, REST fill fallback.
+    Entry (is_entry=True): PostOnly + amend via REST in executor, then IOC remainder per chunk.
+    Exit: WS Limit IOC (Bybit) — http_client required for entry maker path on Bybit.
     """
     min_notional = 6.0
     liquidity_fraction = 0.5
     fill_timeout = 0.4
     loop_delay = 0.075
     step = qty_step
+
+    if is_entry and http_client is not None:
+        remaining_qty = float(total_qty)
+        while remaining_qty >= min_order_qty:
+            b_bid, b_ask, b_qty, a_qty = get_l1_func()
+            current_price = b_ask if side == "Buy" else b_bid
+            if current_price <= 0:
+                await asyncio.sleep(loop_delay)
+                continue
+            if remaining_qty * current_price < min_notional:
+                break
+            top_row_qty = a_qty if side == "Buy" else b_qty
+            if top_row_qty <= 0:
+                await asyncio.sleep(loop_delay)
+                continue
+            target_chunk = min(remaining_qty, top_row_qty * liquidity_fraction)
+            chunk_qty = max(min_order_qty, min(target_chunk, remaining_qty))
+            if remaining_qty - chunk_qty > 0 and remaining_qty - chunk_qty < min_order_qty:
+                chunk_qty = remaining_qty
+            chunk_qty = math.floor(chunk_qty / step) * step
+            chunk_qty = min(chunk_qty, remaining_qty)
+            if chunk_qty < min_order_qty:
+                break
+            print(
+                f"[Entry maker WS/REST] chunk {chunk_qty:.6f}, remaining {remaining_qty:.6f}"
+            )
+            filled = await loop.run_in_executor(
+                None,
+                lambda: _rest_entry_maker_chunk_bybit(
+                    http_client, symbol, side, chunk_qty, step, min_order_qty
+                ),
+            )
+            remaining_qty -= filled
+            if filled <= 0:
+                ok_ioc, _e, f_ioc = await loop.run_in_executor(
+                    None,
+                    lambda: _execute_chunk_order_rest_ioc(
+                        symbol,
+                        side,
+                        remaining_qty,
+                        http_client,
+                        step,
+                        min_order_qty,
+                    ),
+                )
+                remaining_qty -= f_ioc if ok_ioc else 0
+                if f_ioc <= 0:
+                    break
+                await asyncio.sleep(loop_delay)
+        print("Entry maker execution done. Remaining qty:", remaining_qty)
+        return
+
+    if http_client is None:
+        print("execute_chunk_order_ws: http_client required for non-Delta IOC path")
+        return
 
     remaining_qty = total_qty
 

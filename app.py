@@ -686,7 +686,9 @@ async def api_trade_manual(body: ManualTradeBody):
                 status_code=400,
                 detail=f"Quantity {total_qty:.6f} below minOrderQty {min_order_qty}. Increase trade amount or leverage.",
             )
-        success, err = await asyncio.to_thread(execute_chunk_order_rest, body.symbol, body.side, total_qty)
+        success, err = await asyncio.to_thread(
+            execute_chunk_order_rest, body.symbol, body.side, total_qty, True
+        )
         if not success:
             raise HTTPException(status_code=400, detail=err or "Chunk execution failed")
         ob2 = client.get_orderbook(category="linear", symbol=body.symbol, limit=1)
@@ -852,7 +854,7 @@ async def api_trade_mock_signal(body: MockSignalBody):
         except Exception:
             pass
         success, err = await asyncio.to_thread(
-            execute_chunk_order_rest, body.symbol, body.side, total_qty
+            execute_chunk_order_rest, body.symbol, body.side, total_qty, True
         )
         if not success:
             raise HTTPException(status_code=400, detail=err or "Chunk execution failed")

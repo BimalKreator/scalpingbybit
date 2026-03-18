@@ -138,6 +138,10 @@ live_strategy_state = {
 # Average entry from exchange WS (or set on fill / manual)
 _position_entry_price: float | None = None
 
+# Local SL/TP exit (primary); avoid duplicate close spam
+_is_closing_position: bool = False
+_local_sl_tp_lock = threading.Lock()
+
 # WebSocket instances (set in main())
 ws_kline: WebSocket | None = None
 ws_orderbook: WebSocket | None = None
@@ -274,6 +278,83 @@ def handle_orderbook_message(message: dict) -> None:
             best_ask = float(asks[0][0])
             ask_qty = float(asks[0][1])
     _sync_position_risk_to_state()
+    bb, ba = best_bid, best_ask
+    if bb > 0 and ba > 0:
+        _trigger_local_sl_tp_if_needed((bb + ba) / 2.0)
+
+
+def _trigger_local_sl_tp_if_needed(mid_price: float) -> None:
+    """If mid hits SL/TP, schedule aggressive exit (is_entry=False). Thread-safe from orderbook WS."""
+    global _is_closing_position, _loop
+    if mid_price <= 0 or _loop is None:
+        return
+    with _local_sl_tp_lock:
+        if _is_closing_position:
+            return
+        if not get_open_position():
+            return
+        if _last_sl_price is None or _last_tp_price is None:
+            return
+        ps = (_last_position_side or "").strip().lower()
+        slf, tpf = float(_last_sl_price), float(_last_tp_price)
+        hit = False
+        if ps == "buy":
+            if mid_price <= slf or mid_price >= tpf:
+                hit = True
+        elif ps == "sell":
+            if mid_price >= slf or mid_price <= tpf:
+                hit = True
+        if not hit:
+            return
+        _is_closing_position = True
+
+    def _sched() -> None:
+        try:
+            t = asyncio.create_task(_async_local_sl_tp_close(mid_price))
+            _ = t
+        except Exception as e:
+            print(f"[Local SL/TP] schedule error: {e}")
+            with _local_sl_tp_lock:
+                global _is_closing_position
+                _is_closing_position = False
+
+    _loop.call_soon_threadsafe(_sched)
+
+
+async def _async_local_sl_tp_close(trigger_mid: float) -> None:
+    """Close position at market/IOC when local mid crossed SL or TP."""
+    global _is_closing_position
+    try:
+        with _position_lock:
+            sz = float(_position_size)
+            ps = (_last_position_side or "").strip()
+        if sz <= 0:
+            return
+        close_side = "Sell" if ps.lower() == "buy" else "Buy"
+        print(
+            f"[Local SL/TP] mid={trigger_mid:.4f} → closing {ps} size={sz} side={close_side} (exchange stops are backup only)"
+        )
+        loop = asyncio.get_running_loop()
+        await execute_chunk_order_ws(
+            close_side,
+            sz,
+            SYMBOL,
+            _qty_step,
+            _min_order_qty,
+            _get_orderbook_l1,
+            loop,
+            ws_trade,
+            _pending_fills,
+            _pending_fills_lock,
+            HTTP_CLIENT,
+            is_entry=False,
+        )
+    except Exception as e:
+        print(f"[Local SL/TP] close error: {e}")
+    finally:
+        await asyncio.sleep(1.5)
+        with _local_sl_tp_lock:
+            _is_closing_position = False
 
 
 def _position_risk_payload() -> dict:
@@ -526,6 +607,7 @@ async def execute_strategy_signal(
         _pending_fills,
         _pending_fills_lock,
         HTTP_CLIENT,
+        is_entry=True,
     )
     ok = _set_position_sl_tp_sync(
         HTTP_CLIENT, SYMBOL, "linear", sl_str, tp_str, entry_side=side
@@ -630,6 +712,7 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
         _pending_fills,
         _pending_fills_lock,
         HTTP_CLIENT,
+        is_entry=True,
     )
 
     ok = await loop.run_in_executor(
@@ -786,7 +869,7 @@ def on_position_closed() -> None:
 
 def handle_position_message(message: dict) -> None:
     """Handle private position stream: update _position_size and detect position closed."""
-    global _position_size, _monitor_had_position, _position_entry_price
+    global _position_size, _monitor_had_position, _position_entry_price, _is_closing_position
     data = message.get("data") or []
     size_for_symbol = 0.0
     entry_from_ws: float | None = None
@@ -815,6 +898,7 @@ def handle_position_message(message: dict) -> None:
         _position_size = size_for_symbol
         if size_for_symbol <= 0:
             _position_entry_price = None
+            _is_closing_position = False
         elif entry_from_ws is not None:
             _position_entry_price = entry_from_ws
         if had_before != has_now:
