@@ -1,6 +1,6 @@
 """
 Backtest engine for Weak Momentum Reversal strategy.
-Fetches historical 1m klines via CCXT (Bybit) and runs the strategy.
+Bybit via CCXT; Delta via REST /v2/history/candles. Fees + reversal logic aligned with live bot.
 """
 from __future__ import annotations
 
@@ -11,7 +11,115 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 import pandas_ta as ta
+import requests
 import ccxt
+
+TAKER_ENTRY_FEE = 0.00055  # 0.055%
+TAKER_EXIT_FEE_BYBIT = 0.00055
+TAKER_EXIT_FEE_DELTA = 0.0  # Scalper / fee promo
+
+
+def _delta_symbol(symbol: str) -> str:
+    return (symbol or "BTCUSDT").strip().upper().replace("USDT", "USD")
+
+
+def _parse_range_to_ts(start_date: str, end_date: str) -> tuple[int, int]:
+    s = start_date.strip()
+    e = end_date.strip()
+    if "T" not in s:
+        s = s + "T00:00:00"
+    if "T" not in e:
+        e = e + "T23:59:59"
+
+    def to_dt(x: str) -> datetime:
+        if x.endswith("Z"):
+            dt = datetime.fromisoformat(x.replace("Z", "+00:00"))
+        elif len(x) > 10 and ("+" in x[10:] or x[10:].count("-") >= 1):
+            dt = datetime.fromisoformat(x)
+        else:
+            dt = datetime.fromisoformat(x).replace(tzinfo=timezone.utc)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+
+    return int(to_dt(s).timestamp()), int(to_dt(e).timestamp())
+
+
+def fetch_klines_delta(symbol: str, start_str: str, end_str: str) -> pd.DataFrame:
+    """
+    Fetch 1m candles from https://api.delta.exchange/v2/history/candles.
+    Paginates in chunks of up to 1000 bars; start/end in seconds.
+    """
+    sym = _delta_symbol(symbol)
+    start_ts, end_ts = _parse_range_to_ts(start_str, end_str)
+    if start_ts >= end_ts:
+        return pd.DataFrame()
+    base = "https://api.delta.exchange/v2/history/candles"
+    all_rows: list[dict] = []
+    cur = start_ts
+    page = 0
+    print(f"[fetch Delta] symbol={sym}, start={start_ts}, end={end_ts}")
+    while cur < end_ts:
+        page += 1
+        chunk_end = min(cur + 1000 * 60, end_ts)
+        try:
+            r = requests.get(
+                base,
+                params={
+                    "resolution": "1m",
+                    "symbol": sym,
+                    "start": str(cur),
+                    "end": str(chunk_end),
+                },
+                headers={"Accept": "application/json"},
+                timeout=60,
+            )
+            data = r.json()
+        except Exception as e:
+            print(f"[fetch Delta] request error: {e}")
+            break
+        if not data.get("success"):
+            print(f"[fetch Delta] API error: {data}")
+            break
+        batch = data.get("result") or []
+        if not batch:
+            cur = chunk_end + 1
+            time.sleep(0.2)
+            continue
+        for c in batch:
+            t = int(c.get("time") or 0)
+            if t > 10_000_000_000:
+                t = t // 1000
+            ts_ms = t * 1000
+            all_rows.append(
+                {
+                    "timestamp": ts_ms,
+                    "open": float(c.get("open") or 0),
+                    "high": float(c.get("high") or 0),
+                    "low": float(c.get("low") or 0),
+                    "close": float(c.get("close") or 0),
+                    "volume": float(c.get("volume") or 0),
+                }
+            )
+        last = batch[-1]
+        lt = int(last.get("time") or 0)
+        if lt > 10_000_000_000:
+            lt = lt // 1000
+        cur = lt + 60
+        if cur <= start_ts:
+            cur = chunk_end + 60
+        time.sleep(0.15)
+        if page > 5000:
+            print("[fetch Delta] safety stop pagination")
+            break
+    if not all_rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(all_rows)
+    df = df.drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+    end_ms = end_ts * 1000
+    df = df[df["timestamp"] <= end_ms]
+    print(f"[fetch Delta] rows={len(df)}")
+    return df
 
 
 def fetch_klines_bybit(
@@ -20,8 +128,8 @@ def fetch_klines_bybit(
     end_date: str,
     timeframe: str = "1m",
 ) -> pd.DataFrame:
-    """Fetch historical OHLCV from Bybit (linear perpetual) via CCXT. Returns DataFrame with open, high, low, close, volume, timestamp."""
-    print(f"[fetch] Fetching klines: symbol={symbol}, start={start_date}, end={end_date}, timeframe={timeframe}")
+    """Fetch historical OHLCV from Bybit (linear perpetual) via CCXT."""
+    print(f"[fetch Bybit] symbol={symbol}, start={start_date}, end={end_date}")
     exchange = ccxt.bybit({"options": {"defaultType": "linear"}})
     if "Z" not in start_date and "+" not in start_date:
         start_date = start_date + "Z"
@@ -34,10 +142,8 @@ def fetch_klines_bybit(
     page = 0
     while since < end_ts:
         page += 1
-        print(f"[fetch] Requesting page {page} (since={since})...")
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=200)
         if not ohlcv:
-            print(f"[fetch] Page {page} returned no data, stopping.")
             break
         all_ohlcv.extend(ohlcv)
         since = ohlcv[-1][0] + 1
@@ -45,7 +151,6 @@ def fetch_klines_bybit(
             break
         time.sleep(exchange.rateLimit / 1000)
     if not all_ohlcv:
-        print("[fetch] No OHLCV data collected.")
         return pd.DataFrame()
     df = pd.DataFrame(
         all_ohlcv,
@@ -55,7 +160,7 @@ def fetch_klines_bybit(
     df = df[df["timestamp"] <= end_ts].drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
     for col in ["open", "high", "low", "close", "volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    print(f"[fetch] Data fetched successfully: {len(df)} candles.")
+    print(f"[fetch Bybit] rows={len(df)}")
     return df
 
 
@@ -63,13 +168,19 @@ def compute_indicators(
     df: pd.DataFrame,
     rsi_length: int,
 ) -> pd.DataFrame:
-    """Add RSI, body_size, momentum_decreasing, volume_decreasing."""
     df = df.sort_values("timestamp").reset_index(drop=True)
     df["RSI"] = ta.rsi(df["close"], length=rsi_length)
     df["body_size"] = (df["close"] - df["open"]).abs()
     df["momentum_decreasing"] = df["body_size"] < df["body_size"].shift(1)
     df["volume_decreasing"] = df["volume"] < df["volume"].shift(1)
     return df
+
+
+def _exit_fee_rate(exchange: str) -> float:
+    ex = (exchange or "bybit").lower()
+    if ex == "delta_india":
+        return TAKER_EXIT_FEE_DELTA
+    return TAKER_EXIT_FEE_BYBIT
 
 
 def run_backtest(
@@ -83,78 +194,138 @@ def run_backtest(
     trade_amount_usd: float = 100.0,
     leverage: float = 5.0,
     initial_capital: float = 10000.0,
+    exchange: str = "bybit",
+    min_profit_pct: float = 0.5,
+    allow_reversal: bool = True,
 ) -> dict:
     """
-    Run Weak Momentum Reversal on OHLCV DataFrame.
-    Uses target_qty = (trade_amount_usd * leverage) / entry_price; P&L is in USD.
-    Returns dict with: total_pnl, max_drawdown, total_trades, profitable_trades, profitable_pct, profit_factor, equity_curve (list of {time, value}), trades (list).
+    Weak Momentum Reversal with min profit % filter, taker fees (Delta 0% exit),
+    and one reversal trade after SL (same signal_range / multipliers).
     """
+    empty = {
+        "total_pnl": 0.0,
+        "max_drawdown": 0.0,
+        "total_trades": 0,
+        "profitable_trades": 0,
+        "profitable_pct": 0.0,
+        "profit_factor": 0.0,
+        "equity_curve": [],
+        "trades": [],
+        "best_params": {
+            "rsi_overbought": rsi_overbought,
+            "rsi_oversold": rsi_oversold,
+            "sl_multiplier": sl_multiplier,
+            "tp_multiplier": tp_multiplier,
+        },
+    }
     if df.empty or len(df) < rsi_length + 2:
-        print(f"[backtest] Skipping run: not enough data (len={len(df)}, need {rsi_length + 2}+).")
-        return {
-            "total_pnl": 0.0,
-            "max_drawdown": 0.0,
-            "total_trades": 0,
-            "profitable_trades": 0,
-            "profitable_pct": 0.0,
-            "profit_factor": 0.0,
-            "equity_curve": [],
-            "trades": [],
-            "best_params": {"rsi_overbought": rsi_overbought, "rsi_oversold": rsi_oversold, "sl_multiplier": sl_multiplier, "tp_multiplier": tp_multiplier},
-        }
-    print(f"[backtest] Running single backtest: rsi_len={rsi_length}, ob={rsi_overbought}, os={rsi_oversold}, sl={sl_multiplier}, tp={tp_multiplier}")
+        print(f"[backtest] skip: len={len(df)}")
+        return empty
+
+    ex = (exchange or "bybit").lower()
+    exit_fee_r = _exit_fee_rate(ex)
+    print(
+        f"[backtest] exchange={ex} min_profit_pct={min_profit_pct} allow_reversal={allow_reversal} "
+        f"entry_fee={TAKER_ENTRY_FEE} exit_fee={exit_fee_r}"
+    )
+
     df = compute_indicators(df.copy(), rsi_length)
     equity = initial_capital
     equity_curve = [{"time": int(df["timestamp"].iloc[0]) // 1000, "value": round(initial_capital, 2)}]
     trades: list[dict] = []
+
     in_position = False
     entry_price = 0.0
     entry_time = 0
     side = ""
     sl_price = 0.0
     tp_price = 0.0
-    qty = 0.0  # dynamic: (trade_amount_usd * leverage) / entry_price per trade
-    # Use iloc for row access; signal on closed candle at i-1, check exit on candle i
+    qty = 0.0
+    signal_range = 0.0
+    reversal_count = 0
+
     i = 1
     while i < len(df):
-        row_prev = df.iloc[i - 1]
         row = df.iloc[i]
         ts = int(row["timestamp"])
-        o, h, l, c = float(row["open"]), float(row["high"]), float(row["low"]), float(row["close"])
+        h, l = float(row["high"]), float(row["low"])
+
         if in_position:
             exit_price = None
+            exit_reason = None
             if side == "Buy":
                 if l <= sl_price:
                     exit_price = sl_price
+                    exit_reason = "sl"
                 elif h >= tp_price:
                     exit_price = tp_price
+                    exit_reason = "tp"
             else:
                 if h >= sl_price:
                     exit_price = sl_price
+                    exit_reason = "sl"
                 elif l <= tp_price:
                     exit_price = tp_price
-            if exit_price is not None:
-                if side == "Buy":
-                    pnl_usd = (exit_price - entry_price) * qty
-                else:
-                    pnl_usd = (entry_price - exit_price) * qty
-                equity += pnl_usd
-                cumulative_pnl = equity - initial_capital
-                trades.append({
+                    exit_reason = "tp"
+
+            if exit_price is None:
+                i += 1
+                continue
+
+            if side == "Buy":
+                gross = (exit_price - entry_price) * qty
+            else:
+                gross = (entry_price - exit_price) * qty
+            fee_in = qty * entry_price * TAKER_ENTRY_FEE
+            fee_out = qty * exit_price * exit_fee_r
+            net_pnl = gross - fee_in - fee_out
+            equity += net_pnl
+            cumulative_pnl = equity - initial_capital
+            trades.append(
+                {
                     "entry_time": entry_time,
                     "exit_time": ts,
                     "side": side,
                     "entry_price": round(entry_price, 4),
                     "exit_price": round(exit_price, 4),
                     "qty": round(qty, 6),
-                    "pnl": round(pnl_usd, 4),
+                    "pnl": round(net_pnl, 4),
                     "cumulative_pnl": round(cumulative_pnl, 4),
-                })
-                equity_curve.append({"time": ts // 1000, "value": round(equity, 2)})
-                in_position = False
+                    "exit_reason": exit_reason or "",
+                    "reversal_leg": reversal_count > 0,
+                }
+            )
+            equity_curve.append({"time": ts // 1000, "value": round(equity, 2)})
+
+            do_reversal = (
+                exit_reason == "sl"
+                and reversal_count == 0
+                and allow_reversal
+                and signal_range > 0
+            )
+            if do_reversal:
+                if side == "Buy":
+                    side = "Sell"
+                    entry_price = exit_price
+                    sl_price = entry_price + signal_range * sl_multiplier
+                    tp_price = entry_price - signal_range * tp_multiplier
+                else:
+                    side = "Buy"
+                    entry_price = exit_price
+                    sl_price = entry_price - signal_range * sl_multiplier
+                    tp_price = entry_price + signal_range * tp_multiplier
+                qty = (trade_amount_usd * leverage) / entry_price if entry_price else 0.0
+                reversal_count = 1
+                entry_time = ts
+                continue
+
+            in_position = False
+            signal_range = 0.0
+            reversal_count = 0
             i += 1
             continue
-        # Not in position: look for entry signal on closed candle row_prev
+
+        row_prev = df.iloc[i - 1]
         rsi = row_prev.get("RSI")
         md = row_prev.get("momentum_decreasing")
         vd = row_prev.get("volume_decreasing")
@@ -166,43 +337,50 @@ def run_backtest(
         high_prev = float(row_prev["high"])
         low_prev = float(row_prev["low"])
         range_ = high_prev - low_prev
-        # SHORT
+        tp_dist = range_ * tp_multiplier
+        expected_profit_pct = (tp_dist / close_prev) * 100 if close_prev > 0 else 0.0
+        if expected_profit_pct < min_profit_pct:
+            i += 1
+            continue
+
+        entered = False
         if close_prev > open_prev and md and vd and rsi > rsi_overbought:
             entry_price = close_prev
             qty = (trade_amount_usd * leverage) / entry_price if entry_price else 0.0
-            sl_price = close_prev + (range_ * sl_multiplier)
-            tp_price = close_prev - (range_ * tp_multiplier)
+            sl_price = close_prev + range_ * sl_multiplier
+            tp_price = close_prev - range_ * tp_multiplier
             side = "Sell"
-            in_position = True
-            entry_time = int(row_prev["timestamp"])
-            continue  # re-check current candle for exit
-        # LONG
-        if close_prev < open_prev and md and vd and rsi < rsi_oversold:
+            signal_range = range_
+            reversal_count = 0
+            entered = True
+        elif close_prev < open_prev and md and vd and rsi < rsi_oversold:
             entry_price = close_prev
             qty = (trade_amount_usd * leverage) / entry_price if entry_price else 0.0
-            sl_price = close_prev - (range_ * sl_multiplier)
-            tp_price = close_prev + (range_ * tp_multiplier)
+            sl_price = close_prev - range_ * sl_multiplier
+            tp_price = close_prev + range_ * tp_multiplier
             side = "Buy"
+            signal_range = range_
+            reversal_count = 0
+            entered = True
+
+        if entered:
             in_position = True
             entry_time = int(row_prev["timestamp"])
-            continue  # re-check current candle for exit
+            continue
+
         i += 1
+
     total_pnl = equity - initial_capital
-    # Max drawdown from equity curve
     peak = initial_capital
     max_dd = 0.0
     for point in equity_curve:
         v = point["value"]
-        if v > peak:
-            peak = v
-        dd = peak - v
-        if dd > max_dd:
-            max_dd = dd
+        peak = max(peak, v)
+        max_dd = max(max_dd, peak - v)
     profitable = sum(1 for t in trades if t["pnl"] > 0)
     gross_profit = sum(t["pnl"] for t in trades if t["pnl"] > 0)
     gross_loss = abs(sum(t["pnl"] for t in trades if t["pnl"] < 0))
     profit_factor = gross_profit / gross_loss if gross_loss else (float("inf") if gross_profit else 0.0)
-    print(f"[backtest] Single run finished: trades={len(trades)}, total_pnl={total_pnl:.4f}, max_dd={max_dd:.4f}")
     best_params = {
         "rsi_overbought": rsi_overbought,
         "rsi_oversold": rsi_oversold,
@@ -220,6 +398,8 @@ def run_backtest(
         "trades": trades,
         "final_equity": round(equity, 2),
         "best_params": best_params,
+        "exchange": ex,
+        "min_profit_pct": min_profit_pct,
     }
 
 
@@ -237,7 +417,6 @@ def _param_grid(
     tp_max: float | None,
     tp_step: float | None,
 ) -> list[dict]:
-    """Build list of param dicts for grid search. Each dict has rsi_overbought, rsi_oversold, sl_multiplier, tp_multiplier."""
     grids: list[list[tuple[str, float]]] = []
     if rsi_ob_step and rsi_ob_step > 0 and rsi_ob_min is not None and rsi_ob_max is not None:
         arr = np.arange(float(rsi_ob_min), float(rsi_ob_max) + 1e-9, float(rsi_ob_step))
@@ -259,7 +438,6 @@ def _param_grid(
         for k, v in tup:
             d[k] = v
         combos.append(d)
-    print(f"[grid] Built {len(combos)} parameter combinations.")
     return combos
 
 
@@ -275,6 +453,9 @@ def run_backtest_grid(
     leverage: float = 5.0,
     initial_capital: float = 10000.0,
     optimize_by: str = "total_pnl",
+    exchange: str = "bybit",
+    min_profit_pct: float = 0.5,
+    allow_reversal: bool = True,
     rsi_ob_min: float | None = None,
     rsi_ob_max: float | None = None,
     rsi_ob_step: float | None = None,
@@ -288,53 +469,50 @@ def run_backtest_grid(
     tp_max: float | None = None,
     tp_step: float | None = None,
 ) -> dict:
-    """
-    Run single backtest or grid search. If any (min, max, step) with step > 0 is provided,
-    run all combinations and return the best result by optimize_by.
-    optimize_by: 'total_pnl' (max), 'max_drawdown' (min), 'win_rate' (max), 'profit_factor' (max).
-    """
     param_combos = _param_grid(
         rsi_ob_min, rsi_ob_max, rsi_ob_step,
         rsi_os_min, rsi_os_max, rsi_os_step,
         sl_min, sl_max, sl_step,
         tp_min, tp_max, tp_step,
     )
+    common_kw = dict(
+        rsi_length=rsi_length,
+        trade_amount_usd=trade_amount_usd,
+        leverage=leverage,
+        initial_capital=initial_capital,
+        exchange=exchange,
+        min_profit_pct=min_profit_pct,
+        allow_reversal=allow_reversal,
+    )
     if not param_combos:
-        print("[backtest] No grid ranges (step>0); running single backtest.")
         return run_backtest(
             df,
-            rsi_length=rsi_length,
             rsi_overbought=rsi_overbought,
             rsi_oversold=rsi_oversold,
             sl_multiplier=sl_multiplier,
             tp_multiplier=tp_multiplier,
-            trade_amount_usd=trade_amount_usd,
-            leverage=leverage,
-            initial_capital=initial_capital,
+            **common_kw,
         )
-    print(f"[backtest] Starting grid search: {len(param_combos)} combinations, optimize_by={optimize_by}")
+
     best: dict | None = None
     best_score: float = -np.inf
     minimize = optimize_by == "max_drawdown"
     if minimize:
         best_score = np.inf
+
     for idx, combo in enumerate(param_combos):
-        print(f"[backtest] Testing combination {idx + 1}/{len(param_combos)}: {combo}")
         res = run_backtest(
             df,
-            rsi_length=rsi_length,
             rsi_overbought=combo.get("rsi_overbought", rsi_overbought),
             rsi_oversold=combo.get("rsi_oversold", rsi_oversold),
             sl_multiplier=combo.get("sl_multiplier", sl_multiplier),
             tp_multiplier=combo.get("tp_multiplier", tp_multiplier),
-            trade_amount_usd=trade_amount_usd,
-            leverage=leverage,
-            initial_capital=initial_capital,
+            **common_kw,
         )
         if optimize_by == "total_pnl":
             score = res["total_pnl"]
         elif optimize_by == "max_drawdown":
-            score = -res["max_drawdown"]  # minimize drawdown = maximize -drawdown
+            score = -res["max_drawdown"]
         elif optimize_by == "win_rate":
             score = res["profitable_pct"]
         elif optimize_by == "profit_factor":
@@ -357,9 +535,12 @@ def run_backtest_grid(
             if score > best_score:
                 best_score = score
                 best = res_with_params
-    print(f"[backtest] Grid search finished. Best score ({optimize_by}) = {best_score}")
+
     return best if best is not None else run_backtest(
-        df, rsi_length=rsi_length, rsi_overbought=rsi_overbought, rsi_oversold=rsi_oversold,
-        sl_multiplier=sl_multiplier, tp_multiplier=tp_multiplier,
-        trade_amount_usd=trade_amount_usd, leverage=leverage, initial_capital=initial_capital,
+        df,
+        rsi_overbought=rsi_overbought,
+        rsi_oversold=rsi_oversold,
+        sl_multiplier=sl_multiplier,
+        tp_multiplier=tp_multiplier,
+        **common_kw,
     )

@@ -851,6 +851,8 @@ class BacktestRequest(BaseModel):
     trade_amount_usd: float = 100.0
     leverage: float = 5.0
     initial_capital: float = 10000.0
+    min_profit_pct: float = 0.5
+    allow_reversal: bool = True
     optimize_by: str = "total_pnl"
     rsi_ob_min: float | None = None
     rsi_ob_max: float | None = None
@@ -868,7 +870,13 @@ class BacktestRequest(BaseModel):
 
 def _run_backtest_sync(req: BacktestRequest):
     """Sync helper: fetch data and run backtest (called in thread to avoid blocking event loop)."""
-    from backtest_engine import fetch_klines_bybit, run_backtest_grid
+    load_dotenv(str(get_env_path()))
+    ex_id = (os.getenv("EXCHANGE_ID") or "bybit").strip().lower()
+    if ex_id not in ("bybit", "delta_india"):
+        ex_id = "bybit"
+
+    from backtest_engine import fetch_klines_bybit, fetch_klines_delta, run_backtest_grid
+
     start = req.start_date
     end = req.end_date
     if "T" not in start:
@@ -876,7 +884,10 @@ def _run_backtest_sync(req: BacktestRequest):
     if "T" not in end:
         end = end + "T23:59:59"
     try:
-        df = fetch_klines_bybit(req.symbol, start, end)
+        if ex_id == "delta_india":
+            df = fetch_klines_delta(req.symbol, start, end)
+        else:
+            df = fetch_klines_bybit(req.symbol, start, end)
     except Exception as e:
         return None, f"Fetch klines failed: {e}"
     if df.empty:
@@ -892,6 +903,9 @@ def _run_backtest_sync(req: BacktestRequest):
         leverage=req.leverage,
         initial_capital=req.initial_capital,
         optimize_by=req.optimize_by,
+        exchange=ex_id,
+        min_profit_pct=req.min_profit_pct,
+        allow_reversal=req.allow_reversal,
         rsi_ob_min=req.rsi_ob_min,
         rsi_ob_max=req.rsi_ob_max,
         rsi_ob_step=req.rsi_ob_step,

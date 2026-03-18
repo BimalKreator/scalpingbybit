@@ -88,6 +88,18 @@
               class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
           </div>
         </div>
+        <div>
+          <label for="min_profit_pct" class="block text-xs font-medium text-slate-400 mb-1">Min profit % (price move to TP)</label>
+          <input type="number" id="min_profit_pct" name="min_profit_pct" value="0.5" min="0" step="0.05"
+            class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
+          <p class="text-xs text-slate-500 mt-1">Matches live bot: skip signals if (TP distance / close)×100 is below this.</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <input type="checkbox" id="allow_reversal" name="allow_reversal" checked
+            class="rounded border-slate-600 bg-slate-800 text-emerald-500 focus:ring-emerald-500" />
+          <label for="allow_reversal" class="text-xs font-medium text-slate-400">Allow one reversal after SL (same signal range)</label>
+        </div>
+        <p class="text-xs text-slate-500">Data source follows <strong class="text-slate-400">EXCHANGE_ID</strong> in .env: Bybit (CCXT) or Delta (REST). Delta uses 0% exit fee in backtest; Bybit 0.055% entry + exit.</p>
       </div>
 
       <div class="bg-slate-900/80 rounded-2xl p-5 border border-slate-800 space-y-4">
@@ -206,6 +218,8 @@
           tp_multiplier: num('tp_multiplier', 2),
           trade_amount_usd: num('trade_amount_usd', 100),
           leverage: num('leverage', 5),
+          min_profit_pct: num('min_profit_pct', 0.5),
+          allow_reversal: document.getElementById('allow_reversal').checked,
           initial_capital: 10000,
           optimize_by: document.getElementById('optimize_by').value || 'total_pnl',
           rsi_ob_min: optNum('rsi_ob_min'),
