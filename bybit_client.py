@@ -63,6 +63,83 @@ def _map_exit_reason(rec: dict) -> str:
     return ex or "–"
 
 
+def _kline_rest_row_to_dict(arr: list) -> dict:
+    """Bybit REST kline item [start_ms, open, high, low, close, volume, turnover]."""
+    start_ms = int(arr[0])
+    return {
+        "start": start_ms,
+        "end": start_ms + 60000,
+        "interval": "1",
+        "open": float(arr[1]),
+        "high": float(arr[2]),
+        "low": float(arr[3]),
+        "close": float(arr[4]),
+        "volume": float(arr[5]),
+        "turnover": float(arr[6]) if len(arr) > 6 else 0.0,
+        "confirm": True,
+        "timestamp": start_ms,
+    }
+
+
+def fetch_historical_klines_bybit(
+    http_client: HTTP,
+    symbol: str,
+    klines_out: list,
+    max_n: int = 1000,
+) -> bool:
+    """
+    Load up to max_n recent 1m candles (paginated, 1000/request) for RSI warm-up.
+    """
+    get_kline = getattr(http_client, "get_kline", None) or getattr(http_client, "get_kline_list", None)
+    if get_kline is None:
+        print("[Bybit] HTTP client has no get_kline.")
+        return False
+    max_n = max(1, min(int(max_n), 5000))
+    by_start: dict[int, dict] = {}
+    end_cursor: int | None = None
+    per_page = 1000
+    try:
+        while len(by_start) < max_n:
+            lim = min(per_page, max_n - len(by_start))
+            kw: dict[str, Any] = {
+                "category": "linear",
+                "symbol": symbol,
+                "interval": "1",
+                "limit": lim,
+            }
+            if end_cursor is not None:
+                kw["end"] = end_cursor
+            resp = get_kline(**kw)
+            if resp.get("retCode") != 0:
+                print("[Bybit] get_kline failed:", resp.get("retMsg", "unknown"))
+                break
+            lst = (resp.get("result") or {}).get("list", [])
+            if not lst:
+                break
+            batch: list[dict] = []
+            for item in lst:
+                if isinstance(item, (list, tuple)) and len(item) >= 6:
+                    batch.append(_kline_rest_row_to_dict(list(item)))
+            if not batch:
+                break
+            batch.sort(key=lambda r: r["start"])
+            for r in batch:
+                by_start[r["start"]] = r
+            end_cursor = batch[0]["start"] - 1
+            if len(lst) < lim:
+                break
+        if not by_start:
+            return False
+        rows = sorted(by_start.values(), key=lambda r: r["start"])
+        klines_out.clear()
+        klines_out.extend(rows[-max_n:])
+        print(f"[Bybit] Loaded {len(klines_out)} historical 1m candles for {symbol}.")
+        return True
+    except Exception as e:
+        print(f"[Bybit] fetch_historical_klines: {e}")
+        return False
+
+
 def fetch_instrument_info(symbol: str, http_client: HTTP) -> tuple[bool, float | None, float | None, float | None]:
     """
     Fetch qty_step, minOrderQty and minNotionalValue for symbol via REST.

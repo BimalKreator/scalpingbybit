@@ -6,8 +6,12 @@ from __future__ import annotations
 
 import itertools
 import math
+import os
 import time
 from datetime import datetime, timezone
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 import numpy as np
 import pandas as pd
@@ -199,9 +203,12 @@ def fetch_klines_bybit(
 def compute_indicators(
     df: pd.DataFrame,
     rsi_length: int,
+    rsi_sma_length: int = 14,
 ) -> pd.DataFrame:
     df = df.sort_values("timestamp").reset_index(drop=True)
     df["RSI"] = ta.rsi(df["close"], length=rsi_length)
+    sma_n = max(1, int(rsi_sma_length))
+    df["RSI_SMA"] = ta.sma(df["RSI"], length=sma_n)
     df["body_size"] = (df["close"] - df["open"]).abs()
     df["momentum_decreasing"] = df["body_size"] < df["body_size"].shift(1)
     df["volume_decreasing"] = df["volume"] < df["volume"].shift(1)
@@ -322,7 +329,22 @@ def run_backtest(
         f"delta_cv={cv if cv else 'n/a'} qty_step={qty_step}"
     )
 
-    df = compute_indicators(df.copy(), rsi_length)
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+    load_dotenv(Path(__file__).resolve().parent / "env")
+    try:
+        rsi_sma_n = max(1, int(os.getenv("RSI_SMA_LENGTH", "14")))
+    except ValueError:
+        rsi_sma_n = 14
+    df = compute_indicators(df.copy(), rsi_length, rsi_sma_n)
+    if len(df) > 0:
+        last = df.iloc[-1]
+        rr, rm = last.get("RSI"), last.get("RSI_SMA")
+        if rr is not None and not pd.isna(rr):
+            ma_s = f"{float(rm):.2f}" if rm is not None and not pd.isna(rm) else "—"
+            print(
+                f"[backtest] last bar RSI ref: RSI={float(rr):.2f}  "
+                f"RSI_SMA({rsi_sma_n})={ma_s}  (entries use raw RSI)"
+            )
     equity = initial_capital
     equity_curve = [{"time": int(df["timestamp"].iloc[0]) // 1000, "value": round(initial_capital, 2)}]
     trades: list[dict] = []

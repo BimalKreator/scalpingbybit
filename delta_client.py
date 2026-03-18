@@ -147,51 +147,78 @@ def fetch_instrument_info(symbol: str) -> tuple[bool, float | None, float | None
         return (False, None, None, None)
 
 
-def fetch_historical_klines_delta(symbol: str, klines_out: list, max_n: int = 200) -> bool:
-    """Load 1m candles into klines_out (same row shape as Bybit)."""
+def fetch_historical_klines_delta(symbol: str, klines_out: list, max_n: int = 1000) -> bool:
+    """
+    Load up to max_n recent 1m candles (paginated; API returns at most ~1000 bars per window).
+    Same row shape as Bybit.
+    """
     dsym = normalize_delta_symbol(symbol)
-    end = int(time.time())
-    start = end - max_n * 60
+    max_n = max(1, min(int(max_n), 5000))
+    by_start: dict[int, dict] = {}
+    cur_end = int(time.time())
+    base = f"{_REST_BASE_INDIA}/v2/history/candles"
     try:
-        r = requests.get(
-            f"{_REST_BASE_INDIA}/v2/history/candles",
-            params={
-                "resolution": "1m",
-                "symbol": dsym,
-                "start": str(start),
-                "end": str(end),
-            },
-            headers={"Accept": "application/json"},
-            timeout=45,
-        )
-        data = r.json()
-        if not data.get("success"):
-            return False
-        rows = []
-        for c in data.get("result") or []:
-            t = int(c.get("time") or 0)
-            if t < 1_000_000_000_000:
+        for _ in range(60):
+            if len(by_start) >= max_n:
+                break
+            chunk_mins = min(1000, max_n - len(by_start))
+            start_sec = cur_end - chunk_mins * 60
+            r = requests.get(
+                base,
+                params={
+                    "resolution": "1m",
+                    "symbol": dsym,
+                    "start": str(start_sec),
+                    "end": str(cur_end),
+                },
+                headers={"Accept": "application/json"},
+                timeout=45,
+            )
+            data = r.json()
+            if not data.get("success"):
+                if not by_start:
+                    return False
+                break
+            batch_raw = data.get("result") or []
+            if not batch_raw:
+                break
+            n_before = len(by_start)
+            oldest_sec: int | None = None
+            for c in batch_raw:
+                t = int(c.get("time") or 0)
+                if t > 10_000_000_000:
+                    t = t // 1000
+                if oldest_sec is None or t < oldest_sec:
+                    oldest_sec = t
                 start_ms = t * 1000
-            else:
-                start_ms = t // 1000
-            rows.append({
-                "start": start_ms,
-                "end": start_ms + 60000,
-                "interval": "1",
-                "open": float(c.get("open") or 0),
-                "high": float(c.get("high") or 0),
-                "low": float(c.get("low") or 0),
-                "close": float(c.get("close") or 0),
-                "volume": float(c.get("volume") or 0),
-                "turnover": 0.0,
-                "confirm": True,
-                "timestamp": start_ms,
-            })
-        rows.sort(key=lambda x: x["start"])
+                by_start[start_ms] = {
+                    "start": start_ms,
+                    "end": start_ms + 60000,
+                    "interval": "1",
+                    "open": float(c.get("open") or 0),
+                    "high": float(c.get("high") or 0),
+                    "low": float(c.get("low") or 0),
+                    "close": float(c.get("close") or 0),
+                    "volume": float(c.get("volume") or 0),
+                    "turnover": 0.0,
+                    "confirm": True,
+                    "timestamp": start_ms,
+                }
+            if oldest_sec is None:
+                break
+            cur_end = oldest_sec - 1
+            if len(by_start) == n_before:
+                break
+            if len(batch_raw) < chunk_mins * 0.5:
+                break
+            time.sleep(0.12)
+        if not by_start:
+            return False
+        rows = sorted(by_start.values(), key=lambda x: x["start"])
         klines_out.clear()
         klines_out.extend(rows[-max_n:])
         print(f"[Delta] Loaded {len(klines_out)} historical 1m candles for {dsym}.")
-        return len(klines_out) > 0
+        return True
     except Exception as e:
         print(f"[Delta] fetch_historical_klines: {e}")
         return False

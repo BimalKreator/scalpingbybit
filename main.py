@@ -35,6 +35,10 @@ USE_DELTA = EXCHANGE_ID == "delta_india"
 # Strategy parameters (from .env)
 SYMBOL = os.getenv("TRADING_SYMBOL") or os.getenv("SYMBOL", "BTCUSDT")
 RSI_LENGTH = int(os.getenv("RSI_LENGTH", "14"))
+try:
+    RSI_SMA_LENGTH = max(1, int(os.getenv("RSI_SMA_LENGTH", "14")))
+except ValueError:
+    RSI_SMA_LENGTH = 14
 RSI_OVERBOUGHT = float(os.getenv("RSI_OVERBOUGHT", "60"))
 RSI_OVERSOLD = float(os.getenv("RSI_OVERSOLD", "40"))
 TRADE_QTY = float(os.getenv("TRADE_QTY", "0.001"))
@@ -89,12 +93,16 @@ else:
     from bybit_client import (
         BybitLiveStream,
         execute_chunk_order_ws,
+        fetch_historical_klines_bybit,
         fetch_instrument_info,
         _set_position_sl_tp_sync,
     )
 
 # In-memory store for kline rows; continuously updated (capped at KLINES_MAX for memory)
-KLINES_MAX = 200
+try:
+    KLINES_MAX = max(500, min(5000, int(os.getenv("HISTORICAL_KLINES", "1000"))))
+except ValueError:
+    KLINES_MAX = 1000
 KLINES = []
 
 # Track last candle we signaled on (start timestamp) so we only print once per closed candle
@@ -337,42 +345,34 @@ def _kline_api_row_to_dict(arr: list) -> dict:
 
 def fetch_historical_klines() -> bool:
     """
-    Fetch historical 1m klines from Bybit REST and initialize KLINES.
-    Ensures RSI and other indicators have enough data at startup.
-    Returns True on success.
+    Fetch historical 1m klines (500–5000 bars via HISTORICAL_KLINES, default 1000) for RSI warm-up.
     """
-    global KLINES
-    if USE_DELTA:
-        return fetch_historical_klines_delta(SYMBOL, KLINES, KLINES_MAX)
-    get_kline = getattr(HTTP_CLIENT, "get_kline", None) or getattr(HTTP_CLIENT, "get_kline_list", None)
-    if get_kline is None:
-        print("Warning: HTTP client has no get_kline; starting with empty KLINES.")
-        return False
+    global KLINES, KLINES_MAX, RSI_SMA_LENGTH
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
     try:
-        resp = get_kline(category="linear", symbol=SYMBOL, interval="1", limit=100)
-        if resp.get("retCode") != 0:
-            print("Warning: get_kline failed:", resp.get("retMsg", "unknown"))
-            return False
-        lst = resp.get("result", {}).get("list", [])
-        if not lst:
-            print("Warning: get_kline returned no candles.")
-            return False
-        rows = []
-        for item in lst:
-            if isinstance(item, (list, tuple)) and len(item) >= 6:
-                rows.append(_kline_api_row_to_dict(list(item)))
-            elif isinstance(item, dict):
-                rows.append(kline_to_row(item))
-        if not rows:
-            return False
-        rows.sort(key=lambda r: r["start"])
-        KLINES.clear()
-        KLINES.extend(rows[-KLINES_MAX:])
-        print(f"Loaded {len(KLINES)} historical klines for {SYMBOL} (RSI will have data from first second).")
-        return True
-    except Exception as e:
-        print("Warning: fetch_historical_klines failed:", e)
-        return False
+        KLINES_MAX = max(500, min(5000, int(os.getenv("HISTORICAL_KLINES", "1000"))))
+    except ValueError:
+        KLINES_MAX = 1000
+    try:
+        RSI_SMA_LENGTH = max(1, int(os.getenv("RSI_SMA_LENGTH", "14")))
+    except ValueError:
+        RSI_SMA_LENGTH = 14
+    if USE_DELTA:
+        ok = fetch_historical_klines_delta(SYMBOL, KLINES, KLINES_MAX)
+    else:
+        ok = fetch_historical_klines_bybit(HTTP_CLIENT, SYMBOL, KLINES, KLINES_MAX)
+    if ok:
+        print(
+            f"Loaded {len(KLINES)} historical klines for {SYMBOL} "
+            f"(RSI warm-up; RSI_SMA length={RSI_SMA_LENGTH})."
+        )
+    else:
+        print(
+            "Warning: historical kline load failed; RSI may diverge until buffer fills "
+            f"(set HISTORICAL_KLINES 500–5000, default 1000)."
+        )
+    return ok
 
 
 def ensure_updated(rows: list) -> None:
@@ -396,6 +396,7 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
     df = df.sort_values("start").reset_index(drop=True)
     df["RSI"] = ta.rsi(df["close"], length=RSI_LENGTH)
+    df["RSI_SMA"] = ta.sma(df["RSI"], length=RSI_SMA_LENGTH)
     df["body_size"] = (df["close"] - df["open"]).abs()
     df["momentum_decreasing"] = df["body_size"] < df["body_size"].shift(1)
     # Volume rule: strictly volume < volume_prev (no equality)
@@ -1362,7 +1363,7 @@ def check_signals(df: pd.DataFrame) -> None:
     print(f"[{datetime.now().isoformat()}] Signal check for {SYMBOL}: None")
 
 
-DISPLAY_COLUMNS = ["close", "volume", "volume_decreasing", "RSI"]
+DISPLAY_COLUMNS = ["close", "volume", "volume_decreasing", "RSI", "RSI_SMA"]
 
 
 def _persist_last_signal_candle_start(candle_start: int) -> None:
@@ -1450,8 +1451,15 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
     else:
         status = "Waiting"
 
+    rsi_sma_v = row.get("RSI_SMA")
+    rsi_sma_f = (
+        float(rsi_sma_v)
+        if rsi_sma_v is not None and not pd.isna(rsi_sma_v)
+        else None
+    )
     indicators = {
         "RSI": round(rsi_float, 2) if rsi_float is not None else None,
+        "RSI_SMA": round(rsi_sma_f, 2) if rsi_sma_f is not None else None,
         "volume_signal_vs_prev": vd,
         "body_size": round(body, 6),
         "open": round(open_, 4),
@@ -1498,7 +1506,21 @@ def handle_kline_message(message: dict) -> None:
         return
     print("\n--- Last 3 klines (1m " + SYMBOL + ") – Weak Momentum Reversal ---")
     print(last3[cols].to_string())
-    print()
+    if len(df) >= 2:
+        sig = df.iloc[-2]
+        rsi_raw = sig.get("RSI")
+        rsi_ma = sig.get("RSI_SMA")
+        if rsi_raw is not None and not pd.isna(rsi_raw):
+            ma_s = (
+                f"{float(rsi_ma):.2f}"
+                if rsi_ma is not None and not pd.isna(rsi_ma)
+                else "—"
+            )
+            print(
+                f"[RSI vs TradingView MA] signal candle (closed): "
+                f"RSI={float(rsi_raw):.2f}  RSI_SMA({RSI_SMA_LENGTH})={ma_s}  "
+                f"(strategy entries use raw RSI only)\n"
+            )
 
 
 async def _signal_consumer() -> None:

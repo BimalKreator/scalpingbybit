@@ -329,6 +329,8 @@ async def dashboard_page():
         trade_amount_usd=vars.get("TRADE_AMOUNT_USD", vars.get("TRADE_QTY", "100")),
         leverage=vars.get("LEVERAGE", "5"),
         rsi_length=vars.get("RSI_LENGTH", "14"),
+        historical_klines=vars.get("HISTORICAL_KLINES", "1000"),
+        rsi_sma_length=vars.get("RSI_SMA_LENGTH", "14"),
         rsi_overbought=vars.get("RSI_OVERBOUGHT", "60"),
         rsi_oversold=vars.get("RSI_OVERSOLD", "40"),
         sl_multiplier_max=vars.get("SL_MULTIPLIER_MAX", vars.get("SL_MULTIPLIER", "3.0")),
@@ -356,6 +358,8 @@ async def api_update_env(
     trade_amount_usd: str = Form(None),
     leverage: str = Form(None),
     rsi_length: str = Form(None),
+    historical_klines: str = Form(None),
+    rsi_sma_length: str = Form(None),
     rsi_overbought: str = Form(None),
     rsi_oversold: str = Form(None),
     sl_multiplier_max: str = Form(None),
@@ -388,6 +392,18 @@ async def api_update_env(
         updates["LEVERAGE"] = leverage
     if rsi_length is not None:
         updates["RSI_LENGTH"] = rsi_length
+    if historical_klines is not None:
+        try:
+            hk = int(str(historical_klines).strip())
+            updates["HISTORICAL_KLINES"] = str(max(500, min(5000, hk)))
+        except (TypeError, ValueError):
+            updates["HISTORICAL_KLINES"] = "1000"
+    if rsi_sma_length is not None:
+        try:
+            rs = max(1, int(str(rsi_sma_length).strip()))
+            updates["RSI_SMA_LENGTH"] = str(min(rs, 100))
+        except (TypeError, ValueError):
+            updates["RSI_SMA_LENGTH"] = "14"
     if rsi_overbought is not None:
         updates["RSI_OVERBOUGHT"] = rsi_overbought
     if rsi_oversold is not None:
