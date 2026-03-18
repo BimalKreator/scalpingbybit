@@ -224,18 +224,7 @@
                 class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
             </div>
           </div>
-          <div class="grid grid-cols-2 gap-3">
-            <div>
-              <label for="manualSlPct" class="block text-xs font-medium text-slate-400 mb-1">SL (%)</label>
-              <input type="number" id="manualSlPct" name="sl_pct" value="0.5" min="0" step="0.01" placeholder="0.5"
-                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
-            </div>
-            <div>
-              <label for="manualTpPct" class="block text-xs font-medium text-slate-400 mb-1">TP (%)</label>
-              <input type="number" id="manualTpPct" name="tp_pct" value="1.0" min="0" step="0.01" placeholder="1.0"
-                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
-            </div>
-          </div>
+          <p class="text-xs text-slate-500">SL/TP: last closed 1m candle (H−L) × SL_MULTIPLIER / TP_MULTIPLIER from .env, anchored to best bid/ask after fill (same as auto).</p>
           <div class="flex items-center gap-2">
             <input type="checkbox" id="manualAllowReversal" name="allow_reversal" checked
               class="rounded border-slate-600 bg-slate-800 text-emerald-500 focus:ring-emerald-500" />
@@ -502,8 +491,8 @@
         document.getElementById('riskLiveDisplay').textContent = formatNum(pr.live_mid);
         var slUsd = Number(pr.sl_amount_usd);
         var tpUsd = Number(pr.tp_amount_usd);
-        document.getElementById('riskSlAmtLabel').textContent = isNaN(slUsd) ? '–' : '-$' + Math.abs(slUsd).toFixed(2);
-        document.getElementById('riskTpAmtLabel').textContent = isNaN(tpUsd) ? '–' : '+$' + tpUsd.toFixed(2);
+        document.getElementById('riskSlAmtLabel').textContent = isNaN(slUsd) ? '–' : '-$' + formatUsdRiskAmount(Math.abs(slUsd));
+        document.getElementById('riskTpAmtLabel').textContent = isNaN(tpUsd) ? '–' : '+$' + formatUsdRiskAmount(tpUsd);
         var ep = Number(pr.entry_pct);
         var lp = Number(pr.live_mid_pct);
         if (isNaN(ep)) ep = 50;
@@ -547,6 +536,16 @@
       if (v === null || v === undefined || v === '') return '--';
       const n = Number(v);
       return isNaN(n) ? String(v) : (Math.round(n * 100) / 100).toFixed(2);
+    }
+
+    /** SL/TP $ labels: 2 dp if ≥ $1, 4 dp if ≥ $0.01, else up to 6 dp so micro amounts stay visible */
+    function formatUsdRiskAmount(absVal) {
+      var x = Number(absVal);
+      if (!isFinite(x) || x < 0) return '0.00';
+      if (x === 0) return '0.00';
+      if (x >= 1) return x.toFixed(2);
+      if (x >= 0.01) return x.toFixed(4);
+      return x.toFixed(6);
     }
 
     async function pollAccount() {
@@ -640,23 +639,19 @@
         .finally(function () { btn.disabled = false; });
     }
 
-    const manualSlPct = document.getElementById('manualSlPct');
-    const manualTpPct = document.getElementById('manualTpPct');
     const manualAllowReversal = document.getElementById('manualAllowReversal');
 
     btnLong.addEventListener('click', function () {
       const symbol = (manualSymbol.value || 'BTCUSDT').trim().toUpperCase();
       const usd = parseFloat(manualAmount.value);
       const lev = parseFloat(manualLeverage.value) || 5;
-      const slPct = parseFloat(manualSlPct.value) || 0.5;
-      const tpPct = parseFloat(manualTpPct.value) || 1.0;
       const allowReversal = manualAllowReversal.checked;
       if (isNaN(usd) || usd <= 0) { alert('Enter a valid trade amount (USD).'); return; }
       btnLong.disabled = true;
       fetch('/api/trade/manual', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol: symbol, usd_amount: usd, leverage: lev, side: 'Buy', sl_pct: slPct, tp_pct: tpPct, allow_reversal: allowReversal })
+        body: JSON.stringify({ symbol: symbol, usd_amount: usd, leverage: lev, side: 'Buy', allow_reversal: allowReversal })
       })
         .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
         .then(function (r) {
@@ -678,15 +673,13 @@
       const symbol = (manualSymbol.value || 'BTCUSDT').trim().toUpperCase();
       const usd = parseFloat(manualAmount.value);
       const lev = parseFloat(manualLeverage.value) || 5;
-      const slPct = parseFloat(manualSlPct.value) || 0.5;
-      const tpPct = parseFloat(manualTpPct.value) || 1.0;
       const allowReversal = manualAllowReversal.checked;
       if (isNaN(usd) || usd <= 0) { alert('Enter a valid trade amount (USD).'); return; }
       btnShort.disabled = true;
       fetch('/api/trade/manual', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol: symbol, usd_amount: usd, leverage: lev, side: 'Sell', sl_pct: slPct, tp_pct: tpPct, allow_reversal: allowReversal })
+        body: JSON.stringify({ symbol: symbol, usd_amount: usd, leverage: lev, side: 'Sell', allow_reversal: allowReversal })
       })
         .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
         .then(function (r) {

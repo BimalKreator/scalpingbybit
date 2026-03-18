@@ -13,8 +13,12 @@ import pandas as pd
 import pandas_ta as ta
 from pybit.unified_trading import WebSocket, WebSocketTrading
 from pybit.unified_trading import HTTP
-from dotenv import load_dotenv
+from pathlib import Path
+
+from dotenv import load_dotenv, dotenv_values
 import os
+
+_ENV_DOTFILE = Path(__file__).resolve().parent / ".env"
 
 
 # Load API keys and strategy params from .env (also try 'env' if .env is missing)
@@ -293,8 +297,18 @@ def _position_risk_payload() -> dict:
     if mid is None or mid <= 0:
         mid = float(entry)
     side = (_last_position_side or "Buy").strip()
-    sl_risk = abs(float(entry) - float(sl)) * size
-    tp_gain = abs(float(tp) - float(entry)) * size
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
+    trade_amt = float(os.getenv("TRADE_AMOUNT_USD", os.getenv("trade_amount", "100")))
+    lev = float(os.getenv("LEVERAGE", os.getenv("leverage", "10")))
+    position_value_usd = trade_amt * lev
+    ent = float(entry)
+    if ent <= 0:
+        return {"open": True, "has_levels": False, "side": side}
+    sl_pct_move = abs(ent - float(sl)) / ent
+    tp_pct_move = abs(float(tp) - ent) / ent
+    sl_risk_usd = sl_pct_move * position_value_usd
+    tp_gain_usd = tp_pct_move * position_value_usd
     # Bar: 0% = SL (left, red), 100% = TP (right, green)
     if side.lower() == "sell":
         span = float(sl) - float(tp)
@@ -316,8 +330,9 @@ def _position_risk_payload() -> dict:
         "size": round(size, 6),
         "sl_price": round(float(sl), 4),
         "tp_price": round(float(tp), 4),
-        "sl_amount_usd": round(-sl_risk, 2),
-        "tp_amount_usd": round(tp_gain, 2),
+        "sl_amount_usd": round(-sl_risk_usd, 6),
+        "tp_amount_usd": round(tp_gain_usd, 6),
+        "position_value_usd": round(position_value_usd, 2),
         "live_mid": round(float(mid), 4),
         "entry_pct": round(entry_pct, 2),
         "live_mid_pct": round(live_pct, 2),
@@ -439,8 +454,7 @@ async def execute_strategy_signal(
     leverage: float,
 ) -> None:
     """
-    Standalone execution logic: SL/TP from synthetic range, chunked entry, set SL/TP, monitoring via position stream.
-    Use for mock-signal testing. Only supports the configured SYMBOL (orderbook/execution stream are symbol-specific).
+    Mock / test execution: Signal_Range from last closed 1m candle (or synthetic), SL/TP from best bid/ask.
     """
     if symbol != SYMBOL:
         print(f"[Mock Signal] Only configured symbol {SYMBOL} is supported; got {symbol}. Aborting.")
@@ -453,30 +467,39 @@ async def execute_strategy_signal(
     load_dotenv("env", override=True)
     sl_mult = float(os.getenv("SL_MULTIPLIER", "1.0"))
     tp_mult = float(os.getenv("TP_MULTIPLIER", "2.0"))
-    range_ = current_price * MOCK_RANGE_PCT
-    close = current_price
-    if side == "Buy":
-        sl = close - (range_ * sl_mult)
-        tp = close + (range_ * tp_mult)
+    if len(KLINES) >= 2:
+        prev = KLINES[-2]
+        high, low = float(prev["high"]), float(prev["low"])
+        range_ = max(high - low, 1e-12)
     else:
-        sl = close + (range_ * sl_mult)
-        tp = close - (range_ * tp_mult)
+        range_ = max(current_price * MOCK_RANGE_PCT, 1e-12)
+        high = current_price + range_ / 2
+        low = current_price - range_ / 2
+    b_bid, b_ask, _, _ = _get_orderbook_l1()
+    if side == "Buy":
+        base = b_ask if b_ask and b_ask > 0 else current_price
+        sl = base - (range_ * sl_mult)
+        tp = base + (range_ * tp_mult)
+    else:
+        base = b_bid if b_bid and b_bid > 0 else current_price
+        sl = base + (range_ * sl_mult)
+        tp = base - (range_ * tp_mult)
     sl_str = f"{sl:.2f}"
     tp_str = f"{tp:.2f}"
 
     if USE_DELTA:
         from delta_client import get_delta_contract_value
 
-        total_qty = (usd_amount * leverage) / (get_delta_contract_value() * current_price)
+        total_qty = (usd_amount * leverage) / (get_delta_contract_value() * base)
     else:
-        total_qty = (usd_amount * leverage) / current_price
+        total_qty = (usd_amount * leverage) / base
     total_qty = max(_min_order_qty, math.floor(total_qty / _qty_step) * _qty_step)
     if total_qty < _min_order_qty:
         print(f"[Mock Signal] Abort: total_qty {total_qty} below minOrderQty {_min_order_qty}.")
         return
 
     print("[Mock Signal] Mock Signal Received.")
-    print(f"[Mock Signal] Calculated Entry: {current_price:.2f}")
+    print(f"[Mock Signal] Base (bid/ask): {base:.2f} | Signal range: {range_:.6f}")
     print(f"[Mock Signal] Calculated SL: {sl_str}, TP: {tp_str}")
     print("[Mock Signal] Starting Monitoring Loop (position stream will track).")
 
@@ -515,25 +538,19 @@ async def execute_strategy_signal(
 
 async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -> None:
     """
-    Async: chunk execution then set position SL/TP. Called from signal queue consumer.
-    Signal_Range = Signal_Candle_High - Signal_Candle_Low.
-    Stoploss = entry_price +/- (Signal_Range * SL_Multiplier), Target = entry_price +/- (Signal_Range * TP_Multiplier).
+    Chunk execution then SL/TP. Signal_Range = signal candle high − low.
+    LONG: base = best ask → SL = base − range×SL_MULT, TP = base + range×TP_MULT.
+    SHORT: base = best bid → SL = base + range×SL_MULT, TP = base − range×TP_MULT.
     """
     global _last_position_side, _last_signal_candle, _last_sl_price, _last_tp_price, _last_position_was_reverse
     if get_open_position():
         print("Position already open, skipping new signal")
         return
+    if not is_reverse and not _is_autotrade_enabled():
+        print("Auto Trade is OFF (read from .env); skipping queued entry.")
+        return
     high, low, close = _candle_to_ohlc(signal_candle)
-    range_ = high - low  # Signal_Range for SL/TP
-    if side == "Buy":
-        sl = close - (range_ * SL_MULTIPLIER)
-        tp = close + (range_ * TP_MULTIPLIER)
-    else:
-        sl = close + (range_ * SL_MULTIPLIER)
-        tp = close - (range_ * TP_MULTIPLIER)
-    sl_str = f"{sl:.2f}"
-    tp_str = f"{tp:.2f}"
-
+    range_ = max(high - low, 1e-12)
     load_dotenv(override=True)
     load_dotenv("env", override=True)
     trade_amount_usd = float(os.getenv("TRADE_AMOUNT_USD", "100"))
@@ -553,7 +570,23 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
             print(f"[BALANCE ERROR] Failed to fetch wallet balance: {e}. Skipping trade.")
             return
     b_bid, b_ask, _, _ = _get_orderbook_l1()
-    current_price = b_ask if side == "Buy" else b_bid
+    if side == "Buy":
+        if not b_ask or b_ask <= 0:
+            print("No best ask; cannot place LONG.")
+            return
+        base = b_ask
+        sl = base - (range_ * SL_MULTIPLIER)
+        tp = base + (range_ * TP_MULTIPLIER)
+    else:
+        if not b_bid or b_bid <= 0:
+            print("No best bid; cannot place SHORT.")
+            return
+        base = b_bid
+        sl = base + (range_ * SL_MULTIPLIER)
+        tp = base - (range_ * TP_MULTIPLIER)
+    sl_str = f"{sl:.2f}"
+    tp_str = f"{tp:.2f}"
+    current_price = base
     if USE_DELTA:
         from delta_client import get_delta_contract_value as _delta_cv
 
@@ -645,7 +678,8 @@ def has_valid_entry_signal_now(df: pd.DataFrame) -> tuple[str | None, pd.Series 
     tp_mult = float(os.getenv("TP_MULTIPLIER", "2.0"))
     tp_dist = range_ * tp_mult
     min_profit_pct = float(os.getenv("MIN_PROFIT_PCT", "0.5"))
-    expected_profit_pct = (tp_dist / close) * 100 if close > 0 else 0.0
+    ref_mid = (high + low) / 2 if high > 0 and low > 0 else close
+    expected_profit_pct = (tp_dist / ref_mid) * 100 if ref_mid > 0 else 0.0
     if expected_profit_pct < min_profit_pct:
         return (None, None)
     # SHORT: current bullish (close > open), previous bullish (close_prev > open_prev)
@@ -661,8 +695,17 @@ def has_valid_entry_signal_now(df: pd.DataFrame) -> tuple[str | None, pd.Series 
     return (None, None)
 
 
-def register_manual_trade(side: str, entry_price: float, sl_price: float, tp_price: float, allow_reversal: bool) -> None:
-    """Register a manual trade so reversal logic can use its SL/TP and allow reversal when Auto-Trade is OFF."""
+def register_manual_trade(
+    side: str,
+    entry_price: float,
+    sl_price: float,
+    tp_price: float,
+    allow_reversal: bool,
+    *,
+    signal_high: float | None = None,
+    signal_low: float | None = None,
+) -> None:
+    """Register manual trade; reversal uses same Signal_Range (high−low) as live auto."""
     global _last_position_side, _last_sl_price, _last_tp_price, _last_position_was_reverse, _last_signal_candle, _manual_reversal_allowed, _position_entry_price
     _last_position_side = side
     _last_sl_price = sl_price
@@ -670,11 +713,18 @@ def register_manual_trade(side: str, entry_price: float, sl_price: float, tp_pri
     _last_position_was_reverse = False
     _manual_reversal_allowed = allow_reversal
     _position_entry_price = float(entry_price)
+    if signal_high is not None and signal_low is not None and float(signal_high) >= float(signal_low):
+        _last_signal_candle = {
+            "high": float(signal_high),
+            "low": float(signal_low),
+            "close": float(entry_price),
+        }
+    else:
+        sl_mult = float(os.getenv("SL_MULTIPLIER", "1.0"))
+        sl_dist = abs(float(entry_price) - float(sl_price))
+        fake_range = sl_dist / sl_mult if sl_mult > 1e-12 else sl_dist
+        _last_signal_candle = {"high": float(entry_price) + fake_range, "low": float(entry_price), "close": float(entry_price)}
     _sync_position_risk_to_state()
-    sl_mult = float(os.getenv("SL_MULTIPLIER", "1.0"))
-    sl_dist = abs(entry_price - sl_price)
-    fake_range = sl_dist / sl_mult if sl_mult > 0 else sl_dist
-    _last_signal_candle = {"high": entry_price + fake_range, "low": entry_price, "close": entry_price}
 
 
 def _was_closed_by_sl() -> bool:
@@ -719,13 +769,17 @@ def on_position_closed() -> None:
         df = compute_indicators(df)
     side, row = has_valid_entry_signal_now(df)
     if side is not None and row is not None:
-        print("New valid entry signal after SL – taking new signal, cancelling reverse.")
-        row_dict = row.to_dict() if hasattr(row, "to_dict") else dict(row)
-        _loop.call_soon_threadsafe(_signal_queue.put_nowait, ("entry", side, row_dict, False))
-        _manual_reversal_allowed = False
+        if _is_autotrade_enabled():
+            print("New valid entry signal after SL – taking new signal, cancelling reverse.")
+            row_dict = row.to_dict() if hasattr(row, "to_dict") else dict(row)
+            _loop.call_soon_threadsafe(_signal_queue.put_nowait, ("entry", side, row_dict, False))
+            _manual_reversal_allowed = False
+            return
+        print("Fresh signal after SL but Auto Trade OFF — reverse/manual path only.")
+    if not _is_autotrade_enabled() and not _manual_reversal_allowed:
         return
     reverse_side = "Sell" if _last_position_side == "Buy" else "Buy"
-    print("No new signal after SL – placing reverse trade (same candle range).")
+    print("Placing reverse trade (same signal candle range).")
     _loop.call_soon_threadsafe(_signal_queue.put_nowait, ("entry", reverse_side, _last_signal_candle, True))
     _manual_reversal_allowed = False
 
@@ -774,11 +828,10 @@ def handle_position_message(message: dict) -> None:
 
 
 def _is_autotrade_enabled() -> bool:
-    """Reload .env and return True if AUTO_TRADE_ENABLED is True/true/1."""
-    load_dotenv(override=True)
-    load_dotenv("env", override=True)
-    v = os.getenv("AUTO_TRADE_ENABLED", "false").strip().lower()
-    return v in ("true", "1")
+    """Read AUTO_TRADE_ENABLED directly from .env on disk (immediate dashboard toggle)."""
+    vals = dotenv_values(_ENV_DOTFILE) if _ENV_DOTFILE.is_file() else {}
+    v = (vals.get("AUTO_TRADE_ENABLED") or "").strip().lower()
+    return v in ("true", "1", "yes")
 
 
 def check_signals(df: pd.DataFrame) -> None:
@@ -810,7 +863,8 @@ def check_signals(df: pd.DataFrame) -> None:
     tp_mult = float(os.getenv("TP_MULTIPLIER", "2.0"))
     tp_dist = range_ * tp_mult
     min_profit_pct = float(os.getenv("MIN_PROFIT_PCT", "0.5"))
-    expected_profit_pct = (tp_dist / close) * 100 if close > 0 else 0.0
+    ref_mid = (high + low) / 2 if high > 0 and low > 0 else close
+    expected_profit_pct = (tp_dist / ref_mid) * 100 if ref_mid > 0 else 0.0
     if expected_profit_pct < min_profit_pct:
         return
     row_dict = row.to_dict() if hasattr(row, "to_dict") else dict(row)
@@ -888,12 +942,13 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
     rsi_oversold_ok = rsi_float is not None and rsi_float < RSI_OVERSOLD
     rsi_overbought_ok = rsi_float is not None and rsi_float > RSI_OVERBOUGHT
 
-    # Expected price-move % to TP (not ROE / leverage)
+    # Expected price-move % to TP (vs mid of signal candle; not ROE / leverage)
     range_ = high - low
     tp_mult = float(os.getenv("TP_MULTIPLIER", "2.0"))
     tp_dist = range_ * tp_mult
     min_profit_pct = float(os.getenv("MIN_PROFIT_PCT", "0.5"))
-    expected_profit_pct = (tp_dist / close) * 100 if close > 0 else 0.0
+    ref_mid = (high + low) / 2 if high > 0 and low > 0 else close
+    expected_profit_pct = (tp_dist / ref_mid) * 100 if ref_mid > 0 else 0.0
     expected_profit_pct_ok = expected_profit_pct >= min_profit_pct
 
     long_rules = [

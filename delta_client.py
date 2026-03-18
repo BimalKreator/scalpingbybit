@@ -192,6 +192,37 @@ def fetch_historical_klines_delta(symbol: str, klines_out: list, max_n: int = 20
         return False
 
 
+def fetch_signal_candle_high_low_delta(symbol: str) -> tuple[float, float]:
+    """High/low of the last fully closed 1m candle (Signal_Range = high - low)."""
+    dsym = normalize_delta_symbol(symbol)
+    end = int(time.time())
+    start = end - 6 * 60
+    r = requests.get(
+        f"{_REST_BASE_INDIA}/v2/history/candles",
+        params={
+            "resolution": "1m",
+            "symbol": dsym,
+            "start": str(start),
+            "end": str(end),
+        },
+        headers={"Accept": "application/json"},
+        timeout=30,
+    )
+    data = r.json()
+    if not data.get("success"):
+        raise RuntimeError(str((data.get("error") or data) or "candles request failed"))
+    raw = list(data.get("result") or [])
+    if len(raw) < 2:
+        raise RuntimeError("insufficient Delta 1m candles")
+    raw.sort(key=lambda c: int(c.get("time") or 0))
+    c = raw[-2]
+    hi = float(c.get("high") or 0)
+    lo = float(c.get("low") or 0)
+    if hi <= 0 or lo <= 0 or hi < lo:
+        raise RuntimeError("invalid candle high/low from Delta")
+    return hi, lo
+
+
 async def execute_chunk_order_ws(
     side: str,
     total_qty: float,

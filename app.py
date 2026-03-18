@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
 
 from bybit_client import (
     _get_http_client,
@@ -27,6 +27,7 @@ from bybit_client import (
 from delta_client import (
     _delta_request,
     fetch_instrument_info_delta,
+    fetch_signal_candle_high_low_delta,
     _set_position_sl_tp_sync_delta,
     get_delta_contract_value,
     get_delta_product_id,
@@ -45,6 +46,36 @@ def get_env_path() -> Path:
     if ENV_PATH.exists():
         return ENV_PATH
     return ENV_PATH_FALLBACK
+
+
+def _sl_tp_multipliers_from_env_file() -> tuple[float, float]:
+    p = get_env_path()
+    v = dotenv_values(p) if p.is_file() else {}
+    return float(v.get("SL_MULTIPLIER") or 1.0), float(v.get("TP_MULTIPLIER") or 2.0)
+
+
+def _bybit_kline_last_closed_high_low(symbol: str) -> tuple[float, float]:
+    c = _get_http_client()
+    r = c.get_kline(category="linear", symbol=symbol, interval="1", limit=5)
+    if r.get("retCode") != 0:
+        raise RuntimeError(r.get("retMsg") or "get_kline failed")
+    lst = (r.get("result") or {}).get("list") or []
+    if len(lst) < 2:
+        raise RuntimeError("Not enough 1m klines (need last closed candle)")
+
+    def _one(raw):
+        if isinstance(raw, dict):
+            return (
+                int(raw.get("start", 0) or 0),
+                float(raw["high"]),
+                float(raw["low"]),
+            )
+        arr = raw.split(",") if isinstance(raw, str) else list(raw)
+        return int(float(arr[0])), float(arr[2]), float(arr[3])
+
+    bars = sorted((_one(x) for x in lst), key=lambda t: t[0])
+    _ts, hi, lo = bars[-2]
+    return hi, lo
 
 
 def read_env_vars() -> dict:
@@ -488,9 +519,26 @@ class ManualTradeBody(BaseModel):
     usd_amount: float
     leverage: float = 5.0
     side: str  # "Buy" or "Sell"
-    sl_pct: float = 0.5
-    tp_pct: float = 1.0
     allow_reversal: bool = False
+    signal_candle_high: float | None = None
+    signal_candle_low: float | None = None
+
+
+async def _resolve_manual_signal_candle(body: ManualTradeBody) -> tuple[float, float]:
+    if body.signal_candle_high is not None and body.signal_candle_low is not None:
+        hi, lo = float(body.signal_candle_high), float(body.signal_candle_low)
+        if hi < lo or lo <= 0:
+            raise HTTPException(400, detail="signal_candle_high must be >= signal_candle_low (positive)")
+        return hi, lo
+    if _app_exchange_id() == "delta_india":
+        try:
+            return await asyncio.to_thread(fetch_signal_candle_high_low_delta, body.symbol)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Delta 1m candle: {e}") from e
+    try:
+        return await asyncio.to_thread(_bybit_kline_last_closed_high_low, body.symbol)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
 
 
 class CloseTradeBody(BaseModel):
@@ -500,12 +548,15 @@ class CloseTradeBody(BaseModel):
 
 @app.post("/api/trade/manual")
 async def api_trade_manual(body: ManualTradeBody):
-    """Place manual trade via chunk execution. Accepts symbol, usd_amount, side."""
+    """Manual trade: SL/TP from Signal_Range (last closed 1m H−L or optional high/low) × env multipliers, anchored to best bid/ask after fill."""
     if body.side not in ("Buy", "Sell"):
         raise HTTPException(status_code=400, detail="side must be Buy or Sell")
     if body.usd_amount <= 0:
         raise HTTPException(status_code=400, detail="usd_amount must be positive")
     lev = max(1.0, min(100.0, float(body.leverage))) if body.leverage else 5.0
+    sig_hi, sig_lo = await _resolve_manual_signal_candle(body)
+    sig_range = max(sig_hi - sig_lo, 1e-12)
+    sl_m, tp_m = _sl_tp_multipliers_from_env_file()
     try:
         if _app_exchange_id() == "delta_india":
             k, sec = _delta_keys()
@@ -562,12 +613,22 @@ async def api_trade_manual(body: ManualTradeBody):
                 err = (resp or {}).get("error", {}) if isinstance(resp, dict) else {}
                 detail = err.get("message") if isinstance(err, dict) else str(resp)
                 raise HTTPException(status_code=400, detail=detail or "Delta order failed")
-            sl_dist = price * (body.sl_pct / 100.0)
-            tp_dist = price * (body.tp_pct / 100.0)
+            l1b = await asyncio.to_thread(get_delta_ticker_l1, body.symbol)
+            if not l1b:
+                raise HTTPException(status_code=502, detail="Delta L1 after fill unavailable")
+            bid2, ask2, _mid2 = l1b
             if body.side == "Buy":
-                sl, tp = price - sl_dist, price + tp_dist
+                if not ask2 or float(ask2) <= 0:
+                    raise HTTPException(status_code=502, detail="No best ask for SL/TP")
+                base = float(ask2)
+                sl = base - sig_range * sl_m
+                tp = base + sig_range * tp_m
             else:
-                sl, tp = price + sl_dist, price - tp_dist
+                if not bid2 or float(bid2) <= 0:
+                    raise HTTPException(status_code=502, detail="No best bid for SL/TP")
+                base = float(bid2)
+                sl = base + sig_range * sl_m
+                tp = base - sig_range * tp_m
             sl = _delta_round_price(sl, tick_f)
             tp = _delta_round_price(tp, tick_f)
             sl_str = f"{sl:g}"
@@ -579,7 +640,15 @@ async def api_trade_manual(body: ManualTradeBody):
             )
             from main import register_manual_trade
 
-            register_manual_trade(body.side, price, sl, tp, body.allow_reversal)
+            register_manual_trade(
+                body.side,
+                base,
+                sl,
+                tp,
+                body.allow_reversal,
+                signal_high=sig_hi,
+                signal_low=sig_lo,
+            )
             return {"ok": True, "message": "Trade executed (Delta)"}
 
         client = _get_http_client()
@@ -620,18 +689,38 @@ async def api_trade_manual(body: ManualTradeBody):
         success, err = await asyncio.to_thread(execute_chunk_order_rest, body.symbol, body.side, total_qty)
         if not success:
             raise HTTPException(status_code=400, detail=err or "Chunk execution failed")
-        # Set SL/TP after successful chunk execution (percentage-based from manual form)
-        sl_dist = price * (body.sl_pct / 100.0)
-        tp_dist = price * (body.tp_pct / 100.0)
+        ob2 = client.get_orderbook(category="linear", symbol=body.symbol, limit=1)
+        if ob2.get("retCode") != 0:
+            raise HTTPException(status_code=502, detail="Orderbook after fill failed")
+        res2 = ob2.get("result") or {}
+        a2 = (res2.get("a") or [])[:1]
+        b2 = (res2.get("b") or [])[:1]
         if body.side == "Buy":
-            sl, tp = price - sl_dist, price + tp_dist
+            if not a2:
+                raise HTTPException(status_code=502, detail="No best ask after fill")
+            base = float(a2[0][0])
+            sl = base - sig_range * sl_m
+            tp = base + sig_range * tp_m
         else:
-            sl, tp = price + sl_dist, price - tp_dist
+            if not b2:
+                raise HTTPException(status_code=502, detail="No best bid after fill")
+            base = float(b2[0][0])
+            sl = base + sig_range * sl_m
+            tp = base - sig_range * tp_m
         sl_str = f"{sl:.2f}"
         tp_str = f"{tp:.2f}"
         await asyncio.to_thread(lambda: _set_trading_stop_sync(client, body.symbol, sl_str, tp_str))
         from main import register_manual_trade
-        register_manual_trade(body.side, price, sl, tp, body.allow_reversal)
+
+        register_manual_trade(
+            body.side,
+            base,
+            sl,
+            tp,
+            body.allow_reversal,
+            signal_high=sig_hi,
+            signal_low=sig_lo,
+        )
         return {"ok": True, "message": "Trade executed"}
     except HTTPException:
         raise
@@ -714,21 +803,18 @@ class MockSignalBody(BaseModel):
     leverage: float = 5.0
 
 
-# Synthetic range (1% of price) for mock SL/TP when no candle is available
-MOCK_RANGE_PCT = 0.01
-
-
 @app.post("/api/trade/mock_signal")
 async def api_trade_mock_signal(body: MockSignalBody):
-    """Run auto-strategy execution (SL/TP, chunked entry, set SL/TP) using current ticker price. For testing."""
+    """Test chunked entry + SL/TP from last closed 1m range × multipliers, base = bid/ask after fill."""
     if body.side not in ("Buy", "Sell"):
         raise HTTPException(status_code=400, detail="side must be Buy or Sell")
     if body.usd_amount <= 0:
         raise HTTPException(status_code=400, detail="usd_amount must be positive")
     try:
         load_dotenv(str(get_env_path()))
-        sl_mult = float(os.getenv("SL_MULTIPLIER", "1.0"))
-        tp_mult = float(os.getenv("TP_MULTIPLIER", "2.0"))
+        sl_m, tp_m = _sl_tp_multipliers_from_env_file()
+        sig_hi, sig_lo = await asyncio.to_thread(_bybit_kline_last_closed_high_low, body.symbol)
+        sig_range = max(sig_hi - sig_lo, 1e-12)
         client = _get_http_client()
         ob = client.get_orderbook(category="linear", symbol=body.symbol, limit=1)
         if ob.get("retCode") != 0:
@@ -745,17 +831,6 @@ async def api_trade_mock_signal(body: MockSignalBody):
         if current_price <= 0:
             raise HTTPException(status_code=502, detail="Invalid price")
 
-        range_ = current_price * MOCK_RANGE_PCT
-        close = current_price
-        if body.side == "Buy":
-            sl = close - (range_ * sl_mult)
-            tp = close + (range_ * tp_mult)
-        else:
-            sl = close + (range_ * sl_mult)
-            tp = close - (range_ * tp_mult)
-        sl_str = f"{sl:.2f}"
-        tp_str = f"{tp:.2f}"
-
         qty_step, min_order_qty = _get_instrument_lot(body.symbol)
         total_qty = (body.usd_amount * body.leverage) / current_price
         total_qty = math.floor(total_qty / qty_step) * qty_step
@@ -765,10 +840,7 @@ async def api_trade_mock_signal(body: MockSignalBody):
                 detail=f"Quantity {total_qty:.6f} below minOrderQty {min_order_qty}. Increase trade amount or leverage.",
             )
 
-        print("[Mock Signal] Mock Signal Received.")
-        print(f"[Mock Signal] Calculated Entry: {current_price:.2f}")
-        print(f"[Mock Signal] Calculated SL: {sl_str}, TP: {tp_str}")
-        print("[Mock Signal] Starting Monitoring Loop (position stream will track).")
+        print("[Mock Signal] Mock Signal Received (range from last closed 1m candle).")
 
         try:
             client.set_leverage(
@@ -784,6 +856,25 @@ async def api_trade_mock_signal(body: MockSignalBody):
         )
         if not success:
             raise HTTPException(status_code=400, detail=err or "Chunk execution failed")
+        ob3 = client.get_orderbook(category="linear", symbol=body.symbol, limit=1)
+        r3 = (ob3.get("result") or {}) if ob3.get("retCode") == 0 else {}
+        a3 = (r3.get("a") or [])[:1]
+        b3 = (r3.get("b") or [])[:1]
+        if body.side == "Buy":
+            if not a3:
+                raise HTTPException(status_code=502, detail="No ask after fill")
+            base = float(a3[0][0])
+            sl = base - sig_range * sl_m
+            tp = base + sig_range * tp_m
+        else:
+            if not b3:
+                raise HTTPException(status_code=502, detail="No bid after fill")
+            base = float(b3[0][0])
+            sl = base + sig_range * sl_m
+            tp = base - sig_range * tp_m
+        sl_str = f"{sl:.2f}"
+        tp_str = f"{tp:.2f}"
+        print(f"[Mock Signal] Base {base:.2f} | SL {sl_str} | TP {tp_str}")
         ok = await asyncio.to_thread(
             lambda: _set_trading_stop_sync(client, body.symbol, sl_str, tp_str)
         )

@@ -224,6 +224,8 @@ def run_backtest(
 
     ex = (exchange or "bybit").lower()
     exit_fee_r = _exit_fee_rate(ex)
+    # Proxy best ask/bid at bar open (live uses L1; backtest has no book)
+    _SPREAD_HALF = 0.00015
     print(
         f"[backtest] exchange={ex} min_profit_pct={min_profit_pct} allow_reversal={allow_reversal} "
         f"entry_fee={TAKER_ENTRY_FEE} exit_fee={exit_fee_r}"
@@ -306,14 +308,16 @@ def run_backtest(
             if do_reversal:
                 if side == "Buy":
                     side = "Sell"
-                    entry_price = exit_price
-                    sl_price = entry_price + signal_range * sl_multiplier
-                    tp_price = entry_price - signal_range * tp_multiplier
+                    base = float(exit_price) * (1.0 - _SPREAD_HALF)
+                    entry_price = base
+                    sl_price = base + signal_range * sl_multiplier
+                    tp_price = base - signal_range * tp_multiplier
                 else:
                     side = "Buy"
-                    entry_price = exit_price
-                    sl_price = entry_price - signal_range * sl_multiplier
-                    tp_price = entry_price + signal_range * tp_multiplier
+                    base = float(exit_price) * (1.0 + _SPREAD_HALF)
+                    entry_price = base
+                    sl_price = base - signal_range * sl_multiplier
+                    tp_price = base + signal_range * tp_multiplier
                 qty = (trade_amount_usd * leverage) / entry_price if entry_price else 0.0
                 reversal_count = 1
                 entry_time = ts
@@ -338,26 +342,30 @@ def run_backtest(
         low_prev = float(row_prev["low"])
         range_ = high_prev - low_prev
         tp_dist = range_ * tp_multiplier
-        expected_profit_pct = (tp_dist / close_prev) * 100 if close_prev > 0 else 0.0
+        ref_mid = (high_prev + low_prev) / 2 if high_prev > 0 and low_prev > 0 else close_prev
+        expected_profit_pct = (tp_dist / ref_mid) * 100 if ref_mid > 0 else 0.0
         if expected_profit_pct < min_profit_pct:
             i += 1
             continue
 
         entered = False
+        o_entry = float(row["open"])
         if close_prev > open_prev and md and vd and rsi > rsi_overbought:
-            entry_price = close_prev
+            base = o_entry * (1.0 - _SPREAD_HALF)
+            entry_price = base
             qty = (trade_amount_usd * leverage) / entry_price if entry_price else 0.0
-            sl_price = close_prev + range_ * sl_multiplier
-            tp_price = close_prev - range_ * tp_multiplier
+            sl_price = base + range_ * sl_multiplier
+            tp_price = base - range_ * tp_multiplier
             side = "Sell"
             signal_range = range_
             reversal_count = 0
             entered = True
         elif close_prev < open_prev and md and vd and rsi < rsi_oversold:
-            entry_price = close_prev
+            base = o_entry * (1.0 + _SPREAD_HALF)
+            entry_price = base
             qty = (trade_amount_usd * leverage) / entry_price if entry_price else 0.0
-            sl_price = close_prev - range_ * sl_multiplier
-            tp_price = close_prev + range_ * tp_multiplier
+            sl_price = base - range_ * sl_multiplier
+            tp_price = base + range_ * tp_multiplier
             side = "Buy"
             signal_range = range_
             reversal_count = 0
@@ -365,7 +373,7 @@ def run_backtest(
 
         if entered:
             in_position = True
-            entry_time = int(row_prev["timestamp"])
+            entry_time = int(row["timestamp"])
             continue
 
         i += 1
