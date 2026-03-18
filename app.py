@@ -336,6 +336,7 @@ async def dashboard_page():
         sl_multiplier_max=vars.get("SL_MULTIPLIER_MAX", vars.get("SL_MULTIPLIER", "3.0")),
         sl_multiplier_min=vars.get("SL_MULTIPLIER_MIN", "0.5"),
         sl_decay_seconds=vars.get("SL_DECAY_SECONDS", "10"),
+        sl_delay_ms=vars.get("SL_DELAY_MS", "0"),
         trailing_sl_enabled=vars.get("TRAILING_SL_ENABLED", "true"),
         tp_multiplier=vars.get("TP_MULTIPLIER", "2.0"),
         breakeven_buffer_pct=vars.get("BREAKEVEN_BUFFER_PCT", "0.05"),
@@ -365,6 +366,7 @@ async def api_update_env(
     sl_multiplier_max: str = Form(None),
     sl_multiplier_min: str = Form(None),
     sl_decay_seconds: str = Form(None),
+    sl_delay_ms: str = Form(None),
     trailing_sl_enabled: str = Form(None),
     tp_multiplier: str = Form(None),
     breakeven_buffer_pct: str = Form(None),
@@ -414,6 +416,12 @@ async def api_update_env(
         updates["SL_MULTIPLIER_MIN"] = sl_multiplier_min.strip()
     if sl_decay_seconds is not None:
         updates["SL_DECAY_SECONDS"] = sl_decay_seconds.strip()
+    if sl_delay_ms is not None:
+        try:
+            d = int(str(sl_delay_ms).strip())
+            updates["SL_DELAY_MS"] = str(max(0, min(120_000, d)))
+        except (TypeError, ValueError):
+            updates["SL_DELAY_MS"] = "0"
     if trailing_sl_enabled is not None:
         updates["TRAILING_SL_ENABLED"] = (
             "true" if str(trailing_sl_enabled).strip().lower() in ("1", "true", "on", "yes") else "false"

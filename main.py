@@ -148,6 +148,8 @@ _instrument_min_notional: float = 6.0
 
 # Event loop reference for bridging WS callbacks into asyncio
 _loop: asyncio.AbstractEventLoop | None = None
+# SL trigger delay: only one delayed SL check at a time
+_sl_trigger_task_running: bool = False
 # Queue for entry signals (side, row_dict, is_reverse) from kline/position callbacks
 _signal_queue: asyncio.Queue | None = None
 
@@ -430,6 +432,16 @@ def _sl_decay_seconds() -> float:
         return 10.0
 
 
+def _sl_delay_ms() -> int:
+    """SL_DELAY_MS from .env; 0 = immediate SL (no wick filter)."""
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
+    try:
+        return max(0, min(120_000, int(os.getenv("SL_DELAY_MS", "0"))))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _breakeven_buffer_decimal() -> float:
     """BREAKEVEN_BUFFER_PCT is percent points (e.g. 0.05 → 0.0005 as decimal)."""
     load_dotenv(override=True)
@@ -520,8 +532,8 @@ def handle_orderbook_message(message: dict) -> None:
 
 
 def _trigger_local_sl_tp_if_needed(mid_price: float) -> None:
-    """Exit when mid crosses dynamic active SL or static TP."""
-    global _is_closing_position, _loop
+    """Exit when mid crosses TP immediately, or SL (optionally after SL_DELAY_MS re-check)."""
+    global _is_closing_position, _loop, _sl_trigger_task_running
     if mid_price <= 0 or _loop is None:
         return
     with _local_sl_tp_lock:
@@ -536,28 +548,136 @@ def _trigger_local_sl_tp_if_needed(mid_price: float) -> None:
             return
         ps = (_last_position_side or "").strip().lower()
         tpf = float(_last_tp_price)
-        hit = False
+        original_sl = float(act)
+        tp_hit = sl_hit = False
         if ps == "buy":
-            if mid_price <= act or mid_price >= tpf:
-                hit = True
+            sl_hit = mid_price <= original_sl
+            tp_hit = mid_price >= tpf
         elif ps == "sell":
-            if mid_price >= act or mid_price <= tpf:
-                hit = True
-        if not hit:
+            sl_hit = mid_price >= original_sl
+            tp_hit = mid_price <= tpf
+        else:
             return
+        if not tp_hit and not sl_hit:
+            return
+        if tp_hit:
+            _is_closing_position = True
+
+    if tp_hit:
+
+        def _sched_tp() -> None:
+            try:
+                _ = asyncio.create_task(_async_local_sl_tp_close(mid_price))
+            except Exception as e:
+                print(f"[Local SL/TP] schedule error: {e}")
+                with _local_sl_tp_lock:
+                    global _is_closing_position
+                    _is_closing_position = False
+
+        _loop.call_soon_threadsafe(_sched_tp)
+        return
+
+    delay_ms = _sl_delay_ms()
+    if delay_ms > 0:
+        if _sl_trigger_task_running:
+            return
+
+        def _sched_delay() -> None:
+            global _sl_trigger_task_running
+            try:
+                _sl_trigger_task_running = True
+                _ = asyncio.create_task(
+                    _delayed_sl_check(ps, original_sl, tpf, delay_ms)
+                )
+            except Exception as e:
+                _sl_trigger_task_running = False
+                print(f"[Local SL/TP] delayed SL schedule error: {e}")
+
+        _loop.call_soon_threadsafe(_sched_delay)
+        return
+
+    with _local_sl_tp_lock:
         _is_closing_position = True
 
-    def _sched() -> None:
+    def _sched_sl() -> None:
         try:
-            t = asyncio.create_task(_async_local_sl_tp_close(mid_price))
-            _ = t
+            _ = asyncio.create_task(_async_local_sl_tp_close(mid_price))
         except Exception as e:
             print(f"[Local SL/TP] schedule error: {e}")
             with _local_sl_tp_lock:
                 global _is_closing_position
                 _is_closing_position = False
 
-    _loop.call_soon_threadsafe(_sched)
+    _loop.call_soon_threadsafe(_sched_sl)
+
+
+async def _delayed_sl_check(
+    side_l: str,
+    original_sl_price: float,
+    tp_price: float,
+    delay_ms: int,
+) -> None:
+    """
+    After SL_DELAY_MS, re-read mid; close only if still through SL (wick filter).
+    TP always closes immediately if crossed after wait.
+    """
+    global _sl_trigger_task_running, _is_closing_position
+    try:
+        if delay_ms <= 0:
+            return
+        await asyncio.sleep(delay_ms / 1000.0)
+        if not get_open_position():
+            return
+        with _local_sl_tp_lock:
+            if _is_closing_position:
+                return
+        with _orderbook_lock:
+            bb, ba = best_bid, best_ask
+        if bb <= 0 or ba <= 0:
+            return
+        current_mid = (bb + ba) / 2.0
+        tpf = float(tp_price)
+        sl = (side_l or "").strip().lower()
+        if sl == "buy":
+            if current_mid >= tpf:
+                with _local_sl_tp_lock:
+                    if _is_closing_position:
+                        return
+                    _is_closing_position = True
+                await _async_local_sl_tp_close(current_mid)
+                return
+            if current_mid <= original_sl_price:
+                with _local_sl_tp_lock:
+                    if _is_closing_position:
+                        return
+                    _is_closing_position = True
+                await _async_local_sl_tp_close(current_mid)
+            else:
+                print(
+                    f"[Local SL/TP] Fake SL spike avoided (LONG): mid={current_mid:.4f} "
+                    f"> SL={original_sl_price:.4f} after {delay_ms}ms"
+                )
+        elif sl == "sell":
+            if current_mid <= tpf:
+                with _local_sl_tp_lock:
+                    if _is_closing_position:
+                        return
+                    _is_closing_position = True
+                await _async_local_sl_tp_close(current_mid)
+                return
+            if current_mid >= original_sl_price:
+                with _local_sl_tp_lock:
+                    if _is_closing_position:
+                        return
+                    _is_closing_position = True
+                await _async_local_sl_tp_close(current_mid)
+            else:
+                print(
+                    f"[Local SL/TP] Fake SL spike avoided (SHORT): mid={current_mid:.4f} "
+                    f"< SL={original_sl_price:.4f} after {delay_ms}ms"
+                )
+    finally:
+        _sl_trigger_task_running = False
 
 
 async def _async_local_sl_tp_close(trigger_mid: float) -> None:
