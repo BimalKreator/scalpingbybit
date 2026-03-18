@@ -5,7 +5,6 @@ import asyncio
 import logging
 import math
 import os
-import time
 from pathlib import Path
 
 # Suppress uvicorn access log spam (GET /api/account 200, etc.) so bot logic prints are visible
@@ -19,7 +18,12 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from dotenv import load_dotenv
 
-from bybit_client import _get_http_client, _get_instrument_lot, _map_exit_reason
+from bybit_client import (
+    _get_http_client,
+    _get_instrument_lot,
+    _map_exit_reason,
+    execute_chunk_order_rest,
+)
 
 # Env file: prefer .env, fallback to "env"
 ENV_PATH = Path(__file__).resolve().parent / ".env"
@@ -81,107 +85,6 @@ if _env_path != ENV_PATH_FALLBACK:
 
 # Bybit HTTP client for account, positions, and manual chunk execution (REST-only)
 REFERENCE_BALANCE = 67.56  # Overall Profit = Current Balance - REFERENCE_BALANCE
-
-
-def _run_chunk_order_sync(symbol: str, side: str, total_qty: float) -> tuple[bool, str]:
-    """
-    Execute total_qty in chunks using REST only: L1 orderbook, Limit IOC, poll order history.
-    Applies minOrderQty, dust prevention, and qtyStep rounding.
-    Returns (success, error_message).
-    """
-    if total_qty <= 0:
-        return True, ""
-    client = _get_http_client()
-    min_notional = 6.0
-    liquidity_fraction = 0.5
-    loop_delay = 0.075
-    fill_poll_interval = 0.05
-    fill_poll_max = 8  # 0.4s total
-
-    try:
-        qty_step, min_order_qty = _get_instrument_lot(symbol)
-    except Exception as e:
-        return False, str(e)
-
-    remaining_qty = total_qty
-    while remaining_qty > 0:
-        try:
-            if remaining_qty < min_order_qty:
-                break
-            ob = client.get_orderbook(category="linear", symbol=symbol, limit=1)
-            if ob.get("retCode") != 0:
-                time.sleep(loop_delay)
-                continue
-            bids = (ob.get("result", {}).get("b") or [])[:1]
-            asks = (ob.get("result", {}).get("a") or [])[:1]
-            if side == "Buy":
-                if not asks:
-                    time.sleep(loop_delay)
-                    continue
-                price = float(asks[0][0])
-                top_qty = float(asks[0][1])
-            else:
-                if not bids:
-                    time.sleep(loop_delay)
-                    continue
-                price = float(bids[0][0])
-                top_qty = float(bids[0][1])
-
-            if price <= 0:
-                time.sleep(loop_delay)
-                continue
-            if remaining_qty * price < min_notional:
-                break
-            # Tentative chunk from liquidity
-            target_chunk = min(remaining_qty, top_qty * liquidity_fraction)
-            chunk_qty = target_chunk
-            # Rule 1 (Minimum Chunk)
-            chunk_qty = max(chunk_qty, min_order_qty)
-            chunk_qty = min(chunk_qty, remaining_qty)
-            # Rule 2 (Dust Prevention)
-            remainder_after = remaining_qty - chunk_qty
-            if remainder_after > 0 and remainder_after < min_order_qty:
-                chunk_qty = remaining_qty
-            # Rule 3 (Rounding)
-            chunk_qty = math.floor(chunk_qty / qty_step) * qty_step
-            chunk_qty = min(chunk_qty, remaining_qty)
-            if chunk_qty < min_order_qty:
-                break
-            print(f"Target Chunk: {target_chunk:.6f}, Adjusted Chunk (Min/Dust logic): {chunk_qty:.6f}, Remaining: {remaining_qty:.6f}")
-            price_str = f"{price:.2f}"
-            qty_str = f"{chunk_qty:.6f}".rstrip("0").rstrip(".")
-
-            order = client.place_order(
-                category="linear",
-                symbol=symbol,
-                side=side,
-                orderType="Limit",
-                qty=qty_str,
-                price=price_str,
-                timeInForce="IOC",
-            )
-            if order.get("retCode") != 0:
-                time.sleep(loop_delay)
-                continue
-            order_id = (order.get("result") or {}).get("orderId")
-            if not order_id:
-                time.sleep(loop_delay)
-                continue
-
-            filled = 0.0
-            for _ in range(fill_poll_max):
-                time.sleep(fill_poll_interval)
-                hist = client.get_order_history(category="linear", symbol=symbol, orderId=order_id, limit=1)
-                if hist.get("retCode") == 0:
-                    lst = (hist.get("result") or {}).get("list") or []
-                    if lst:
-                        filled = float(lst[0].get("cumExecQty") or 0)
-                        break
-            remaining_qty -= filled
-        except Exception as e:
-            return False, str(e)
-        time.sleep(loop_delay)
-    return True, ""
 
 
 app = FastAPI(title="Bybit Weak Momentum Reversal")
@@ -495,7 +398,7 @@ async def api_trade_manual(body: ManualTradeBody):
                 status_code=400,
                 detail=f"Quantity {total_qty:.6f} below minOrderQty {min_order_qty}. Increase trade amount or leverage.",
             )
-        success, err = await asyncio.to_thread(_run_chunk_order_sync, body.symbol, body.side, total_qty)
+        success, err = await asyncio.to_thread(execute_chunk_order_rest, body.symbol, body.side, total_qty)
         if not success:
             raise HTTPException(status_code=400, detail=err or "Chunk execution failed")
         # Set SL/TP after successful chunk execution (percentage-based from manual form)
@@ -536,7 +439,7 @@ async def api_trade_close(body: CloseTradeBody):
         if size <= 0:
             raise HTTPException(status_code=400, detail="No open position for this symbol")
         close_side = "Sell" if body.side == "Buy" else "Buy"
-        success, err = await asyncio.to_thread(_run_chunk_order_sync, body.symbol, close_side, size)
+        success, err = await asyncio.to_thread(execute_chunk_order_rest, body.symbol, close_side, size)
         if not success:
             raise HTTPException(status_code=400, detail=err or "Close failed")
         return {"ok": True, "message": "Position closed"}
@@ -619,7 +522,7 @@ async def api_trade_mock_signal(body: MockSignalBody):
         except Exception:
             pass
         success, err = await asyncio.to_thread(
-            _run_chunk_order_sync, body.symbol, body.side, total_qty
+            execute_chunk_order_rest, body.symbol, body.side, total_qty
         )
         if not success:
             raise HTTPException(status_code=400, detail=err or "Chunk execution failed")

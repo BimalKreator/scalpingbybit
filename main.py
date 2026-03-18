@@ -43,7 +43,12 @@ HTTP_CLIENT = HTTP(
     api_secret=BYBIT_API_SECRET or "",
 )
 
-from bybit_client import fetch_instrument_info, _get_order_filled_qty_rest, _set_position_sl_tp_sync
+from bybit_client import (
+    BybitLiveStream,
+    execute_chunk_order_ws,
+    fetch_instrument_info,
+    _set_position_sl_tp_sync,
+)
 
 # In-memory store for kline rows; continuously updated (capped at KLINES_MAX for memory)
 KLINES_MAX = 200
@@ -272,132 +277,6 @@ def _candle_to_ohlc(signal_candle: pd.Series | dict) -> tuple[float, float, floa
     )
 
 
-def _place_limit_ioc_sync(side: str, price_str: str, qty_str: str) -> tuple[str | None, int]:
-    """Place a single Limit IOC order via WebSocket Trade. Returns (order_id, ret_code). Blocks until response."""
-    global ws_trade
-    if ws_trade is None:
-        return (None, -1)
-    result_holder: list = []
-    event = threading.Event()
-
-    def on_response(message: dict) -> None:
-        result_holder.append(message)
-        event.set()
-
-    try:
-        ws_trade.place_order(
-            on_response,
-            category="linear",
-            symbol=SYMBOL,
-            side=side,
-            orderType="Limit",
-            qty=qty_str,
-            price=price_str,
-            timeInForce="IOC",
-        )
-        if not event.wait(timeout=10):
-            return (None, -1)
-        msg = result_holder[0] if result_holder else {}
-        ret_code = int(msg.get("retCode", -1))
-        order_id = (msg.get("result") or {}).get("orderId") if ret_code == 0 else None
-        return (order_id, ret_code)
-    except Exception:
-        return (None, -1)
-
-
-async def execute_chunk_order(side: str, total_qty: float) -> None:
-    """
-    Execute total_qty in chunks using L1 orderbook: Limit IOC at best bid/ask,
-    track fills via private execution WS with 0.4s timeout and REST fallback.
-    Applies minOrderQty, dust prevention, and qtyStep rounding.
-    """
-    global _loop, _pending_fills, _qty_step, _min_order_qty
-    min_notional = 6.0
-    liquidity_fraction = 0.5
-    fill_timeout = 0.4
-    loop_delay = 0.075
-    step = _qty_step
-    min_order_qty = _min_order_qty
-
-    remaining_qty = total_qty
-    loop = asyncio.get_event_loop()
-
-    while remaining_qty > 0:
-        if remaining_qty < min_order_qty:
-            break
-        # Current price for notional check: buy at ask, sell at bid
-        b_bid, b_ask, b_qty, a_qty = _get_orderbook_l1()
-        current_price = b_ask if side == "Buy" else b_bid
-        if current_price <= 0:
-            await asyncio.sleep(loop_delay)
-            continue
-
-        current_value = remaining_qty * current_price
-        if current_value < min_notional:
-            break
-
-        top_row_qty = a_qty if side == "Buy" else b_qty
-        if top_row_qty <= 0:
-            await asyncio.sleep(loop_delay)
-            continue
-
-        # Tentative chunk from liquidity
-        target_chunk = min(remaining_qty, top_row_qty * liquidity_fraction)
-        chunk_qty = target_chunk
-        # Rule 1 (Minimum Chunk): at least minOrderQty
-        chunk_qty = max(chunk_qty, min_order_qty)
-        chunk_qty = min(chunk_qty, remaining_qty)
-        # Rule 2 (Dust Prevention): if remainder would be positive but below minOrderQty, take full remaining
-        remainder_after = remaining_qty - chunk_qty
-        if remainder_after > 0 and remainder_after < min_order_qty:
-            chunk_qty = remaining_qty
-        # Rule 3 (Rounding): floor to valid multiple of qtyStep, cap at remaining
-        chunk_qty = math.floor(chunk_qty / step) * step
-        chunk_qty = min(chunk_qty, remaining_qty)
-        if chunk_qty < min_order_qty:
-            break
-        print(f"Target Chunk: {target_chunk:.6f}, Adjusted Chunk (Min/Dust logic): {chunk_qty:.6f}, Remaining: {remaining_qty:.6f}")
-
-        price_str = f"{current_price:.2f}" if side == "Buy" else f"{current_price:.2f}"
-        qty_str = f"{chunk_qty:.6f}".rstrip("0").rstrip(".")
-
-        order_id: str | None = None
-        try:
-            order_id, ret_code = await loop.run_in_executor(
-                None,
-                lambda: _place_limit_ioc_sync(side, price_str, qty_str),
-            )
-        except Exception:
-            order_id = None
-            ret_code = -1
-
-        if order_id is None or ret_code != 0:
-            await asyncio.sleep(loop_delay)
-            break
-
-        fill_future: asyncio.Future[float] = loop.create_future()
-        with _pending_fills_lock:
-            _pending_fills[order_id] = (fill_future, 0.0)
-
-        try:
-            filled_qty = await asyncio.wait_for(fill_future, timeout=fill_timeout)
-        except asyncio.TimeoutError:
-            filled_qty = await loop.run_in_executor(
-                None,
-                lambda oid=order_id: _get_order_filled_qty_rest(oid, SYMBOL, HTTP_CLIENT),
-            )
-        finally:
-            with _pending_fills_lock:
-                _pending_fills.pop(order_id, None)
-
-        if filled_qty == 0:
-            break
-        remaining_qty -= filled_qty
-        await asyncio.sleep(loop_delay)
-
-    print("Chunk execution done. Remaining qty:", remaining_qty)
-
-
 def _place_order_via_ws(side: str, sl_str: str, tp_str: str, qty_str: str) -> bool:
     """Send market order via WebSocket Trade API. Returns True if request accepted (retCode 0)."""
     global ws_trade
@@ -494,7 +373,20 @@ async def execute_strategy_signal(
         )
     except Exception:
         pass
-    await execute_chunk_order(side, total_qty)
+    loop = asyncio.get_running_loop()
+    await execute_chunk_order_ws(
+        side,
+        total_qty,
+        SYMBOL,
+        _qty_step,
+        _min_order_qty,
+        _get_orderbook_l1,
+        loop,
+        ws_trade,
+        _pending_fills,
+        _pending_fills_lock,
+        HTTP_CLIENT,
+    )
     ok = _set_position_sl_tp_sync(HTTP_CLIENT, SYMBOL, "linear", sl_str, tp_str)
     if ok:
         print("[Mock Signal] SL/TP set successfully.")
@@ -562,9 +454,21 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
     except Exception:
         pass  # ignore if leverage already set to that value
 
-    await execute_chunk_order(side, total_qty)
+    loop = asyncio.get_running_loop()
+    await execute_chunk_order_ws(
+        side,
+        total_qty,
+        SYMBOL,
+        _qty_step,
+        _min_order_qty,
+        _get_orderbook_l1,
+        loop,
+        ws_trade,
+        _pending_fills,
+        _pending_fills_lock,
+        HTTP_CLIENT,
+    )
 
-    loop = asyncio.get_event_loop()
     ok = await loop.run_in_executor(
         None,
         lambda: _set_position_sl_tp_sync(HTTP_CLIENT, SYMBOL, "linear", sl_str, tp_str),
@@ -995,15 +899,25 @@ async def main_async() -> None:
         df_init = compute_indicators(df_init)
         _update_live_strategy_state(df_init)
 
-    # 1) Public linear – klines
-    ws_kline = WebSocket(
-        testnet=False,
-        channel_type="linear",
-        api_key="",
-        api_secret="",
-    )
-    ws_kline.kline_stream(interval=1, symbol=SYMBOL, callback=handle_kline_message)
-    print("Subscribed to 1m kline " + SYMBOL + " (public WebSocket).")
+    live_stream = BybitLiveStream()
+    try:
+        await live_stream.start(
+            api_key,
+            api_secret,
+            SYMBOL,
+            handle_kline_message,
+            handle_orderbook_message,
+            handle_position_message,
+            handle_execution_message,
+        )
+    except BaseException:
+        live_stream.stop()
+        raise
+    ws_kline = live_stream.ws_kline
+    ws_orderbook = live_stream.ws_orderbook
+    ws_private = live_stream.ws_private
+    ws_trade = live_stream.ws_trade
+
     # Write initial live strategy state so dashboard can show symbol/status before first kline
     try:
         with open(_LIVE_STATE_PATH, "w", encoding="utf-8") as f:
@@ -1016,35 +930,6 @@ async def main_async() -> None:
             }, f, indent=2)
     except Exception:
         pass
-
-    # 2) Public linear – orderbook.1 (L1 for chunk execution)
-    ws_orderbook = WebSocket(
-        testnet=False,
-        channel_type="linear",
-        api_key="",
-        api_secret="",
-    )
-    ws_orderbook.orderbook_stream(depth=1, symbol=SYMBOL, callback=handle_orderbook_message)
-    print("Subscribed to orderbook.1 " + SYMBOL + " (public WebSocket).")
-
-    # 3) Private – position + execution streams
-    ws_private = WebSocket(
-        testnet=False,
-        channel_type="private",
-        api_key=api_key,
-        api_secret=api_secret,
-    )
-    ws_private.position_stream(callback=handle_position_message)
-    ws_private.execution_stream(callback=handle_execution_message)
-    print("Subscribed to position + execution (private WebSocket).")
-
-    # 4) WebSocket Trade – order placement
-    ws_trade = WebSocketTrading(
-        testnet=False,
-        api_key=api_key,
-        api_secret=api_secret,
-    )
-    print("WebSocket Trade connected (order placement).")
 
     consumer = asyncio.create_task(_signal_consumer())
     print("Running (async chunk execution). Ctrl+C to stop.\n")
@@ -1059,14 +944,11 @@ async def main_async() -> None:
             await consumer
         except asyncio.CancelledError:
             pass
-        if ws_kline:
-            ws_kline.exit()
-        if ws_orderbook:
-            ws_orderbook.exit()
-        if ws_private:
-            ws_private.exit()
-        if ws_trade:
-            ws_trade.exit()
+        live_stream.stop()
+        ws_kline = None
+        ws_orderbook = None
+        ws_private = None
+        ws_trade = None
 
 
 def main() -> None:
