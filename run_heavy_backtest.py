@@ -20,13 +20,14 @@ SYMBOL = "BTCUSDT"  # use BTCUSD-style for Delta if needed
 EXCHANGE = "delta_india"  # "delta_india" | "bybit"
 
 START_DATE = "2025-01-01T00:00:00"
-END_DATE = "2025-12-31T23:59:59"
+END_DATE = "2026-03-18T09:35:00"  # Typo fixed here
 
-RSI_LENGTH = 4  # base when RSI length not in grid
-RSI_LEN_MIN = 7
-RSI_LEN_MAX = 21
+RSI_LENGTH = 14  # base when RSI length not in grid
+RSI_LEN_MIN = 2
+RSI_LEN_MAX = 8
 RSI_LEN_STEP = 1
-MIN_PROFIT_PCT = 0.5
+
+MIN_PROFIT_PCT = 0.08  # Kept small as discussed for Price Move %
 ALLOW_REVERSAL = True
 
 TRADE_AMOUNT_USD = 100.0
@@ -34,13 +35,15 @@ LEVERAGE = 10.0
 INITIAL_CAPITAL = 100.0
 OPTIMIZE_BY = "total_pnl"  # total_pnl | max_drawdown | win_rate | profit_factor
 
-# Grid search ranges
-RSI_OB_MIN, RSI_OB_MAX, RSI_OB_STEP = 60, 80, 5
-RSI_OS_MIN, RSI_OS_MAX, RSI_OS_STEP = 20, 40, 5
-SL_MIN, SL_MAX, SL_STEP = 0.5, 1.0, 0.1
-TP_MIN, TP_MAX, TP_STEP = 1.0, 3.0, 0.2
+# Grid search ranges (SL and TP updated to your requirement)
+SL_MIN, SL_MAX, SL_STEP = 0.1, 1.5, 0.1
+TP_MIN, TP_MAX, TP_STEP = 0.1, 1.5, 0.1
 
-# Base params (used only if a dimension has no grid — here all gridded)
+# Setting OB/OS to None so it strictly uses Base Params to save time
+RSI_OB_MIN, RSI_OB_MAX, RSI_OB_STEP = None, None, None
+RSI_OS_MIN, RSI_OS_MAX, RSI_OS_STEP = None, None, None
+
+# Base params (used only if a dimension has no grid)
 RSI_OVERBOUGHT = 60.0
 RSI_OVERSOLD = 40.0
 SL_MULTIPLIER = 1.0
@@ -135,12 +138,23 @@ def main() -> int:
         f"RSI_OS={bp.get('rsi_oversold')} SL={bp.get('sl_multiplier')} TP={bp.get('tp_multiplier')} "
         f"→ total_pnl={best.get('total_pnl')}"
     )
-    print("-" * 60)
-    print("Top 5 by total_pnl:")
-    top = out_df.sort_values("total_pnl", ascending=False).head(5)
+    
+    # Optional: Display configuration to view better combinations natively in console
     pd.set_option("display.max_columns", None)
     pd.set_option("display.width", 200)
-    print(top.to_string(index=False))
+    
+    print("-" * 60)
+    print("🏆 Top 5 by Total P&L:")
+    top_pnl = out_df.sort_values("total_pnl", ascending=False).head(5)
+    print(top_pnl.to_string(index=False))
+    
+    print("-" * 60)
+    print("🎯 Top 5 by Win Rate (with at least 5 trades to filter outliers):")
+    # Filters out rows where total_trades < 5 to prevent showing 100% win rate on just 1 lucky trade
+    valid_trades = out_df[out_df['total_trades'] >= 5] if 'total_trades' in out_df.columns else out_df
+    top_win = valid_trades.sort_values("win_rate", ascending=False).head(5) if not valid_trades.empty else out_df.head(5)
+    print(top_win.to_string(index=False))
+    
     print("=" * 60)
     return 0
 
