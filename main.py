@@ -23,7 +23,10 @@ load_dotenv("env", override=True)
 
 BYBIT_API_KEY = os.getenv("BYBIT_API_KEY")
 BYBIT_API_SECRET = os.getenv("BYBIT_API_SECRET")
+DELTA_API_KEY = os.getenv("DELTA_API_KEY")
+DELTA_API_SECRET = os.getenv("DELTA_API_SECRET")
 EXCHANGE_ID = os.getenv("EXCHANGE_ID", "bybit").lower()
+USE_DELTA = EXCHANGE_ID == "delta_india"
 
 # Strategy parameters (from .env)
 SYMBOL = os.getenv("TRADING_SYMBOL") or os.getenv("SYMBOL", "BTCUSDT")
@@ -37,19 +40,34 @@ SL_MULTIPLIER = float(os.getenv("SL_MULTIPLIER", "1.0"))
 TP_MULTIPLIER = float(os.getenv("TP_MULTIPLIER", "2.0"))
 MIN_PROFIT_PCT = float(os.getenv("MIN_PROFIT_PCT", "0.5"))
 
-# HTTP client only for closed PnL (SL detection); no longer used for positions or orders
-HTTP_CLIENT = HTTP(
-    testnet=False,
-    api_key=BYBIT_API_KEY or "",
-    api_secret=BYBIT_API_SECRET or "",
-)
+if USE_DELTA:
+    from delta_client import (
+        DeltaLiveStream,
+        execute_chunk_order_ws,
+        fetch_historical_klines_delta,
+        fetch_instrument_info as _delta_fetch_instrument_info,
+        _set_position_sl_tp_sync,
+    )
 
-from bybit_client import (
-    BybitLiveStream,
-    execute_chunk_order_ws,
-    fetch_instrument_info,
-    _set_position_sl_tp_sync,
-)
+    def fetch_instrument_info(symbol: str, http_client=None):
+        ok, _tick, _cv, mnv = _delta_fetch_instrument_info(symbol)
+        if not ok:
+            return (False, None, None, None)
+        return (True, 1.0, 1.0, float(mnv or 6.0))
+
+    HTTP_CLIENT = None
+else:
+    HTTP_CLIENT = HTTP(
+        testnet=False,
+        api_key=BYBIT_API_KEY or "",
+        api_secret=BYBIT_API_SECRET or "",
+    )
+    from bybit_client import (
+        BybitLiveStream,
+        execute_chunk_order_ws,
+        fetch_instrument_info,
+        _set_position_sl_tp_sync,
+    )
 
 # In-memory store for kline rows; continuously updated (capped at KLINES_MAX for memory)
 KLINES_MAX = 200
@@ -155,6 +173,8 @@ def fetch_historical_klines() -> bool:
     Returns True on success.
     """
     global KLINES
+    if USE_DELTA:
+        return fetch_historical_klines_delta(SYMBOL, KLINES, KLINES_MAX)
     get_kline = getattr(HTTP_CLIENT, "get_kline", None) or getattr(HTTP_CLIENT, "get_kline_list", None)
     if get_kline is None:
         print("Warning: HTTP client has no get_kline; starting with empty KLINES.")
@@ -281,6 +301,9 @@ def _candle_to_ohlc(signal_candle: pd.Series | dict) -> tuple[float, float, floa
 def _place_order_via_ws(side: str, sl_str: str, tp_str: str, qty_str: str) -> bool:
     """Send market order via WebSocket Trade API. Returns True if request accepted (retCode 0)."""
     global ws_trade
+    if USE_DELTA:
+        print("[Delta] _place_order_via_ws: use signal flow or extend app manual trade for Delta REST.")
+        return False
     if ws_trade is None:
         print("WebSocket trade not initialized.")
         return False
@@ -365,15 +388,16 @@ async def execute_strategy_signal(
     print(f"[Mock Signal] Calculated SL: {sl_str}, TP: {tp_str}")
     print("[Mock Signal] Starting Monitoring Loop (position stream will track).")
 
-    try:
-        HTTP_CLIENT.set_leverage(
-            category="linear",
-            symbol=SYMBOL,
-            buyLeverage=str(int(leverage)),
-            sellLeverage=str(int(leverage)),
-        )
-    except Exception:
-        pass
+    if not USE_DELTA:
+        try:
+            HTTP_CLIENT.set_leverage(
+                category="linear",
+                symbol=SYMBOL,
+                buyLeverage=str(int(leverage)),
+                sellLeverage=str(int(leverage)),
+            )
+        except Exception:
+            pass
     loop = asyncio.get_running_loop()
     await execute_chunk_order_ws(
         side,
@@ -388,7 +412,9 @@ async def execute_strategy_signal(
         _pending_fills_lock,
         HTTP_CLIENT,
     )
-    ok = _set_position_sl_tp_sync(HTTP_CLIENT, SYMBOL, "linear", sl_str, tp_str)
+    ok = _set_position_sl_tp_sync(
+        HTTP_CLIENT, SYMBOL, "linear", sl_str, tp_str, entry_side=side
+    )
     if ok:
         print("[Mock Signal] SL/TP set successfully.")
     else:
@@ -420,18 +446,20 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
     load_dotenv("env", override=True)
     trade_amount_usd = float(os.getenv("TRADE_AMOUNT_USD", "100"))
     leverage = float(os.getenv("LEVERAGE", "5"))
-    # Balance safety: do not trade if trade amount exceeds available balance
-    try:
-        resp = HTTP_CLIENT.get_wallet_balance(accountType="UNIFIED")
-        if resp.get("retCode") == 0:
-            lst = (resp.get("result") or {}).get("list") or []
-            available = float(lst[0].get("totalAvailableBalance", 0)) if lst else 0.0
-            if trade_amount_usd > available:
-                print(f"[BALANCE ERROR] Trade amount ${trade_amount_usd:.2f} exceeds available balance ${available:.2f}. Skipping trade.")
-                return
-    except Exception as e:
-        print(f"[BALANCE ERROR] Failed to fetch wallet balance: {e}. Skipping trade.")
-        return
+    if not USE_DELTA:
+        try:
+            resp = HTTP_CLIENT.get_wallet_balance(accountType="UNIFIED")
+            if resp.get("retCode") == 0:
+                lst = (resp.get("result") or {}).get("list") or []
+                available = float(lst[0].get("totalAvailableBalance", 0)) if lst else 0.0
+                if trade_amount_usd > available:
+                    print(
+                        f"[BALANCE ERROR] Trade amount ${trade_amount_usd:.2f} exceeds available balance ${available:.2f}. Skipping trade."
+                    )
+                    return
+        except Exception as e:
+            print(f"[BALANCE ERROR] Failed to fetch wallet balance: {e}. Skipping trade.")
+            return
     b_bid, b_ask, _, _ = _get_orderbook_l1()
     current_price = b_ask if side == "Buy" else b_bid
     if current_price <= 0:
@@ -445,15 +473,16 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
         print(f"Abort: total_qty {total_qty} below minOrderQty {_min_order_qty}. Increase trade amount or leverage.")
         return
 
-    try:
-        HTTP_CLIENT.set_leverage(
-            category="linear",
-            symbol=SYMBOL,
-            buyLeverage=str(int(leverage)),
-            sellLeverage=str(int(leverage)),
-        )
-    except Exception:
-        pass  # ignore if leverage already set to that value
+    if not USE_DELTA:
+        try:
+            HTTP_CLIENT.set_leverage(
+                category="linear",
+                symbol=SYMBOL,
+                buyLeverage=str(int(leverage)),
+                sellLeverage=str(int(leverage)),
+            )
+        except Exception:
+            pass
 
     loop = asyncio.get_running_loop()
     await execute_chunk_order_ws(
@@ -472,7 +501,9 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
 
     ok = await loop.run_in_executor(
         None,
-        lambda: _set_position_sl_tp_sync(HTTP_CLIENT, SYMBOL, "linear", sl_str, tp_str),
+        lambda s=side: _set_position_sl_tp_sync(
+            HTTP_CLIENT, SYMBOL, "linear", sl_str, tp_str, entry_side=s
+        ),
     )
     if ok:
         print("Calculated SL:", sl_str, "| TP:", tp_str)
@@ -854,13 +885,19 @@ async def main_async() -> None:
         print(f"SERVER PUBLIC IP: (fetch failed: {e})")
     global ws_kline, ws_orderbook, ws_private, ws_trade, _loop, _signal_queue, LAST_SIGNAL_CANDLE_START
     global _qty_step, _min_order_qty, _instrument_min_notional
-    api_key = BYBIT_API_KEY or ""
-    api_secret = BYBIT_API_SECRET or ""
+    if USE_DELTA:
+        api_key = DELTA_API_KEY or ""
+        api_secret = DELTA_API_SECRET or ""
+        key_msg = "DELTA_API_KEY and DELTA_API_SECRET required in .env for EXCHANGE_ID=delta_india"
+    else:
+        api_key = BYBIT_API_KEY or ""
+        api_secret = BYBIT_API_SECRET or ""
+        key_msg = "BYBIT_API_KEY and BYBIT_API_SECRET required in .env"
     if not api_key or not api_secret:
-        print("BYBIT_API_KEY and BYBIT_API_SECRET required in .env")
+        print(key_msg)
         return
 
-    print(f"STRATEGY START: Monitoring {SYMBOL}")
+    print(f"STRATEGY START: [{EXCHANGE_ID}] Monitoring {SYMBOL}")
     # Load last signal candle from file so we don't repeat signal on same candle after restart
     try:
         if _LIVE_STATE_PATH.exists():
@@ -884,7 +921,9 @@ async def main_async() -> None:
             "status": "Waiting",
         })
 
-    ok_inst, qt, miq, mnv = fetch_instrument_info(SYMBOL, HTTP_CLIENT)
+    ok_inst, qt, miq, mnv = fetch_instrument_info(
+        SYMBOL, HTTP_CLIENT if not USE_DELTA else None
+    )
     if not ok_inst or qt is None or miq is None or mnv is None:
         print("Warning: could not fetch instrument info; using default qty_step=0.001")
     else:
@@ -900,24 +939,44 @@ async def main_async() -> None:
         df_init = compute_indicators(df_init)
         _update_live_strategy_state(df_init)
 
-    live_stream = BybitLiveStream()
-    try:
-        await live_stream.start(
-            api_key,
-            api_secret,
-            SYMBOL,
-            handle_kline_message,
-            handle_orderbook_message,
-            handle_position_message,
-            handle_execution_message,
-        )
-    except BaseException:
-        live_stream.stop()
-        raise
-    ws_kline = live_stream.ws_kline
-    ws_orderbook = live_stream.ws_orderbook
-    ws_private = live_stream.ws_private
-    ws_trade = live_stream.ws_trade
+    if USE_DELTA:
+        live_stream = DeltaLiveStream()
+        try:
+            await live_stream.start(
+                api_key,
+                api_secret,
+                SYMBOL,
+                handle_kline_message,
+                handle_orderbook_message,
+                handle_position_message,
+                handle_execution_message,
+            )
+        except BaseException:
+            await live_stream.stop_async()
+            raise
+        ws_kline = None
+        ws_orderbook = None
+        ws_private = None
+        ws_trade = None
+    else:
+        live_stream = BybitLiveStream()
+        try:
+            await live_stream.start(
+                api_key,
+                api_secret,
+                SYMBOL,
+                handle_kline_message,
+                handle_orderbook_message,
+                handle_position_message,
+                handle_execution_message,
+            )
+        except BaseException:
+            live_stream.stop()
+            raise
+        ws_kline = live_stream.ws_kline
+        ws_orderbook = live_stream.ws_orderbook
+        ws_private = live_stream.ws_private
+        ws_trade = live_stream.ws_trade
 
     # Write initial live strategy state so dashboard can show symbol/status before first kline
     try:
@@ -945,7 +1004,10 @@ async def main_async() -> None:
             await consumer
         except asyncio.CancelledError:
             pass
-        live_stream.stop()
+        if USE_DELTA:
+            await live_stream.stop_async()
+        else:
+            live_stream.stop()
         ws_kline = None
         ws_orderbook = None
         ws_private = None

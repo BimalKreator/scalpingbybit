@@ -109,6 +109,7 @@ def _set_position_sl_tp_sync(
     category: str,
     stop_loss: str,
     take_profit: str,
+    entry_side: str | None = None,
 ) -> bool:
     """Set position SL/TP via REST (one-way mode). Returns True on success."""
     try:

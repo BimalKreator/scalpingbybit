@@ -1,35 +1,163 @@
 """
-Delta India exchange client (skeleton for Phase 2/3 multi-exchange).
+Delta Exchange (India) REST + WebSocket client.
+Docs: https://docs.delta.exchange/
 """
+from __future__ import annotations
+
 import asyncio
+import hashlib
+import hmac
+import json
+import math
+import os
 import threading
+import time
 from typing import Any, Callable
 
-from pybit.unified_trading import HTTP
+import requests
+import websockets
+
+# Product cache (set by fetch_instrument_info)
+_DELTA_PRODUCT_ID: int = 0
+_DELTA_SYMBOL: str = ""
+_DELTA_TICK_SIZE: float = 0.5
+_DELTA_CONTRACT_VALUE: float = 0.001
+_REST_BASE_INDIA = "https://api.india.delta.exchange"
+_WS_BASE_INDIA = "wss://socket.india.delta.exchange"
 
 
-class DeltaLiveStream:
-    """Placeholder live stream for Delta India (WebSocket wiring TBD)."""
-
-    async def start(
-        self,
-        api_key: str,
-        api_secret: str,
-        symbol: str,
-        on_kline: Callable[[dict], None],
-        on_orderbook: Callable[[dict], None],
-        on_position: Callable[[dict], None],
-        on_execution: Callable[[dict], None],
-    ) -> None:
-        pass
-
-    def stop(self) -> None:
-        pass
+def normalize_delta_symbol(symbol: str) -> str:
+    s = (symbol or "").strip().upper().replace("USDT", "USD")
+    return s or "BTCUSD"
 
 
-def fetch_instrument_info(symbol: str) -> tuple[bool, float, float, float]:
-    """Skeleton: return default linear instrument params."""
-    return (True, 0.001, 0.001, 6.0)
+def _generate_signature(secret: str, message: str) -> str:
+    return hmac.new(
+        secret.encode("utf-8"),
+        message.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _delta_request(
+    method: str,
+    path: str,
+    api_key: str,
+    api_secret: str,
+    base_url: str = _REST_BASE_INDIA,
+    query_str: str = "",
+    json_body: dict | None = None,
+) -> dict | list | None:
+    """Signed REST call. path like /v2/orders (no host). query_str like '?a=1' or ''."""
+    ts = str(int(time.time()))
+    payload = "" if json_body is None else json.dumps(json_body, separators=(",", ":"))
+    sig_data = method.upper() + ts + path + query_str + payload
+    sig = _generate_signature(api_secret, sig_data)
+    headers = {
+        "Accept": "application/json",
+        "api-key": api_key,
+        "timestamp": ts,
+        "signature": sig,
+    }
+    if json_body is not None:
+        headers["Content-Type"] = "application/json"
+    url = base_url.rstrip("/") + path + (query_str if query_str else "")
+    try:
+        if method.upper() == "GET":
+            r = requests.get(url, headers=headers, timeout=30)
+        elif method.upper() == "POST":
+            r = requests.post(url, headers=headers, data=payload if payload else None, timeout=30)
+        elif method.upper() == "DELETE":
+            r = requests.delete(url, headers=headers, timeout=30)
+        else:
+            r = requests.request(method.upper(), url, headers=headers, data=payload or None, timeout=30)
+        return r.json() if r.text else {}
+    except Exception as e:
+        print(f"[Delta REST] {method} {path} error: {e}")
+        return None
+
+
+def get_delta_product_id() -> int:
+    return _DELTA_PRODUCT_ID
+
+
+def fetch_instrument_info(symbol: str) -> tuple[bool, float | None, float | None, float | None]:
+    """
+    GET /v2/products/{symbol} (public). Sets module product cache.
+    Returns (ok, qty_step_for_main, min_order_qty, min_notional) — main uses 1,1,6 for contracts.
+    """
+    global _DELTA_PRODUCT_ID, _DELTA_SYMBOL, _DELTA_TICK_SIZE, _DELTA_CONTRACT_VALUE
+    dsym = normalize_delta_symbol(symbol)
+    try:
+        r = requests.get(
+            f"{_REST_BASE_INDIA}/v2/products/{dsym}",
+            headers={"Accept": "application/json"},
+            timeout=30,
+        )
+        data = r.json()
+        if not data.get("success") or not data.get("result"):
+            return (False, None, None, None)
+        p = data["result"]
+        _DELTA_PRODUCT_ID = int(p.get("id") or 0)
+        _DELTA_SYMBOL = p.get("symbol") or dsym
+        _DELTA_TICK_SIZE = float(p.get("tick_size") or 0.5)
+        _DELTA_CONTRACT_VALUE = float(p.get("contract_value") or 0.001)
+        tick = _DELTA_TICK_SIZE
+        cv = _DELTA_CONTRACT_VALUE
+        return (True, tick, cv, 6.0)
+    except Exception as e:
+        print(f"[Delta] fetch_instrument_info: {e}")
+        return (False, None, None, None)
+
+
+def fetch_historical_klines_delta(symbol: str, klines_out: list, max_n: int = 200) -> bool:
+    """Load 1m candles into klines_out (same row shape as Bybit)."""
+    dsym = normalize_delta_symbol(symbol)
+    end = int(time.time())
+    start = end - max_n * 60
+    try:
+        r = requests.get(
+            f"{_REST_BASE_INDIA}/v2/history/candles",
+            params={
+                "resolution": "1m",
+                "symbol": dsym,
+                "start": str(start),
+                "end": str(end),
+            },
+            headers={"Accept": "application/json"},
+            timeout=45,
+        )
+        data = r.json()
+        if not data.get("success"):
+            return False
+        rows = []
+        for c in data.get("result") or []:
+            t = int(c.get("time") or 0)
+            if t < 1_000_000_000_000:
+                start_ms = t * 1000
+            else:
+                start_ms = t // 1000
+            rows.append({
+                "start": start_ms,
+                "end": start_ms + 60000,
+                "interval": "1",
+                "open": float(c.get("open") or 0),
+                "high": float(c.get("high") or 0),
+                "low": float(c.get("low") or 0),
+                "close": float(c.get("close") or 0),
+                "volume": float(c.get("volume") or 0),
+                "turnover": 0.0,
+                "confirm": True,
+                "timestamp": start_ms,
+            })
+        rows.sort(key=lambda x: x["start"])
+        klines_out.clear()
+        klines_out.extend(rows[-max_n:])
+        print(f"[Delta] Loaded {len(klines_out)} historical 1m candles for {dsym}.")
+        return len(klines_out) > 0
+    except Exception as e:
+        print(f"[Delta] fetch_historical_klines: {e}")
+        return False
 
 
 async def execute_chunk_order_ws(
@@ -43,23 +171,382 @@ async def execute_chunk_order_ws(
     ws_trade: Any,
     pending_fills_dict: dict,
     pending_fills_lock: threading.Lock,
-    http_client: HTTP,
+    http_client: Any,
 ) -> None:
-    """Skeleton: no-op chunk execution."""
-    pass
+    """Place Delta market order; poll until filled."""
+    api_key = os.getenv("DELTA_API_KEY") or ""
+    api_secret = os.getenv("DELTA_API_SECRET") or ""
+    if not api_key or not api_secret or _DELTA_PRODUCT_ID <= 0:
+        print("[Delta] Missing API keys or product_id; skip execute_chunk_order_ws.")
+        return
+
+    b_bid, b_ask, _, _ = get_l1_func()
+    price = (b_bid + b_ask) / 2 if b_bid > 0 and b_ask > 0 else max(b_ask, b_bid, 1.0)
+    trade_usd = float(os.getenv("TRADE_AMOUNT_USD", "100"))
+    lev = float(os.getenv("LEVERAGE", "5"))
+    cv = max(_DELTA_CONTRACT_VALUE, 1e-9)
+    contracts = int((trade_usd * lev) / (cv * price))
+    contracts = max(int(min_order_qty), max(1, contracts))
+
+    d_side = "buy" if side == "Buy" else "sell"
+    body = {
+        "product_id": _DELTA_PRODUCT_ID,
+        "product_symbol": _DELTA_SYMBOL,
+        "size": contracts,
+        "side": d_side,
+        "order_type": "market_order",
+    }
+    resp = await loop.run_in_executor(
+        None,
+        lambda: _delta_request("POST", "/v2/orders", api_key, api_secret, json_body=body),
+    )
+    if not resp or not resp.get("success"):
+        print(f"[Delta] market order failed: {resp}")
+        return
+    oid = (resp.get("result") or {}).get("id")
+    if not oid:
+        return
+    for _ in range(50):
+        await asyncio.sleep(0.12)
+        filled = await loop.run_in_executor(
+            None,
+            lambda i=int(oid): _get_order_filled_qty_rest(str(i), symbol, None),
+        )
+        ojson = await loop.run_in_executor(
+            None,
+            lambda i=int(oid): _delta_request("GET", f"/v2/orders/{i}", api_key, api_secret),
+        )
+        if isinstance(ojson, dict) and ojson.get("success"):
+            r = ojson.get("result") or {}
+            if float(r.get("unfilled_size") or 0) <= 0 or r.get("state") == "closed":
+                print(f"[Delta] Market order {oid} filled ~{filled} contracts.")
+                return
+    print("[Delta] Market order fill poll timeout for order", oid)
 
 
 def _set_position_sl_tp_sync(
-    http_client: HTTP,
+    http_client: Any,
     symbol: str,
     category: str,
     stop_loss: str,
     take_profit: str,
+    entry_side: str | None = None,
 ) -> bool:
-    """Skeleton: pretend SL/TP were set."""
+    """Bracket or separate stop_market / take_profit_market reduce-only orders."""
+    api_key = os.getenv("DELTA_API_KEY") or ""
+    api_secret = os.getenv("DELTA_API_SECRET") or ""
+    if not api_key or not api_secret or _DELTA_PRODUCT_ID <= 0:
+        return False
+    close_side = "sell" if (entry_side or "Buy") == "Buy" else "buy"
+    body = {
+        "product_id": _DELTA_PRODUCT_ID,
+        "product_symbol": _DELTA_SYMBOL,
+        "stop_loss_order": {
+            "order_type": "stop_market",
+            "stop_price": stop_loss,
+        },
+        "take_profit_order": {
+            "order_type": "take_profit_market",
+            "stop_price": take_profit,
+        },
+        "bracket_stop_trigger_method": "last_traded_price",
+    }
+    resp = _delta_request("POST", "/v2/orders/bracket", api_key, api_secret, json_body=body)
+    if resp and resp.get("success"):
+        return True
+    print(f"[Delta] bracket failed, trying separate SL/TP: {resp}")
+    for ob, label in (
+        (
+            {
+                "product_id": _DELTA_PRODUCT_ID,
+                "product_symbol": _DELTA_SYMBOL,
+                "size": 999999,
+                "side": close_side,
+                "order_type": "stop_market",
+                "stop_price": stop_loss,
+                "reduce_only": True,
+            },
+            "SL",
+        ),
+        (
+            {
+                "product_id": _DELTA_PRODUCT_ID,
+                "product_symbol": _DELTA_SYMBOL,
+                "size": 999999,
+                "side": close_side,
+                "order_type": "take_profit_market",
+                "stop_price": take_profit,
+                "reduce_only": True,
+            },
+            "TP",
+        ),
+    ):
+        r = _delta_request("POST", "/v2/orders", api_key, api_secret, json_body=ob)
+        if not r or not r.get("success"):
+            print(f"[Delta] {label} order failed: {r}")
     return True
 
 
-def _get_order_filled_qty_rest(order_id: str, symbol: str, http_client: HTTP) -> float:
-    """Skeleton: no REST fill data."""
-    return 0.0
+def _get_order_filled_qty_rest(order_id: str, symbol: str, http_client: Any) -> float:
+    api_key = os.getenv("DELTA_API_KEY") or ""
+    api_secret = os.getenv("DELTA_API_SECRET") or ""
+    if not api_key or not api_secret:
+        return 0.0
+    try:
+        oid = int(order_id)
+    except ValueError:
+        return 0.0
+    resp = _delta_request("GET", f"/v2/orders/{oid}", api_key, api_secret)
+    if not resp or not resp.get("success"):
+        return 0.0
+    r = resp.get("result") or {}
+    sz = float(r.get("size") or 0)
+    unf = float(r.get("unfilled_size") or 0)
+    return max(0.0, sz - unf)
+
+
+class DeltaLiveStream:
+    """Delta India WebSocket: candlestick_1m, l2_orderbook, positions, orders."""
+
+    def __init__(self) -> None:
+        self._ws: Any = None
+        self._task: asyncio.Task | None = None
+        self._running = False
+        self._order_unfilled: dict[int, float] = {}
+        self._main_symbol: str = ""
+        self._env_symbol: str = ""
+
+    async def start(
+        self,
+        api_key: str,
+        api_secret: str,
+        symbol: str,
+        on_kline: Callable[[dict], None],
+        on_orderbook: Callable[[dict], None],
+        on_position: Callable[[dict], None],
+        on_execution: Callable[[dict], None],
+    ) -> None:
+        self._main_symbol = normalize_delta_symbol(symbol)
+        self._env_symbol = (symbol or "").strip().upper() or self._main_symbol
+        self._running = True
+        self._ws = await websockets.connect(
+            _WS_BASE_INDIA,
+            ping_interval=20,
+            ping_timeout=20,
+            close_timeout=10,
+        )
+        pub = {
+            "type": "subscribe",
+            "payload": {
+                "channels": [
+                    {"name": "candlestick_1m", "symbols": [self._main_symbol]},
+                    {"name": "l2_orderbook", "symbols": [self._main_symbol]},
+                ]
+            },
+        }
+        await self._ws.send(json.dumps(pub))
+
+        ts = str(int(time.time()))
+        sig = _generate_signature(api_secret, "GET" + ts + "/live")
+        await self._ws.send(
+            json.dumps(
+                {
+                    "type": "key-auth",
+                    "payload": {
+                        "api-key": api_key,
+                        "signature": sig,
+                        "timestamp": int(ts),
+                    },
+                }
+            )
+        )
+        for _ in range(30):
+            raw = await asyncio.wait_for(self._ws.recv(), timeout=10.0)
+            try:
+                auth_msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if auth_msg.get("type") == "key-auth":
+                if not auth_msg.get("success"):
+                    raise RuntimeError(f"Delta WS auth failed: {auth_msg}")
+                break
+        else:
+            raise RuntimeError("Delta WS auth timeout")
+
+        await self._ws.send(json.dumps({"type": "enable_heartbeat"}))
+        priv = {
+            "type": "subscribe",
+            "payload": {
+                "channels": [
+                    {"name": "positions", "symbols": [self._main_symbol]},
+                    {"name": "orders", "symbols": [self._main_symbol]},
+                ]
+            },
+        }
+        await self._ws.send(json.dumps(priv))
+
+        self._task = asyncio.create_task(
+            self._recv_loop(on_kline, on_orderbook, on_position, on_execution)
+        )
+        print(f"[Delta WS] Subscribed 1m/l2 + private positions/orders for {self._main_symbol}.")
+
+    async def _recv_loop(
+        self,
+        on_kline: Callable[[dict], None],
+        on_orderbook: Callable[[dict], None],
+        on_position: Callable[[dict], None],
+        on_execution: Callable[[dict], None],
+    ) -> None:
+        assert self._ws is not None
+        try:
+            while self._running:
+                try:
+                    raw = await asyncio.wait_for(self._ws.recv(), timeout=60.0)
+                except asyncio.TimeoutError:
+                    continue
+                except websockets.exceptions.ConnectionClosed:
+                    break
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                t = msg.get("type")
+                if t == "heartbeat":
+                    continue
+                if t == "candlestick_1m" or (
+                    isinstance(t, str) and t.startswith("candlestick_")
+                ):
+                    cst = int(msg.get("candle_start_time") or 0)
+                    start_ms = cst // 1000 if cst > 10**15 else (cst * 1000 if cst < 10**12 else cst)
+                    row = {
+                        "start": int(start_ms),
+                        "end": int(start_ms) + 60000,
+                        "interval": "1",
+                        "open": float(msg.get("open") or 0),
+                        "high": float(msg.get("high") or 0),
+                        "low": float(msg.get("low") or 0),
+                        "close": float(msg.get("close") or 0),
+                        "volume": float(msg.get("volume") or 0),
+                        "turnover": 0.0,
+                        "confirm": True,
+                        "timestamp": int(start_ms),
+                    }
+                    try:
+                        on_kline({"data": [row]})
+                    except Exception as e:
+                        print(f"[Delta WS] on_kline error: {e}")
+                elif t == "l2_orderbook":
+                    if msg.get("symbol") != self._main_symbol:
+                        continue
+                    buys = msg.get("buy") or []
+                    sells = msg.get("sell") or []
+                    bid_p = bid_q = ask_p = ask_q = 0.0
+                    if buys:
+                        bid_p = float(buys[0].get("limit_price") or 0)
+                        bid_q = float(buys[0].get("size") or 0)
+                    if sells:
+                        ask_p = float(sells[0].get("limit_price") or 0)
+                        ask_q = float(sells[0].get("size") or 0)
+                    try:
+                        on_orderbook(
+                            {
+                                "data": {
+                                    "b": [[str(bid_p), str(bid_q)]] if bid_p else [],
+                                    "a": [[str(ask_p), str(ask_q)]] if ask_p else [],
+                                }
+                            }
+                        )
+                    except Exception as e:
+                        print(f"[Delta WS] on_orderbook error: {e}")
+                elif t == "positions":
+                    sym_u = self._env_symbol
+                    if msg.get("action") == "snapshot":
+                        for p in msg.get("result") or []:
+                            if (p.get("product_symbol") or p.get("symbol")) != self._main_symbol:
+                                continue
+                            sz = float(p.get("size") or 0)
+                            try:
+                                on_position(
+                                    {
+                                        "data": [
+                                            {
+                                                "category": "linear",
+                                                "symbol": sym_u,
+                                                "size": abs(sz),
+                                            }
+                                        ]
+                                    }
+                                )
+                            except Exception as e:
+                                print(f"[Delta WS] on_position snapshot: {e}")
+                    else:
+                        if msg.get("symbol") != self._main_symbol:
+                            continue
+                        sz = float(msg.get("size") or 0)
+                        try:
+                            on_position(
+                                {
+                                    "data": [
+                                        {
+                                            "category": "linear",
+                                            "symbol": sym_u,
+                                            "size": abs(sz),
+                                        }
+                                    ]
+                                }
+                            )
+                        except Exception as e:
+                            print(f"[Delta WS] on_position: {e}")
+                elif t == "orders":
+                    if msg.get("action") == "snapshot":
+                        continue
+                    oid = msg.get("order_id")
+                    if oid is None:
+                        continue
+                    oid = int(oid)
+                    unf = float(msg.get("unfilled_size") or 0)
+                    sz = float(msg.get("size") or 0)
+                    prev = self._order_unfilled.get(oid, sz)
+                    fill_delta = max(0.0, prev - unf)
+                    self._order_unfilled[oid] = unf
+                    if fill_delta > 0 or (unf <= 0 and msg.get("state") == "closed"):
+                        exec_qty = fill_delta if fill_delta > 0 else max(0.0, sz - unf)
+                        try:
+                            on_execution(
+                                {
+                                    "data": [
+                                        {
+                                            "orderId": str(oid),
+                                            "execQty": exec_qty,
+                                            "leavesQty": unf,
+                                        }
+                                    ]
+                                }
+                            )
+                        except Exception as e:
+                            print(f"[Delta WS] on_execution: {e}")
+                    if msg.get("state") in ("closed", "cancelled"):
+                        self._order_unfilled.pop(oid, None)
+        except Exception as e:
+            print(f"[Delta WS] recv_loop error: {e}")
+        finally:
+            self._running = False
+
+    async def stop_async(self) -> None:
+        self._running = False
+        if self._task and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        if self._ws:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
+
+    def stop(self) -> None:
+        """Sync no-op; use await stop_async() from async context."""
+        self._running = False
