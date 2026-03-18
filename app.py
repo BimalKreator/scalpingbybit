@@ -28,8 +28,11 @@ from delta_client import (
     _delta_request,
     fetch_instrument_info_delta,
     _set_position_sl_tp_sync_delta,
+    get_delta_contract_value,
     get_delta_product_id,
+    get_delta_tick_size,
     get_delta_ticker_l1,
+    normalize_delta_contract_size,
     normalize_delta_symbol,
 )
 
@@ -500,13 +503,20 @@ async def api_trade_manual(body: ManualTradeBody):
             k, sec = _delta_keys()
             if not k or not sec:
                 raise HTTPException(status_code=502, detail="DELTA_API_KEY / DELTA_API_SECRET required")
-            ok_inst, tick, cv, _mnv = await asyncio.to_thread(
+            ok_inst, qty_step, min_order_qty, _mnv = await asyncio.to_thread(
                 fetch_instrument_info_delta, body.symbol
             )
-            if not ok_inst or tick is None or cv is None or float(cv) <= 0:
+            if (
+                not ok_inst
+                or qty_step is None
+                or min_order_qty is None
+                or float(qty_step) <= 0
+            ):
                 raise HTTPException(status_code=502, detail="Delta product not found for symbol")
-            tick_f = float(tick)
-            cv_f = float(cv)
+            qty_step = float(qty_step)
+            min_order_qty = float(min_order_qty)
+            tick_f = float(get_delta_tick_size())
+            cv_f = float(get_delta_contract_value())
             pid = get_delta_product_id()
             dsym = normalize_delta_symbol(body.symbol)
             l1 = await asyncio.to_thread(get_delta_ticker_l1, body.symbol)
@@ -516,12 +526,22 @@ async def api_trade_manual(body: ManualTradeBody):
             price = float(ask if body.side == "Buy" else bid)
             if price <= 0:
                 price = mid
-            contracts = int((body.usd_amount * lev) / (cv_f * price))
-            contracts = max(1, contracts)
+            raw_qty = (body.usd_amount * lev) / (cv_f * price)
+            total_qty = max(
+                min_order_qty, float(math.floor(raw_qty / qty_step) * qty_step)
+            )
+            if abs(qty_step - 1.0) < 1e-12:
+                total_qty = float(int(total_qty))
+            contracts = normalize_delta_contract_size(raw_qty, qty_step, min_order_qty)
+            if contracts < 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Order size rounds to zero; increase USD amount or leverage.",
+                )
             order_body = {
-                "product_id": pid,
+                "product_id": int(pid),
                 "product_symbol": dsym,
-                "size": contracts,
+                "size": int(contracts),
                 "side": "buy" if body.side == "Buy" else "sell",
                 "order_type": "market_order",
             }

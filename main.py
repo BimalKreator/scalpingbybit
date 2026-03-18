@@ -50,10 +50,10 @@ if USE_DELTA:
     )
 
     def fetch_instrument_info(symbol: str, http_client=None):
-        ok, _tick, _cv, mnv = _delta_fetch_instrument_info(symbol)
+        ok, qs, miq, mnv = _delta_fetch_instrument_info(symbol)
         if not ok:
             return (False, None, None, None)
-        return (True, 1.0, 1.0, float(mnv or 6.0))
+        return (True, float(qs), float(miq), float(mnv or 6.0))
 
     HTTP_CLIENT = None
 else:
@@ -377,8 +377,13 @@ async def execute_strategy_signal(
     sl_str = f"{sl:.2f}"
     tp_str = f"{tp:.2f}"
 
-    total_qty = (usd_amount * leverage) / current_price
-    total_qty = math.floor(total_qty / _qty_step) * _qty_step
+    if USE_DELTA:
+        from delta_client import get_delta_contract_value
+
+        total_qty = (usd_amount * leverage) / (get_delta_contract_value() * current_price)
+    else:
+        total_qty = (usd_amount * leverage) / current_price
+    total_qty = max(_min_order_qty, math.floor(total_qty / _qty_step) * _qty_step)
     if total_qty < _min_order_qty:
         print(f"[Mock Signal] Abort: total_qty {total_qty} below minOrderQty {_min_order_qty}.")
         return
@@ -462,13 +467,21 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
             return
     b_bid, b_ask, _, _ = _get_orderbook_l1()
     current_price = b_ask if side == "Buy" else b_bid
+    if USE_DELTA:
+        from delta_client import get_delta_contract_value as _delta_cv
+
+        cv = _delta_cv()
+    else:
+        cv = None
     if current_price <= 0:
         print("No L1 price for qty calculation; using TRADE_QTY.")
-        total_qty = TRADE_QTY
+        total_qty = float(TRADE_QTY) if USE_DELTA else TRADE_QTY
     else:
-        total_qty = (trade_amount_usd * leverage) / current_price
-    # Round down to qtyStep and validate against minOrderQty
-    total_qty = math.floor(total_qty / _qty_step) * _qty_step
+        if USE_DELTA:
+            total_qty = (trade_amount_usd * leverage) / (cv * current_price)
+        else:
+            total_qty = (trade_amount_usd * leverage) / current_price
+    total_qty = max(_min_order_qty, math.floor(total_qty / _qty_step) * _qty_step)
     if total_qty < _min_order_qty:
         print(f"Abort: total_qty {total_qty} below minOrderQty {_min_order_qty}. Increase trade amount or leverage.")
         return

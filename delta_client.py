@@ -81,10 +81,36 @@ def get_delta_product_id() -> int:
     return _DELTA_PRODUCT_ID
 
 
+def get_delta_tick_size() -> float:
+    return float(_DELTA_TICK_SIZE)
+
+
+def get_delta_contract_value() -> float:
+    return max(float(_DELTA_CONTRACT_VALUE), 1e-9)
+
+
+def normalize_delta_contract_size(raw_qty: float, qty_step: float, min_order_qty: float) -> int:
+    """
+    Discrete contract count for Delta REST `size`.
+    Picks the largest valid grid size <= raw_qty, at least min_order_qty (snapped up to qty_step grid).
+    """
+    qs = max(float(qty_step), 1e-12)
+    mo = max(float(min_order_qty), 1.0)
+    raw = max(0.0, float(raw_qty))
+    min_steps = math.ceil(mo / qs - 1e-15)
+    want_steps = math.floor(raw / qs)
+    steps = max(min_steps, want_steps)
+    if abs(qs - round(qs)) < 1e-9:
+        qsi = int(round(qs))
+        return max(qsi, steps * qsi)
+    return max(int(mo), int(round(steps * qs)))
+
+
 def fetch_instrument_info(symbol: str) -> tuple[bool, float | None, float | None, float | None]:
     """
     GET /v2/products/{symbol} (public). Sets module product cache.
-    Returns (ok, qty_step_for_main, min_order_qty, min_notional) — main uses 1,1,6 for contracts.
+    Returns (ok, contract_qty_step, min_order_contracts, min_notional_usd).
+    Price tick and contract_value are available via get_delta_tick_size() / get_delta_contract_value().
     """
     global _DELTA_PRODUCT_ID, _DELTA_SYMBOL, _DELTA_TICK_SIZE, _DELTA_CONTRACT_VALUE
     dsym = normalize_delta_symbol(symbol)
@@ -102,9 +128,15 @@ def fetch_instrument_info(symbol: str) -> tuple[bool, float | None, float | None
         _DELTA_SYMBOL = p.get("symbol") or dsym
         _DELTA_TICK_SIZE = float(p.get("tick_size") or 0.5)
         _DELTA_CONTRACT_VALUE = float(p.get("contract_value") or 0.001)
-        tick = _DELTA_TICK_SIZE
-        cv = _DELTA_CONTRACT_VALUE
-        return (True, tick, cv, 6.0)
+        st = p.get("order_size_step") or p.get("lot_size") or p.get("size_step")
+        qty_step = float(st) if st is not None else 1.0
+        if qty_step < 1e-12:
+            qty_step = 1.0
+        mo = p.get("min_order_size") or p.get("min_size")
+        min_contracts = float(mo) if mo is not None else 1.0
+        if min_contracts < 1e-12:
+            min_contracts = 1.0
+        return (True, qty_step, min_contracts, 6.0)
     except Exception as e:
         print(f"[Delta] fetch_instrument_info: {e}")
         return (False, None, None, None)
@@ -182,17 +214,22 @@ async def execute_chunk_order_ws(
 
     b_bid, b_ask, _, _ = get_l1_func()
     price = (b_bid + b_ask) / 2 if b_bid > 0 and b_ask > 0 else max(b_ask, b_bid, 1.0)
-    trade_usd = float(os.getenv("TRADE_AMOUNT_USD", "100"))
-    lev = float(os.getenv("LEVERAGE", "5"))
-    cv = max(_DELTA_CONTRACT_VALUE, 1e-9)
-    contracts = int((trade_usd * lev) / (cv * price))
-    contracts = max(int(min_order_qty), max(1, contracts))
+    if price <= 0:
+        print("[Delta] No L1 price; abort chunk.")
+        return
+    qs = max(float(qty_step), 1e-12)
+    mo = max(float(min_order_qty), 1.0)
+    raw = max(mo, math.floor(float(total_qty) / qs) * qs)
+    contracts = normalize_delta_contract_size(raw, qs, mo)
+    if contracts < 1:
+        print("[Delta] Normalized contract size < 1; abort.")
+        return
 
     d_side = "buy" if side == "Buy" else "sell"
     body = {
-        "product_id": _DELTA_PRODUCT_ID,
+        "product_id": int(_DELTA_PRODUCT_ID),
         "product_symbol": _DELTA_SYMBOL,
-        "size": contracts,
+        "size": int(contracts),
         "side": d_side,
         "order_type": "market_order",
     }
@@ -238,8 +275,9 @@ def _set_position_sl_tp_sync(
     if not api_key or not api_secret or _DELTA_PRODUCT_ID <= 0:
         return False
     close_side = "sell" if (entry_side or "Buy") == "Buy" else "buy"
+    bracket_size = int(999999)
     body = {
-        "product_id": _DELTA_PRODUCT_ID,
+        "product_id": int(_DELTA_PRODUCT_ID),
         "product_symbol": _DELTA_SYMBOL,
         "stop_loss_order": {
             "order_type": "stop_market",
@@ -258,9 +296,9 @@ def _set_position_sl_tp_sync(
     for ob, label in (
         (
             {
-                "product_id": _DELTA_PRODUCT_ID,
+                "product_id": int(_DELTA_PRODUCT_ID),
                 "product_symbol": _DELTA_SYMBOL,
-                "size": 999999,
+                "size": bracket_size,
                 "side": close_side,
                 "order_type": "stop_market",
                 "stop_price": stop_loss,
@@ -270,9 +308,9 @@ def _set_position_sl_tp_sync(
         ),
         (
             {
-                "product_id": _DELTA_PRODUCT_ID,
+                "product_id": int(_DELTA_PRODUCT_ID),
                 "product_symbol": _DELTA_SYMBOL,
-                "size": 999999,
+                "size": bracket_size,
                 "side": close_side,
                 "order_type": "take_profit_market",
                 "stop_price": take_profit,
