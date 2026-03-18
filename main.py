@@ -429,6 +429,17 @@ def _sl_decay_seconds() -> float:
         return 10.0
 
 
+def _breakeven_buffer_decimal() -> float:
+    """BREAKEVEN_BUFFER_PCT is percent points (e.g. 0.05 → 0.0005 as decimal)."""
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
+    try:
+        p = float(os.getenv("BREAKEVEN_BUFFER_PCT", "0.05"))
+    except (TypeError, ValueError):
+        p = 0.05
+    return max(0.0, p) / 100.0
+
+
 def _compute_active_sl_price(mid_price: float) -> float | None:
     """
     Time-based SL: max distance until decay, then min distance.
@@ -464,7 +475,11 @@ def _compute_active_sl_price(mid_price: float) -> float | None:
             if mid_price <= half_tp:
                 _breakeven_triggered = True
     if _breakeven_triggered:
-        act = ent_f
+        buf = _breakeven_buffer_decimal()
+        if ps == "buy":
+            act = ent_f * (1.0 + buf)
+        else:
+            act = ent_f * (1.0 - buf)
     elif _entry_time <= 0 or (time.time() - _entry_time) >= _sl_decay_seconds():
         act = smin if smin > 0 else smax
     else:
@@ -620,28 +635,43 @@ def _position_risk_payload() -> dict:
     position_value_usd = trade_amt * lev
     if size <= 1e-18 and ent > 0:
         size = max(_min_order_qty, position_value_usd / ent)
-    sl_risk_usd = abs(ent - slf) * size
-    tp_gain_usd = abs(tpf - ent) * size
-    # Progress bar: 0% = SL (left), 100% = TP (right). Explicit LONG vs SHORT math for dashboard.
     live_mid = float(mid)
     side_l = side.lower()
     is_short = side_l in ("sell", "short")
-    if is_short:
-        full_range = slf - tpf
-        if full_range > 0:
-            entry_pct = ((slf - ent) / full_range) * 100.0
-            live_mid_pct = ((slf - live_mid) / full_range) * 100.0
-        else:
-            entry_pct = 50.0
-            live_mid_pct = 50.0
+    breakeven_buffer_active = bool(_breakeven_triggered)
+    # Progress bar + SL $: normal SL left of entry; breakeven+buffer SL is past entry (fee cushion).
+    if breakeven_buffer_active and not is_short and slf >= ent - 1e-12 and tpf > ent + 1e-12:
+        fr = tpf - ent
+        sl_risk_usd = (slf - ent) * size
+        tp_gain_usd = abs(tpf - ent) * size
+        entry_pct = max(0.01, min(99.0, (slf - ent) / fr * 100.0))
+        live_mid_pct = max(0.0, min(100.0, (live_mid - ent) / fr * 100.0))
+    elif breakeven_buffer_active and is_short and slf <= ent + 1e-12 and ent > tpf + 1e-12:
+        fr = ent - tpf
+        sl_risk_usd = (ent - slf) * size
+        tp_gain_usd = abs(ent - tpf) * size
+        entry_pct = max(0.01, min(99.0, (ent - slf) / fr * 100.0))
+        live_mid_pct = max(0.0, min(100.0, (ent - live_mid) / fr * 100.0))
     else:
-        full_range = tpf - slf
-        if full_range > 0:
-            entry_pct = ((ent - slf) / full_range) * 100.0
-            live_mid_pct = ((live_mid - slf) / full_range) * 100.0
+        sl_risk_usd = abs(ent - slf) * size
+        tp_gain_usd = abs(tpf - ent) * size
+        if is_short:
+            full_range = slf - tpf
+            if full_range > 0:
+                entry_pct = ((slf - ent) / full_range) * 100.0
+                live_mid_pct = ((slf - live_mid) / full_range) * 100.0
+            else:
+                entry_pct = 50.0
+                live_mid_pct = 50.0
         else:
-            entry_pct = 50.0
-            live_mid_pct = 50.0
+            full_range = tpf - slf
+            if full_range > 0:
+                entry_pct = ((ent - slf) / full_range) * 100.0
+                live_mid_pct = ((live_mid - slf) / full_range) * 100.0
+            else:
+                entry_pct = 50.0
+                live_mid_pct = 50.0
+        breakeven_buffer_active = False
     return {
         "open": True,
         "has_levels": True,
@@ -650,12 +680,16 @@ def _position_risk_payload() -> dict:
         "size": round(size, 6),
         "sl_price": round(slf, 4),
         "tp_price": round(tpf, 4),
-        "sl_amount_usd": round(-sl_risk_usd, 6),
+        "sl_amount_usd": round(
+            sl_risk_usd if breakeven_buffer_active else -sl_risk_usd,
+            6,
+        ),
         "tp_amount_usd": round(tp_gain_usd, 6),
         "position_value_usd": round(position_value_usd, 2),
         "live_mid": round(live_mid, 4),
         "entry_pct": round(float(entry_pct), 2),
         "live_mid_pct": round(float(live_mid_pct), 2),
+        "breakeven_buffer_active": breakeven_buffer_active,
     }
 
 

@@ -312,6 +312,12 @@
             <label for="trailing_sl_enabled" class="text-xs font-medium text-slate-400">Half-target breakeven trailing (move SL to entry after 50% to TP)</label>
           </div>
           <div>
+            <label for="breakeven_buffer_pct" class="block text-xs font-medium text-slate-400 mb-1">Breakeven fee buffer %</label>
+            <input type="number" id="breakeven_buffer_pct" name="breakeven_buffer_pct" step="0.01" min="0" value="{{ breakeven_buffer_pct }}"
+              class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="0.05" />
+            <p class="text-xs text-slate-500 mt-1">SL past entry by this % when breakeven trailing triggers (covers fees). E.g. 0.05 ≈ 0.05%.</p>
+          </div>
+          <div>
             <label for="tp_multiplier" class="block text-xs font-medium text-slate-400 mb-1">TP multiplier</label>
             <input type="text" id="tp_multiplier" name="tp_multiplier" value="{{ tp_multiplier }}"
               class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="2.0" />
@@ -512,7 +518,8 @@
         document.getElementById('riskLiveDisplay').textContent = formatNum(pr.live_mid);
         var slUsd = Number(pr.sl_amount_usd);
         var tpUsd = Number(pr.tp_amount_usd);
-        document.getElementById('riskSlAmtLabel').textContent = isNaN(slUsd) ? '–' : '-$' + formatUsdRiskAmount(Math.abs(slUsd));
+        var bufActive = !!pr.breakeven_buffer_active;
+        document.getElementById('riskSlAmtLabel').textContent = isNaN(slUsd) ? '–' : (bufActive ? '+$' : '-$') + formatUsdRiskAmount(Math.abs(slUsd));
         document.getElementById('riskTpAmtLabel').textContent = isNaN(tpUsd) ? '–' : '+$' + formatUsdRiskAmount(tpUsd);
         var ep = Number(pr.entry_pct);
         var lp = Number(pr.live_mid_pct);
@@ -523,7 +530,7 @@
         document.getElementById('riskZoneSl').style.width = ep + '%';
         document.getElementById('riskZoneTp').style.left = ep + '%';
         document.getElementById('riskZoneTp').style.width = (100 - ep) + '%';
-        document.getElementById('riskEntryLine').style.left = ep + '%';
+        document.getElementById('riskEntryLine').style.left = (bufActive ? 0 : ep) + '%';
         document.getElementById('riskDot').style.left = lp + '%';
         var fg = document.getElementById('riskFillGreen');
         var fr = document.getElementById('riskFillRed');

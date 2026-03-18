@@ -240,6 +240,7 @@ def run_backtest(
     initial_capital: float = 10000.0,
     exchange: str = "bybit",
     min_profit_pct: float = 0.5,
+    breakeven_buffer_pct: float = 0.05,
     allow_reversal: bool = True,
     contract_value: float | None = None,
     qty_step: float = 0.001,
@@ -250,7 +251,8 @@ def run_backtest(
     Aligns with live auto-trade (main.py):
     - Same entry rules: LONG two bearish + vol + RSI<oversold; SHORT two bullish + vol + RSI>overbought; min-profit.
     - LONG entry at ask proxy (open * (1+spread)); SHORT at bid proxy (open * (1-spread)).
-    - Dynamic SL: entry candle uses sl_multiplier_max; later candles sl_multiplier_min; optional half-TP breakeven.
+    - Dynamic SL: entry candle uses sl_multiplier_max; later candles sl_multiplier_min; optional half-TP breakeven
+      with breakeven_buffer_pct (SL past entry to cover fees).
     - Delta: position size = (TRADE_AMOUNT*LEVERAGE)/(contract_value*price), floored to qty_step.
     - Bybit: size = (TRADE_AMOUNT*LEVERAGE)/price, same stepping.
     - One reversal after SL only, same signal_range (like on_position_closed path).
@@ -326,7 +328,11 @@ def run_backtest(
                     if l <= half_tp:
                         trade_breakeven = True
             if trade_breakeven:
-                sl_active = entry_price
+                buf = max(0.0, float(breakeven_buffer_pct)) / 100.0
+                if side == "Buy":
+                    sl_active = entry_price * (1.0 + buf)
+                else:
+                    sl_active = entry_price * (1.0 - buf)
             elif i == entry_bar_idx:
                 sl_active = sl_wide
             else:
@@ -625,6 +631,7 @@ def run_backtest_grid(
     optimize_by: str = "total_pnl",
     exchange: str = "bybit",
     min_profit_pct: float = 0.5,
+    breakeven_buffer_pct: float = 0.05,
     allow_reversal: bool = True,
     contract_value: float | None = None,
     qty_step: float = 0.001,
@@ -660,6 +667,7 @@ def run_backtest_grid(
         initial_capital=initial_capital,
         exchange=exchange,
         min_profit_pct=min_profit_pct,
+        breakeven_buffer_pct=breakeven_buffer_pct,
         allow_reversal=allow_reversal,
         contract_value=contract_value,
         qty_step=qty_step,

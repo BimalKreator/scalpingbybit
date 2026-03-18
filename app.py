@@ -336,6 +336,7 @@ async def dashboard_page():
         sl_decay_seconds=vars.get("SL_DECAY_SECONDS", "10"),
         trailing_sl_enabled=vars.get("TRAILING_SL_ENABLED", "true"),
         tp_multiplier=vars.get("TP_MULTIPLIER", "2.0"),
+        breakeven_buffer_pct=vars.get("BREAKEVEN_BUFFER_PCT", "0.05"),
         min_profit_pct=vars.get("MIN_PROFIT_PCT", "0.5"),
         initial_capital=vars.get("INITIAL_CAPITAL", "0.0"),
         bot_running=BOT_RUNNING,
@@ -362,6 +363,7 @@ async def api_update_env(
     sl_decay_seconds: str = Form(None),
     trailing_sl_enabled: str = Form(None),
     tp_multiplier: str = Form(None),
+    breakeven_buffer_pct: str = Form(None),
     min_profit_pct: str = Form(None),
     initial_capital: str = Form(None),
 ):
@@ -402,6 +404,12 @@ async def api_update_env(
         )
     if tp_multiplier is not None:
         updates["TP_MULTIPLIER"] = tp_multiplier
+    if breakeven_buffer_pct is not None:
+        try:
+            b = float(str(breakeven_buffer_pct).strip())
+            updates["BREAKEVEN_BUFFER_PCT"] = str(max(0.0, b))
+        except (TypeError, ValueError):
+            updates["BREAKEVEN_BUFFER_PCT"] = "0.05"
     if min_profit_pct is not None:
         updates["MIN_PROFIT_PCT"] = min_profit_pct
     if initial_capital is not None:
@@ -1081,6 +1089,7 @@ class BacktestRequest(BaseModel):
     sl_multiplier_min: float = 0.5
     trailing_sl_enabled: bool = True
     tp_multiplier: float = 2.0
+    breakeven_buffer_pct: float = 0.05
     trade_amount_usd: float = 100.0
     leverage: float = 5.0
     initial_capital: float = 10000.0
@@ -1141,6 +1150,7 @@ def _run_backtest_sync(req: BacktestRequest):
         sl_multiplier_min=req.sl_multiplier_min,
         trailing_sl_enabled=req.trailing_sl_enabled,
         tp_multiplier=req.tp_multiplier,
+        breakeven_buffer_pct=max(0.0, float(req.breakeven_buffer_pct)),
         trade_amount_usd=req.trade_amount_usd,
         leverage=req.leverage,
         initial_capital=req.initial_capital,
