@@ -404,6 +404,9 @@ def run_backtest(
 
 
 def _param_grid(
+    rsi_len_min: float | None,
+    rsi_len_max: float | None,
+    rsi_len_step: float | None,
     rsi_ob_min: float | None,
     rsi_ob_max: float | None,
     rsi_ob_step: float | None,
@@ -417,7 +420,20 @@ def _param_grid(
     tp_max: float | None,
     tp_step: float | None,
 ) -> list[dict]:
-    grids: list[list[tuple[str, float]]] = []
+    grids: list[list[tuple[str, float | int]]] = []
+    if (
+        rsi_len_step is not None
+        and float(rsi_len_step) > 0
+        and rsi_len_min is not None
+        and rsi_len_max is not None
+    ):
+        lo = max(2, int(rsi_len_min))
+        hi = max(lo, int(rsi_len_max))
+        st = max(1, int(round(float(rsi_len_step))))
+        vals = list(range(lo, hi + 1, st))
+        if not vals:
+            vals = [lo]
+        grids.append([("rsi_length", v) for v in vals])
     if rsi_ob_step and rsi_ob_step > 0 and rsi_ob_min is not None and rsi_ob_max is not None:
         arr = np.arange(float(rsi_ob_min), float(rsi_ob_max) + 1e-9, float(rsi_ob_step))
         grids.append([("rsi_overbought", round(x, 4)) for x in arr])
@@ -434,9 +450,9 @@ def _param_grid(
         return []
     combos: list[dict] = []
     for tup in itertools.product(*grids):
-        d: dict[str, float] = {}
+        d: dict[str, float | int] = {}
         for k, v in tup:
-            d[k] = v
+            d[str(k)] = int(v) if k == "rsi_length" else float(v)
         combos.append(d)
     return combos
 
@@ -456,6 +472,9 @@ def run_backtest_grid(
     exchange: str = "bybit",
     min_profit_pct: float = 0.5,
     allow_reversal: bool = True,
+    rsi_len_min: float | None = None,
+    rsi_len_max: float | None = None,
+    rsi_len_step: float | None = None,
     rsi_ob_min: float | None = None,
     rsi_ob_max: float | None = None,
     rsi_ob_step: float | None = None,
@@ -468,15 +487,16 @@ def run_backtest_grid(
     tp_min: float | None = None,
     tp_max: float | None = None,
     tp_step: float | None = None,
+    return_all_results: bool = False,
 ) -> dict:
     param_combos = _param_grid(
+        rsi_len_min, rsi_len_max, rsi_len_step,
         rsi_ob_min, rsi_ob_max, rsi_ob_step,
         rsi_os_min, rsi_os_max, rsi_os_step,
         sl_min, sl_max, sl_step,
         tp_min, tp_max, tp_step,
     )
     common_kw = dict(
-        rsi_length=rsi_length,
         trade_amount_usd=trade_amount_usd,
         leverage=leverage,
         initial_capital=initial_capital,
@@ -484,49 +504,84 @@ def run_backtest_grid(
         min_profit_pct=min_profit_pct,
         allow_reversal=allow_reversal,
     )
+    def _score(res: dict) -> float:
+        if optimize_by == "total_pnl":
+            return float(res["total_pnl"])
+        if optimize_by == "max_drawdown":
+            return -float(res["max_drawdown"])
+        if optimize_by == "win_rate":
+            return float(res["profitable_pct"])
+        if optimize_by == "profit_factor":
+            pf = res["profit_factor"]
+            return float(pf) if isinstance(pf, (int, float)) else 0.0
+        return float(res["total_pnl"])
+
+    def _row(combo: dict, res: dict) -> dict:
+        return {
+            "rsi_length": int(combo.get("rsi_length", rsi_length)),
+            "rsi_overbought": combo.get("rsi_overbought", rsi_overbought),
+            "rsi_oversold": combo.get("rsi_oversold", rsi_oversold),
+            "sl_multiplier": combo.get("sl_multiplier", sl_multiplier),
+            "tp_multiplier": combo.get("tp_multiplier", tp_multiplier),
+            "total_pnl": res["total_pnl"],
+            "max_drawdown": res["max_drawdown"],
+            "total_trades": res["total_trades"],
+            "profitable_trades": res["profitable_trades"],
+            "profitable_pct": res["profitable_pct"],
+            "profit_factor": res["profit_factor"],
+            "final_equity": res["final_equity"],
+        }
+
     if not param_combos:
-        return run_backtest(
+        res = run_backtest(
             df,
+            rsi_length=rsi_length,
             rsi_overbought=rsi_overbought,
             rsi_oversold=rsi_oversold,
             sl_multiplier=sl_multiplier,
             tp_multiplier=tp_multiplier,
             **common_kw,
         )
+        if return_all_results:
+            combo = {
+                "rsi_length": rsi_length,
+                "rsi_overbought": rsi_overbought,
+                "rsi_oversold": rsi_oversold,
+                "sl_multiplier": sl_multiplier,
+                "tp_multiplier": tp_multiplier,
+            }
+            return {"best": res, "all_results": [_row(combo, res)]}
+        return res
 
     best: dict | None = None
     best_score: float = -np.inf
     minimize = optimize_by == "max_drawdown"
     if minimize:
         best_score = np.inf
+    all_rows: list[dict] = [] if return_all_results else []
 
     for idx, combo in enumerate(param_combos):
+        rl = int(combo.get("rsi_length", rsi_length))
         res = run_backtest(
             df,
-            rsi_overbought=combo.get("rsi_overbought", rsi_overbought),
-            rsi_oversold=combo.get("rsi_oversold", rsi_oversold),
-            sl_multiplier=combo.get("sl_multiplier", sl_multiplier),
-            tp_multiplier=combo.get("tp_multiplier", tp_multiplier),
+            rsi_length=rl,
+            rsi_overbought=float(combo.get("rsi_overbought", rsi_overbought)),
+            rsi_oversold=float(combo.get("rsi_oversold", rsi_oversold)),
+            sl_multiplier=float(combo.get("sl_multiplier", sl_multiplier)),
+            tp_multiplier=float(combo.get("tp_multiplier", tp_multiplier)),
             **common_kw,
         )
-        if optimize_by == "total_pnl":
-            score = res["total_pnl"]
-        elif optimize_by == "max_drawdown":
-            score = -res["max_drawdown"]
-        elif optimize_by == "win_rate":
-            score = res["profitable_pct"]
-        elif optimize_by == "profit_factor":
-            pf = res["profit_factor"]
-            score = pf if isinstance(pf, (int, float)) else 0.0
-        else:
-            score = res["total_pnl"]
+        score = _score(res)
         best_params = {
-            "rsi_overbought": combo.get("rsi_overbought", rsi_overbought),
-            "rsi_oversold": combo.get("rsi_oversold", rsi_oversold),
-            "sl_multiplier": combo.get("sl_multiplier", sl_multiplier),
-            "tp_multiplier": combo.get("tp_multiplier", tp_multiplier),
+            "rsi_length": rl,
+            "rsi_overbought": float(combo.get("rsi_overbought", rsi_overbought)),
+            "rsi_oversold": float(combo.get("rsi_oversold", rsi_oversold)),
+            "sl_multiplier": float(combo.get("sl_multiplier", sl_multiplier)),
+            "tp_multiplier": float(combo.get("tp_multiplier", tp_multiplier)),
         }
         res_with_params = {**res, "best_params": best_params}
+        if return_all_results:
+            all_rows.append(_row(combo, res))
         if minimize:
             if res["max_drawdown"] < best_score:
                 best_score = res["max_drawdown"]
@@ -536,11 +591,16 @@ def run_backtest_grid(
                 best_score = score
                 best = res_with_params
 
-    return best if best is not None else run_backtest(
+    fallback = run_backtest(
         df,
+        rsi_length=rsi_length,
         rsi_overbought=rsi_overbought,
         rsi_oversold=rsi_oversold,
         sl_multiplier=sl_multiplier,
         tp_multiplier=tp_multiplier,
         **common_kw,
     )
+    out_best = best if best is not None else fallback
+    if return_all_results:
+        return {"best": out_best, "all_results": all_rows}
+    return out_best

@@ -114,7 +114,8 @@
           </select>
         </div>
         <p class="text-xs text-slate-500">Min / Max / Step for grid search. Use step &gt; 0 to enable optimization.</p>
-        <div class="grid grid-cols-3 gap-2 text-xs">
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 text-xs">
+          <div><label class="text-slate-500">RSI length</label><input type="number" id="rsi_len_min" name="rsi_len_min" placeholder="Min" min="2" step="1" class="mt-1 w-full rounded-lg bg-slate-800 border border-slate-700 px-2 py-2 text-white" /><input type="number" id="rsi_len_max" name="rsi_len_max" placeholder="Max" min="2" step="1" class="mt-1 w-full rounded-lg bg-slate-800 border border-slate-700 px-2 py-2 text-white" /><input type="number" id="rsi_len_step" name="rsi_len_step" placeholder="Step" min="1" step="1" class="mt-1 w-full rounded-lg bg-slate-800 border border-slate-700 px-2 py-2 text-white" /></div>
           <div><label class="text-slate-500">RSI OB</label><input type="number" id="rsi_ob_min" name="rsi_ob_min" placeholder="Min" step="any" class="mt-1 w-full rounded-lg bg-slate-800 border border-slate-700 px-2 py-2 text-white" /><input type="number" id="rsi_ob_max" name="rsi_ob_max" placeholder="Max" step="any" class="mt-1 w-full rounded-lg bg-slate-800 border border-slate-700 px-2 py-2 text-white" /><input type="number" id="rsi_ob_step" name="rsi_ob_step" placeholder="Step" step="any" class="mt-1 w-full rounded-lg bg-slate-800 border border-slate-700 px-2 py-2 text-white" /></div>
           <div><label class="text-slate-500">RSI OS</label><input type="number" id="rsi_os_min" name="rsi_os_min" placeholder="Min" step="any" class="mt-1 w-full rounded-lg bg-slate-800 border border-slate-700 px-2 py-2 text-white" /><input type="number" id="rsi_os_max" name="rsi_os_max" placeholder="Max" step="any" class="mt-1 w-full rounded-lg bg-slate-800 border border-slate-700 px-2 py-2 text-white" /><input type="number" id="rsi_os_step" name="rsi_os_step" placeholder="Step" step="any" class="mt-1 w-full rounded-lg bg-slate-800 border border-slate-700 px-2 py-2 text-white" /></div>
           <div><label class="text-slate-500">SL</label><input type="number" id="sl_min" name="sl_min" placeholder="Min" step="any" class="mt-1 w-full rounded-lg bg-slate-800 border border-slate-700 px-2 py-2 text-white" /><input type="number" id="sl_max" name="sl_max" placeholder="Max" step="any" class="mt-1 w-full rounded-lg bg-slate-800 border border-slate-700 px-2 py-2 text-white" /><input type="number" id="sl_step" name="sl_step" placeholder="Step" step="any" class="mt-1 w-full rounded-lg bg-slate-800 border border-slate-700 px-2 py-2 text-white" /></div>
@@ -222,6 +223,9 @@
           allow_reversal: document.getElementById('allow_reversal').checked,
           initial_capital: 10000,
           optimize_by: document.getElementById('optimize_by').value || 'total_pnl',
+          rsi_len_min: optNum('rsi_len_min'),
+          rsi_len_max: optNum('rsi_len_max'),
+          rsi_len_step: (() => { const s = optNum('rsi_len_step'); return (s == null || s <= 0) ? null : s; })(),
           rsi_ob_min: optNum('rsi_ob_min'),
           rsi_ob_max: optNum('rsi_ob_max'),
           rsi_ob_step: (() => { const s = optNum('rsi_ob_step'); return (s == null || s <= 0) ? null : s; })(),
@@ -251,6 +255,7 @@
         const bp = data.best_params;
         if (bp) {
           const parts = [];
+          if (bp.rsi_length != null) parts.push('RSI len: ' + bp.rsi_length);
           if (bp.rsi_overbought != null) parts.push('RSI OB: ' + bp.rsi_overbought);
           if (bp.rsi_oversold != null) parts.push('RSI OS: ' + bp.rsi_oversold);
           if (bp.sl_multiplier != null) parts.push('SL: ' + bp.sl_multiplier);

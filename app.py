@@ -854,6 +854,9 @@ class BacktestRequest(BaseModel):
     min_profit_pct: float = 0.5
     allow_reversal: bool = True
     optimize_by: str = "total_pnl"
+    rsi_len_min: float | None = None
+    rsi_len_max: float | None = None
+    rsi_len_step: float | None = None
     rsi_ob_min: float | None = None
     rsi_ob_max: float | None = None
     rsi_ob_step: float | None = None
@@ -906,6 +909,9 @@ def _run_backtest_sync(req: BacktestRequest):
         exchange=ex_id,
         min_profit_pct=req.min_profit_pct,
         allow_reversal=req.allow_reversal,
+        rsi_len_min=req.rsi_len_min,
+        rsi_len_max=req.rsi_len_max,
+        rsi_len_step=req.rsi_len_step,
         rsi_ob_min=req.rsi_ob_min,
         rsi_ob_max=req.rsi_ob_max,
         rsi_ob_step=req.rsi_ob_step,
