@@ -329,28 +329,38 @@ def run_backtest(
             i += 1
             continue
 
-        row_prev = df.iloc[i - 1]
-        rsi = row_prev.get("RSI")
-        md = row_prev.get("momentum_decreasing")
-        vd = row_prev.get("volume_decreasing")
-        if pd.isna(rsi) or pd.isna(md) or pd.isna(vd):
+        if i < 3:
             i += 1
             continue
-        close_prev = float(row_prev["close"])
-        open_prev = float(row_prev["open"])
-        high_prev = float(row_prev["high"])
-        low_prev = float(row_prev["low"])
+        row_sig = df.iloc[i - 1]
+        row_prev2 = df.iloc[i - 2]
+        rsi = row_sig.get("RSI")
+        v_sig = row_sig.get("volume")
+        v_p2 = row_prev2.get("volume")
+        if pd.isna(rsi) or pd.isna(v_sig) or pd.isna(v_p2):
+            i += 1
+            continue
+        vd = float(v_sig) < float(v_p2)
+        close_s = float(row_sig["close"])
+        open_s = float(row_sig["open"])
+        high_prev = float(row_sig["high"])
+        low_prev = float(row_sig["low"])
+        close_p2 = float(row_prev2["close"])
+        open_p2 = float(row_prev2["open"])
         range_ = high_prev - low_prev
         tp_dist = range_ * tp_multiplier
-        ref_mid = (high_prev + low_prev) / 2 if high_prev > 0 and low_prev > 0 else close_prev
+        ref_mid = (high_prev + low_prev) / 2 if high_prev > 0 and low_prev > 0 else close_s
         expected_profit_pct = (tp_dist / ref_mid) * 100 if ref_mid > 0 else 0.0
         if expected_profit_pct < min_profit_pct:
             i += 1
             continue
 
+        rsi_f = float(rsi)
+        both_bull = close_s > open_s and close_p2 > open_p2
+        both_bear = open_s > close_s and open_p2 > close_p2
         entered = False
         o_entry = float(row["open"])
-        if close_prev > open_prev and md and vd and rsi > rsi_overbought:
+        if both_bull and vd and rsi_f < rsi_oversold:
             base = o_entry * (1.0 - _SPREAD_HALF)
             entry_price = base
             qty = (trade_amount_usd * leverage) / entry_price if entry_price else 0.0
@@ -360,7 +370,7 @@ def run_backtest(
             signal_range = range_
             reversal_count = 0
             entered = True
-        elif close_prev < open_prev and md and vd and rsi < rsi_oversold:
+        elif both_bear and vd and rsi_f < rsi_oversold:
             base = o_entry * (1.0 + _SPREAD_HALF)
             entry_price = base
             qty = (trade_amount_usd * leverage) / entry_price if entry_price else 0.0

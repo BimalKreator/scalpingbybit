@@ -840,25 +840,24 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
 def has_valid_entry_signal_now(df: pd.DataFrame) -> tuple[str | None, pd.Series | None]:
     """
     Evaluate latest CLOSED candle for valid LONG or SHORT (1m chart).
-    SHORT: current & previous candle bullish, momentum decrease, volume decrease, RSI > 60.
-    LONG: current & previous candle bearish, momentum decrease, volume decrease, RSI < 40.
-    Returns (side, row) or (None, None).
+    LONG: signal + previous candle bearish; volume(signal) < volume(previous); RSI < oversold; min-profit.
+    SHORT: signal + previous candle bullish; same volume + RSI rules.
     """
     if len(df) < 3:
         return (None, None)
-    row = df.iloc[-2]   # current closed candle
-    row_prev = df.iloc[-3]  # previous candle
+    row = df.iloc[-2]   # signal (closed) candle
+    row_prev = df.iloc[-3]  # candle before signal
     rsi = row.get("RSI")
     if pd.isna(rsi):
         return (None, None)
-    md = row.get("momentum_decreasing")
-    vd = row.get("volume_decreasing")
-    if pd.isna(md) or pd.isna(vd):
+    v_sig = row.get("volume")
+    v_prev = row_prev.get("volume")
+    if pd.isna(v_sig) or pd.isna(v_prev):
         return (None, None)
+    vd = float(v_sig) < float(v_prev)
     close, open_ = float(row["close"]), float(row["open"])
     high, low = float(row["high"]), float(row["low"])
     close_prev, open_prev = float(row_prev["close"]), float(row_prev["open"])
-    # Expected price-move % to TP (min-profit filter; not ROE / leverage)
     range_ = high - low
     tp_mult = float(os.getenv("TP_MULTIPLIER", "2.0"))
     tp_dist = range_ * tp_mult
@@ -867,15 +866,13 @@ def has_valid_entry_signal_now(df: pd.DataFrame) -> tuple[str | None, pd.Series 
     expected_profit_pct = (tp_dist / ref_mid) * 100 if ref_mid > 0 else 0.0
     if expected_profit_pct < min_profit_pct:
         return (None, None)
-    # SHORT: current bullish (close > open), previous bullish (close_prev > open_prev)
     current_bullish = close > open_
     prev_bullish = close_prev > open_prev
-    if current_bullish and prev_bullish and md and vd and rsi > RSI_OVERBOUGHT:
-        return ("Sell", row)
-    # LONG: current bearish (open > close), previous bearish (open_prev > close_prev)
     current_bearish = open_ > close
     prev_bearish = open_prev > close_prev
-    if current_bearish and prev_bearish and md and vd and rsi < RSI_OVERSOLD:
+    if current_bullish and prev_bullish and vd and float(rsi) < RSI_OVERSOLD:
+        return ("Sell", row)
+    if current_bearish and prev_bearish and vd and float(rsi) < RSI_OVERSOLD:
         return ("Buy", row)
     return (None, None)
 
@@ -1026,9 +1023,7 @@ def _is_autotrade_enabled() -> bool:
 def check_signals(df: pd.DataFrame) -> None:
     """
     Evaluate latest CLOSED candle for entry (1m chart).
-    SHORT: current & previous candle bullish, momentum decrease, volume decrease, RSI > 60.
-    LONG: current & previous candle bearish, momentum decrease, volume decrease, RSI < 40.
-    Pushes to signal queue if Auto Trade is ON.
+    LONG/SHORT: two bearish / two bullish; volume(signal) < volume(prev); RSI < oversold; min-profit.
     """
     global LAST_SIGNAL_CANDLE_START, _loop, _signal_queue
     if len(df) < 3 or _loop is None or _signal_queue is None:
@@ -1041,10 +1036,10 @@ def check_signals(df: pd.DataFrame) -> None:
     rsi = row.get("RSI")
     if pd.isna(rsi):
         return
-    md = row.get("momentum_decreasing")
-    vd = row.get("volume_decreasing")
-    if pd.isna(md) or pd.isna(vd):
+    v_sig, v_prev = row.get("volume"), row_prev.get("volume")
+    if pd.isna(v_sig) or pd.isna(v_prev):
         return
+    vd = float(v_sig) < float(v_prev)
     close, open_ = float(row["close"]), float(row["open"])
     high, low = float(row["high"]), float(row["low"])
     close_prev, open_prev = float(row_prev["close"]), float(row_prev["open"])
@@ -1057,10 +1052,12 @@ def check_signals(df: pd.DataFrame) -> None:
     if expected_profit_pct < min_profit_pct:
         return
     row_dict = row.to_dict() if hasattr(row, "to_dict") else dict(row)
-    # SHORT: both candles bullish
+    rf = float(rsi)
     current_bullish = close > open_
     prev_bullish = close_prev > open_prev
-    if current_bullish and prev_bullish and md and vd and rsi > RSI_OVERBOUGHT:
+    current_bearish = open_ > close
+    prev_bearish = open_prev > close_prev
+    if current_bullish and prev_bullish and vd and rf < RSI_OVERSOLD:
         print(f"[{datetime.now().isoformat()}] 🔴 SHORT SIGNAL DETECTED ({SYMBOL})")
         LAST_SIGNAL_CANDLE_START = candle_start
         _persist_last_signal_candle_start(candle_start)
@@ -1069,10 +1066,7 @@ def check_signals(df: pd.DataFrame) -> None:
             return
         _loop.call_soon_threadsafe(_signal_queue.put_nowait, ("entry", "Sell", row_dict, False))
         return
-    # LONG: both candles bearish
-    current_bearish = open_ > close
-    prev_bearish = open_prev > close_prev
-    if current_bearish and prev_bearish and md and vd and rsi < RSI_OVERSOLD:
+    if current_bearish and prev_bearish and vd and rf < RSI_OVERSOLD:
         print(f"[{datetime.now().isoformat()}] 🟢 LONG SIGNAL DETECTED ({SYMBOL})")
         LAST_SIGNAL_CANDLE_START = candle_start
         _persist_last_signal_candle_start(candle_start)
@@ -1084,7 +1078,7 @@ def check_signals(df: pd.DataFrame) -> None:
     print(f"[{datetime.now().isoformat()}] Signal check for {SYMBOL}: None")
 
 
-DISPLAY_COLUMNS = ["close", "volume", "volume_decreasing", "RSI", "momentum_decreasing"]
+DISPLAY_COLUMNS = ["close", "volume", "volume_decreasing", "RSI"]
 
 
 def _persist_last_signal_candle_start(candle_start: int) -> None:
@@ -1118,11 +1112,15 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
     rsi_float = float(rsi_val) if rsi_val is not None and not pd.isna(rsi_val) else None
     if rsi_float is None:
         print("Waiting for more data to calculate RSI...")
-    md = bool(row.get("momentum_decreasing", False)) if not pd.isna(row.get("momentum_decreasing")) else False
-    vd = bool(row.get("volume_decreasing", False)) if not pd.isna(row.get("volume_decreasing")) else False
+    v_sig = row.get("volume")
+    v_prev_c = row_prev.get("volume")
+    vd = (
+        not pd.isna(v_sig)
+        and not pd.isna(v_prev_c)
+        and float(v_sig) < float(v_prev_c)
+    )
     body = float(row["body_size"]) if "body_size" in row and not pd.isna(row.get("body_size")) else 0.0
 
-    # Entry rule conditions (same as check_signals / has_valid_entry_signal_now)
     current_bearish = open_ > close
     current_bullish = close > open_
     prev_bearish = open_prev > close_prev
@@ -1130,9 +1128,7 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
     both_bearish = current_bearish and prev_bearish
     both_bullish = current_bullish and prev_bullish
     rsi_oversold_ok = rsi_float is not None and rsi_float < RSI_OVERSOLD
-    rsi_overbought_ok = rsi_float is not None and rsi_float > RSI_OVERBOUGHT
 
-    # Expected price-move % to TP (vs mid of signal candle; not ROE / leverage)
     range_ = high - low
     tp_mult = float(os.getenv("TP_MULTIPLIER", "2.0"))
     tp_dist = range_ * tp_mult
@@ -1142,25 +1138,23 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
     expected_profit_pct_ok = expected_profit_pct >= min_profit_pct
 
     long_rules = [
-        {"name": "Current Candle Bearish (open > close)", "met": current_bearish},
+        {"name": "Signal Candle Bearish (open > close)", "met": current_bearish},
         {"name": "Previous Candle Bearish", "met": prev_bearish},
-        {"name": "Both Candles Same Color (Bearish)", "met": both_bearish},
-        {"name": "Momentum Decreasing", "met": md},
-        {"name": "Volume Decreasing", "met": vd},
+        {"name": "Both Bearish", "met": both_bearish},
+        {"name": "Volume: signal < previous", "met": vd},
         {"name": f"RSI < {RSI_OVERSOLD}", "met": rsi_oversold_ok},
         {"name": f"Expected Profit >= {min_profit_pct}%", "met": expected_profit_pct_ok},
     ]
     short_rules = [
-        {"name": "Current Candle Bullish (close > open)", "met": current_bullish},
+        {"name": "Signal Candle Bullish (close > open)", "met": current_bullish},
         {"name": "Previous Candle Bullish", "met": prev_bullish},
-        {"name": "Both Candles Same Color (Bullish)", "met": both_bullish},
-        {"name": "Momentum Decreasing", "met": md},
-        {"name": "Volume Decreasing", "met": vd},
-        {"name": f"RSI > {RSI_OVERBOUGHT}", "met": rsi_overbought_ok},
+        {"name": "Both Bullish", "met": both_bullish},
+        {"name": "Volume: signal < previous", "met": vd},
+        {"name": f"RSI < {RSI_OVERSOLD}", "met": rsi_oversold_ok},
         {"name": f"Expected Profit >= {min_profit_pct}%", "met": expected_profit_pct_ok},
     ]
-    long_triggered = both_bearish and md and vd and rsi_oversold_ok and expected_profit_pct_ok
-    short_triggered = both_bullish and md and vd and rsi_overbought_ok and expected_profit_pct_ok
+    long_triggered = both_bearish and vd and rsi_oversold_ok and expected_profit_pct_ok
+    short_triggered = both_bullish and vd and rsi_oversold_ok and expected_profit_pct_ok
 
     if get_open_position():
         status = "Position Open"
@@ -1173,8 +1167,7 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
 
     indicators = {
         "RSI": round(rsi_float, 2) if rsi_float is not None else None,
-        "momentum_decreasing": md,
-        "volume_decreasing": vd,
+        "volume_signal_vs_prev": vd,
         "body_size": round(body, 6),
         "open": round(open_, 4),
         "close": round(close, 4),

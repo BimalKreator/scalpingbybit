@@ -471,8 +471,7 @@
         if (ind.close != null) lines.push('Close: ' + formatNum(ind.close));
         if (ind.body_size != null) lines.push('Body size: ' + formatNum(ind.body_size));
         if (ind.volume != null) lines.push('Volume: ' + formatNum(ind.volume));
-        lines.push('Momentum decreasing: ' + (ind.momentum_decreasing ? 'Yes' : 'No'));
-        lines.push('Volume decreasing: ' + (ind.volume_decreasing ? 'Yes' : 'No'));
+        lines.push('Volume (signal < prev): ' + (ind.volume_signal_vs_prev ? 'Yes' : 'No'));
         document.getElementById('liveIndicators').innerHTML = lines.map(function (l) { return '<p class="leading-tight">' + l + '</p>'; }).join('');
       }
 

@@ -1,25 +1,25 @@
 {
   "symbol": "BTCUSDT",
-  "price": 74161.0,
+  "price": 73935.0,
   "indicators": {
-    "RSI": 55.04,
-    "momentum_decreasing": true,
-    "volume_decreasing": true,
-    "body_size": 19.0,
-    "open": 74142.0,
-    "close": 74161.0,
-    "volume": 1807.0,
+    "RSI": 54.1,
+    "momentum_decreasing": false,
+    "volume_decreasing": false,
+    "body_size": 20.5,
+    "open": 73955.5,
+    "close": 73935.0,
+    "volume": 13557.0,
     "Expected_Profit_Pct": 0.07
   },
   "conditions": {
     "long": [
       {
         "name": "Current Candle Bearish (open > close)",
-        "met": false
+        "met": true
       },
       {
         "name": "Previous Candle Bearish",
-        "met": true
+        "met": false
       },
       {
         "name": "Both Candles Same Color (Bearish)",
@@ -27,29 +27,29 @@
       },
       {
         "name": "Momentum Decreasing",
-        "met": true
+        "met": false
       },
       {
         "name": "Volume Decreasing",
-        "met": true
+        "met": false
       },
       {
         "name": "RSI < 40.0",
         "met": false
       },
       {
-        "name": "Expected Profit >= 0.04%",
+        "name": "Expected Profit >= 0.05%",
         "met": true
       }
     ],
     "short": [
       {
         "name": "Current Candle Bullish (close > open)",
-        "met": true
+        "met": false
       },
       {
         "name": "Previous Candle Bullish",
-        "met": false
+        "met": true
       },
       {
         "name": "Both Candles Same Color (Bullish)",
@@ -57,28 +57,26 @@
       },
       {
         "name": "Momentum Decreasing",
-        "met": true
+        "met": false
       },
       {
         "name": "Volume Decreasing",
-        "met": true
+        "met": false
       },
       {
         "name": "RSI > 60.0",
         "met": false
       },
       {
-        "name": "Expected Profit >= 0.04%",
+        "name": "Expected Profit >= 0.05%",
         "met": true
       }
     ]
   },
-  "status": "Position Open",
-  "last_signal_candle_start": 1773827520000,
+  "status": "Waiting",
+  "last_signal_candle_start": 1773832260000,
   "position_risk": {
-    "open": true,
-    "has_levels": false,
-    "side": null
+    "open": false
   },
   "sl_price": null,
   "tp_price": null,
