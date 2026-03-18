@@ -1,37 +1,37 @@
 {
   "symbol": "BTCUSDT",
-  "price": 74383.0,
+  "price": 74141.5,
   "indicators": {
-    "RSI": 39.79,
-    "momentum_decreasing": false,
-    "volume_decreasing": false,
-    "body_size": 6.5,
-    "open": 74376.5,
-    "close": 74383.0,
-    "volume": 4011.0,
-    "Expected_Profit_Pct": 0.04
+    "RSI": 15.92,
+    "momentum_decreasing": true,
+    "volume_decreasing": true,
+    "body_size": 4.0,
+    "open": 74145.5,
+    "close": 74141.5,
+    "volume": 4180.0,
+    "Expected_Profit_Pct": 0.06
   },
   "conditions": {
     "long": [
       {
         "name": "Current Candle Bearish (open > close)",
-        "met": false
+        "met": true
       },
       {
         "name": "Previous Candle Bearish",
-        "met": false
+        "met": true
       },
       {
         "name": "Both Candles Same Color (Bearish)",
-        "met": false
+        "met": true
       },
       {
         "name": "Momentum Decreasing",
-        "met": false
+        "met": true
       },
       {
         "name": "Volume Decreasing",
-        "met": false
+        "met": true
       },
       {
         "name": "RSI < 40.0",
@@ -45,23 +45,23 @@
     "short": [
       {
         "name": "Current Candle Bullish (close > open)",
-        "met": true
+        "met": false
       },
       {
         "name": "Previous Candle Bullish",
-        "met": true
+        "met": false
       },
       {
         "name": "Both Candles Same Color (Bullish)",
-        "met": true
+        "met": false
       },
       {
         "name": "Momentum Decreasing",
-        "met": false
+        "met": true
       },
       {
         "name": "Volume Decreasing",
-        "met": false
+        "met": true
       },
       {
         "name": "RSI > 60.0",
