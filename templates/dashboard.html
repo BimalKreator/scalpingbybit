@@ -18,6 +18,80 @@
       box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.1);
       border: 1px solid rgb(30, 41, 59);
     }
+    .risk-bar-track {
+      position: relative;
+      height: 32px;
+      border-radius: 10px;
+      background: rgba(30, 41, 59, 0.9);
+      border: 1px solid rgb(51, 65, 85);
+      margin-top: 0.25rem;
+    }
+    .risk-bar-zone-sl {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      border-radius: 10px 0 0 10px;
+      background: linear-gradient(90deg, rgba(220, 38, 38, 0.55), rgba(220, 38, 38, 0.2));
+      pointer-events: none;
+    }
+    .risk-bar-zone-tp {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      border-radius: 0 10px 10px 0;
+      background: linear-gradient(90deg, rgba(22, 163, 74, 0.15), rgba(22, 163, 74, 0.5));
+      pointer-events: none;
+    }
+    .risk-bar-fill {
+      position: absolute;
+      top: 4px;
+      bottom: 4px;
+      border-radius: 4px;
+      pointer-events: none;
+      z-index: 1;
+      transition: left 0.35s ease, width 0.35s ease;
+    }
+    .risk-bar-fill-red { background: rgba(248, 113, 113, 0.85); box-shadow: 0 0 12px rgba(239, 68, 68, 0.35); }
+    .risk-bar-fill-green { background: rgba(74, 222, 128, 0.85); box-shadow: 0 0 12px rgba(34, 197, 94, 0.35); }
+    .risk-bar-entry {
+      position: absolute;
+      top: -5px;
+      bottom: -5px;
+      width: 3px;
+      margin-left: -1.5px;
+      background: linear-gradient(180deg, #e2e8f0, #94a3b8);
+      border-radius: 2px;
+      z-index: 2;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.4);
+    }
+    .risk-bar-entry::after {
+      content: 'Entry';
+      position: absolute;
+      bottom: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: #94a3b8;
+      white-space: nowrap;
+      margin-bottom: 2px;
+    }
+    .risk-bar-dot {
+      position: absolute;
+      top: 50%;
+      width: 16px;
+      height: 16px;
+      margin-left: -8px;
+      margin-top: -8px;
+      border-radius: 50%;
+      background: #fff;
+      border: 3px solid #fbbf24;
+      z-index: 4;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+      transition: left 0.35s ease;
+    }
   </style>
 </head>
 <body class="min-h-screen bg-slate-950 text-slate-100 antialiased">
@@ -82,6 +156,28 @@
               <p class="text-xs text-slate-500">Current Price</p>
               <p id="livePrice" class="font-medium text-white">–</p>
             </div>
+          </div>
+          <div id="activePositionCard" class="hidden rounded-xl border border-amber-900/50 bg-slate-900/70 p-4 space-y-3">
+            <p class="text-xs font-semibold text-amber-400 uppercase tracking-wide">Active Position</p>
+            <div class="flex flex-wrap gap-x-5 gap-y-1 text-sm text-slate-300">
+              <span>SL <strong id="riskSlPriceDisplay" class="text-red-300">–</strong></span>
+              <span>TP <strong id="riskTpPriceDisplay" class="text-emerald-300">–</strong></span>
+              <span>Entry <span id="riskEntryDisplay" class="text-slate-200">–</span></span>
+              <span>Live mid <span id="riskLiveDisplay" class="text-amber-200">–</span></span>
+            </div>
+            <div class="flex justify-between text-xs font-mono px-0.5">
+              <span id="riskSlAmtLabel" class="text-red-400 font-semibold">–</span>
+              <span id="riskTpAmtLabel" class="text-emerald-400 font-semibold">–</span>
+            </div>
+            <div class="risk-bar-track" aria-hidden="true">
+              <div id="riskZoneSl" class="risk-bar-zone-sl" style="width:0%"></div>
+              <div id="riskZoneTp" class="risk-bar-zone-tp" style="left:0%;width:0%"></div>
+              <div id="riskFillGreen" class="risk-bar-fill risk-bar-fill-green" style="left:0%;width:0%;display:none"></div>
+              <div id="riskFillRed" class="risk-bar-fill risk-bar-fill-red" style="left:0%;width:0%;display:none"></div>
+              <div id="riskEntryLine" class="risk-bar-entry" style="left:50%"></div>
+              <div id="riskDot" class="risk-bar-dot" style="left:50%"></div>
+            </div>
+            <p class="text-[10px] text-slate-500">Left = stop loss · Right = target · Dot = live price vs SL/TP</p>
           </div>
           <div>
             <p class="text-xs font-medium text-slate-400 mb-2">Live Indicators</p>
@@ -357,7 +453,7 @@
         .then(applyBotStatus)
         .catch(function () {});
       pollLiveStrategy();
-      setInterval(pollLiveStrategy, 1500);
+      setInterval(pollLiveStrategy, 1000);
     });
 
     function updateLiveStrategyPanel(data) {
@@ -394,6 +490,47 @@
       var shortRules = (data.conditions && data.conditions.short) || [];
       document.getElementById('liveRulesLong').innerHTML = longRules.length ? longRules.map(ruleLi).join('') : '<li class="text-slate-500">No rules yet</li>';
       document.getElementById('liveRulesShort').innerHTML = shortRules.length ? shortRules.map(ruleLi).join('') : '<li class="text-slate-500">No rules yet</li>';
+
+      var pr = data.position_risk || {};
+      var card = document.getElementById('activePositionCard');
+      if (!card) return;
+      if (pr.open && pr.has_levels) {
+        card.classList.remove('hidden');
+        document.getElementById('riskSlPriceDisplay').textContent = formatNum(pr.sl_price);
+        document.getElementById('riskTpPriceDisplay').textContent = formatNum(pr.tp_price);
+        document.getElementById('riskEntryDisplay').textContent = formatNum(pr.entry_price);
+        document.getElementById('riskLiveDisplay').textContent = formatNum(pr.live_mid);
+        var slUsd = Number(pr.sl_amount_usd);
+        var tpUsd = Number(pr.tp_amount_usd);
+        document.getElementById('riskSlAmtLabel').textContent = isNaN(slUsd) ? '–' : '-$' + Math.abs(slUsd).toFixed(2);
+        document.getElementById('riskTpAmtLabel').textContent = isNaN(tpUsd) ? '–' : '+$' + tpUsd.toFixed(2);
+        var ep = Number(pr.entry_pct);
+        var lp = Number(pr.live_mid_pct);
+        if (isNaN(ep)) ep = 50;
+        if (isNaN(lp)) lp = ep;
+        ep = Math.max(0, Math.min(100, ep));
+        lp = Math.max(0, Math.min(100, lp));
+        document.getElementById('riskZoneSl').style.width = ep + '%';
+        document.getElementById('riskZoneTp').style.left = ep + '%';
+        document.getElementById('riskZoneTp').style.width = (100 - ep) + '%';
+        document.getElementById('riskEntryLine').style.left = ep + '%';
+        document.getElementById('riskDot').style.left = lp + '%';
+        var fg = document.getElementById('riskFillGreen');
+        var fr = document.getElementById('riskFillRed');
+        if (lp >= ep) {
+          fg.style.display = 'block';
+          fg.style.left = ep + '%';
+          fg.style.width = (lp - ep) + '%';
+          fr.style.display = 'none';
+        } else {
+          fr.style.display = 'block';
+          fr.style.left = lp + '%';
+          fr.style.width = (ep - lp) + '%';
+          fg.style.display = 'none';
+        }
+      } else {
+        card.classList.add('hidden');
+      }
     }
 
     function pollLiveStrategy() {

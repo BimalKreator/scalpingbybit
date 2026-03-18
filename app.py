@@ -440,6 +440,13 @@ except ImportError:
         "indicators": {},
         "conditions": {"long": [], "short": []},
         "status": "No data",
+        "sl_price": None,
+        "tp_price": None,
+        "entry_price": None,
+        "position_size": 0.0,
+        "sl_amount_usd": None,
+        "tp_amount_usd": None,
+        "position_risk": {"open": False},
     }
 
 _DEFAULT_STRATEGY_STATE = {
@@ -448,6 +455,7 @@ _DEFAULT_STRATEGY_STATE = {
     "indicators": {},
     "conditions": {"long": [], "short": []},
     "status": "No data",
+    "position_risk": {"open": False},
 }
 
 

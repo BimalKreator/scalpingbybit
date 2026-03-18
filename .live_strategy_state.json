@@ -1,21 +1,21 @@
 {
   "symbol": "BTCUSDT",
-  "price": 74006.5,
+  "price": 74093.0,
   "indicators": {
-    "RSI": 21.03,
-    "momentum_decreasing": true,
+    "RSI": 82.4,
+    "momentum_decreasing": false,
     "volume_decreasing": false,
-    "body_size": 6.5,
-    "open": 74013.0,
-    "close": 74006.5,
-    "volume": 21541.0,
-    "Expected_Profit_Pct": 0.05
+    "body_size": 35.0,
+    "open": 74058.0,
+    "close": 74093.0,
+    "volume": 8940.0,
+    "Expected_Profit_Pct": 0.1
   },
   "conditions": {
     "long": [
       {
         "name": "Current Candle Bearish (open > close)",
-        "met": true
+        "met": false
       },
       {
         "name": "Previous Candle Bearish",
@@ -23,11 +23,11 @@
       },
       {
         "name": "Both Candles Same Color (Bearish)",
-        "met": true
+        "met": false
       },
       {
         "name": "Momentum Decreasing",
-        "met": true
+        "met": false
       },
       {
         "name": "Volume Decreasing",
@@ -35,17 +35,17 @@
       },
       {
         "name": "RSI < 40.0",
-        "met": true
+        "met": false
       },
       {
-        "name": "Expected Profit >= 0.1%",
-        "met": false
+        "name": "Expected Profit >= 0.04%",
+        "met": true
       }
     ],
     "short": [
       {
         "name": "Current Candle Bullish (close > open)",
-        "met": false
+        "met": true
       },
       {
         "name": "Previous Candle Bullish",
@@ -57,7 +57,7 @@
       },
       {
         "name": "Momentum Decreasing",
-        "met": true
+        "met": false
       },
       {
         "name": "Volume Decreasing",
@@ -65,14 +65,14 @@
       },
       {
         "name": "RSI > 60.0",
-        "met": false
+        "met": true
       },
       {
-        "name": "Expected Profit >= 0.1%",
-        "met": false
+        "name": "Expected Profit >= 0.04%",
+        "met": true
       }
     ]
   },
-  "status": "Waiting",
-  "last_signal_candle_start": 1773737880000
+  "status": "Position Open",
+  "last_signal_candle_start": 1773813840000
 }

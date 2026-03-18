@@ -122,7 +122,17 @@ live_strategy_state = {
     "indicators": {},
     "conditions": {"long": [], "short": []},
     "status": "Waiting",
+    "sl_price": None,
+    "tp_price": None,
+    "entry_price": None,
+    "position_size": 0.0,
+    "sl_amount_usd": None,
+    "tp_amount_usd": None,
+    "position_risk": {"open": False},
 }
+
+# Average entry from exchange WS (or set on fill / manual)
+_position_entry_price: float | None = None
 
 # WebSocket instances (set in main())
 ws_kline: WebSocket | None = None
@@ -259,6 +269,83 @@ def handle_orderbook_message(message: dict) -> None:
         if asks:
             best_ask = float(asks[0][0])
             ask_qty = float(asks[0][1])
+    _sync_position_risk_to_state()
+
+
+def _position_risk_payload() -> dict:
+    """SL/TP dollar risk and bar geometry for dashboard (live_mid from L1)."""
+    if not get_open_position():
+        return {"open": False}
+    sl = _last_sl_price
+    tp = _last_tp_price
+    if sl is None or tp is None:
+        return {"open": True, "has_levels": False}
+    with _position_lock:
+        size = float(_position_size)
+        entry = _position_entry_price
+    with _orderbook_lock:
+        bb, ba = best_bid, best_ask
+    mid = (bb + ba) / 2 if bb > 0 and ba > 0 else None
+    if entry is None or entry <= 0:
+        entry = mid
+    if entry is None or entry <= 0:
+        return {"open": True, "has_levels": False, "side": _last_position_side}
+    if mid is None or mid <= 0:
+        mid = float(entry)
+    side = (_last_position_side or "Buy").strip()
+    sl_risk = abs(float(entry) - float(sl)) * size
+    tp_gain = abs(float(tp) - float(entry)) * size
+    # Bar: 0% = SL (left, red), 100% = TP (right, green)
+    if side.lower() == "sell":
+        span = float(sl) - float(tp)
+        if span < 1e-12:
+            span = 1e-12
+        entry_pct = max(0.0, min(100.0, (float(sl) - float(entry)) / span * 100.0))
+        live_pct = max(0.0, min(100.0, (float(sl) - float(mid)) / span * 100.0))
+    else:
+        span = float(tp) - float(sl)
+        if span < 1e-12:
+            span = 1e-12
+        entry_pct = max(0.0, min(100.0, (float(entry) - float(sl)) / span * 100.0))
+        live_pct = max(0.0, min(100.0, (float(mid) - float(sl)) / span * 100.0))
+    return {
+        "open": True,
+        "has_levels": True,
+        "side": side,
+        "entry_price": round(float(entry), 4),
+        "size": round(size, 6),
+        "sl_price": round(float(sl), 4),
+        "tp_price": round(float(tp), 4),
+        "sl_amount_usd": round(-sl_risk, 2),
+        "tp_amount_usd": round(tp_gain, 2),
+        "live_mid": round(float(mid), 4),
+        "entry_pct": round(entry_pct, 2),
+        "live_mid_pct": round(live_pct, 2),
+    }
+
+
+def _apply_position_risk_to_state_dict(d: dict) -> None:
+    pr = _position_risk_payload()
+    d["position_risk"] = pr
+    if pr.get("open") and pr.get("has_levels"):
+        d["sl_price"] = pr.get("sl_price")
+        d["tp_price"] = pr.get("tp_price")
+        d["entry_price"] = pr.get("entry_price")
+        d["position_size"] = pr.get("size")
+        d["sl_amount_usd"] = pr.get("sl_amount_usd")
+        d["tp_amount_usd"] = pr.get("tp_amount_usd")
+    else:
+        d["sl_price"] = None
+        d["tp_price"] = None
+        d["entry_price"] = None
+        d["position_size"] = 0.0
+        d["sl_amount_usd"] = None
+        d["tp_amount_usd"] = None
+
+
+def _sync_position_risk_to_state() -> None:
+    with _live_state_lock:
+        _apply_position_risk_to_state_dict(live_strategy_state)
 
 
 def handle_execution_message(message: dict) -> None:
@@ -520,11 +607,14 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
     )
     if ok:
         print("Calculated SL:", sl_str, "| TP:", tp_str)
+        global _position_entry_price
         _last_position_side = side
         _last_signal_candle = {"high": high, "low": low, "close": close}
         _last_sl_price = sl
         _last_tp_price = tp
         _last_position_was_reverse = is_reverse
+        _position_entry_price = current_price
+        _sync_position_risk_to_state()
     else:
         print("Warning: set_trading_stop failed for SL/TP")
 
@@ -573,12 +663,14 @@ def has_valid_entry_signal_now(df: pd.DataFrame) -> tuple[str | None, pd.Series 
 
 def register_manual_trade(side: str, entry_price: float, sl_price: float, tp_price: float, allow_reversal: bool) -> None:
     """Register a manual trade so reversal logic can use its SL/TP and allow reversal when Auto-Trade is OFF."""
-    global _last_position_side, _last_sl_price, _last_tp_price, _last_position_was_reverse, _last_signal_candle, _manual_reversal_allowed
+    global _last_position_side, _last_sl_price, _last_tp_price, _last_position_was_reverse, _last_signal_candle, _manual_reversal_allowed, _position_entry_price
     _last_position_side = side
     _last_sl_price = sl_price
     _last_tp_price = tp_price
     _last_position_was_reverse = False
     _manual_reversal_allowed = allow_reversal
+    _position_entry_price = float(entry_price)
+    _sync_position_risk_to_state()
     sl_mult = float(os.getenv("SL_MULTIPLIER", "1.0"))
     sl_dist = abs(entry_price - sl_price)
     fake_range = sl_dist / sl_mult if sl_mult > 0 else sl_dist
@@ -640,9 +732,10 @@ def on_position_closed() -> None:
 
 def handle_position_message(message: dict) -> None:
     """Handle private position stream: update _position_size and detect position closed."""
-    global _position_size, _monitor_had_position
+    global _position_size, _monitor_had_position, _position_entry_price
     data = message.get("data") or []
     size_for_symbol = 0.0
+    entry_from_ws: float | None = None
     for item in data:
         if item.get("category") != "linear":
             continue
@@ -652,11 +745,24 @@ def handle_position_message(message: dict) -> None:
             size_for_symbol = float(item.get("size") or 0)
         except (TypeError, ValueError):
             size_for_symbol = 0.0
+        for k in ("avgPrice", "entryPrice", "avg_entry_price", "entry_price"):
+            v = item.get(k)
+            if v is not None and str(v).strip() != "":
+                try:
+                    ep = float(v)
+                    if ep > 0:
+                        entry_from_ws = ep
+                except (TypeError, ValueError):
+                    pass
         break
     with _position_lock:
         had_before = _position_size > 0
         has_now = size_for_symbol > 0
         _position_size = size_for_symbol
+        if size_for_symbol <= 0:
+            _position_entry_price = None
+        elif entry_from_ws is not None:
+            _position_entry_price = entry_from_ws
         if had_before != has_now:
             print(f"[{datetime.now().isoformat()}] Position update {SYMBOL}: size={size_for_symbol} ({'open' if has_now else 'closed'})")
         if had_before and size_for_symbol == 0:
@@ -664,6 +770,7 @@ def handle_position_message(message: dict) -> None:
             on_position_closed()
         elif size_for_symbol > 0:
             _monitor_had_position = True
+    _sync_position_risk_to_state()
 
 
 def _is_autotrade_enabled() -> bool:
@@ -840,9 +947,11 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
     with _live_state_lock:
         live_strategy_state.clear()
         live_strategy_state.update(state)
+        _apply_position_risk_to_state_dict(live_strategy_state)
+        snapshot = dict(live_strategy_state)
     try:
         with open(_LIVE_STATE_PATH, "w", encoding="utf-8") as f:
-            _json.dump(state, f, indent=2)
+            _json.dump(snapshot, f, indent=2)
     except Exception:
         pass
 
