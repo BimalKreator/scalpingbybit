@@ -34,7 +34,20 @@
 
     <!-- Row 1: Account Panel (full width, compact bar) -->
     <section class="card mb-6">
-      <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Account</h2>
+      <div class="flex flex-wrap items-start justify-between gap-3 mb-3">
+        <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Account</h2>
+        <div class="flex flex-wrap items-center justify-end gap-1.5 text-xs shrink-0">
+          <span id="statusBot" class="inline-flex items-center rounded-full border border-slate-600 bg-slate-800/90 px-2 py-0.5 text-slate-200 font-medium whitespace-nowrap">
+            {% if bot_running %}Bot: 🟢 ON{% else %}Bot: 🔴 OFF{% endif %}
+          </span>
+          <span id="statusAuto" class="inline-flex items-center rounded-full border border-slate-600 bg-slate-800/90 px-2 py-0.5 text-slate-200 font-medium whitespace-nowrap">
+            {% if autotrade_enabled %}Auto: 🟢 ON{% else %}Auto: 🔴 OFF{% endif %}
+          </span>
+          <span id="statusExchange" class="inline-flex items-center rounded-full border border-slate-600 bg-slate-800/90 px-2 py-0.5 text-slate-200 font-medium whitespace-nowrap">
+            {% if exchange_id == 'delta_india' %}Exchange: 🟠 Delta{% else %}Exchange: 🔵 Bybit{% endif %}
+          </span>
+        </div>
+      </div>
       <div class="flex flex-wrap items-center gap-6">
         <div class="flex items-baseline gap-2">
           <span class="text-slate-500 text-sm">Available Balance</span>
@@ -144,43 +157,12 @@
       </section>
     </div>
 
-    <!-- Row 4: 50% System Parameters | 50% Power Station -->
+    <!-- Row 4: 50% Strategy Parameters | 50% Power Station -->
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
       <section class="card">
-        <h2 class="text-sm font-semibold text-slate-200 mb-4">System Parameters</h2>
-        <p class="text-xs text-slate-500 mb-4">Saved to .env. Trading Symbol, RSI, SL/TP multipliers.</p>
+        <h2 class="text-sm font-semibold text-slate-200 mb-4">Strategy Parameters</h2>
+        <p class="text-xs text-slate-500 mb-4">Saved to .env. Symbol, size, RSI, SL/TP multipliers, min profit %.</p>
         <form id="envForm" class="space-y-4">
-          <div>
-            <label for="exchange_id" class="block text-xs font-medium text-slate-400 mb-1">Exchange</label>
-            <select id="exchange_id" name="exchange_id"
-              class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition">
-              <option value="bybit" {% if exchange_id == 'bybit' %}selected{% endif %}>bybit (Default)</option>
-              <option value="delta_india" {% if exchange_id == 'delta_india' %}selected{% endif %}>delta_india</option>
-            </select>
-          </div>
-          <div class="rounded-xl border border-slate-700 bg-slate-800/50 p-4 space-y-3">
-            <p class="text-xs font-semibold text-slate-300">API Keys</p>
-            <div>
-              <label for="bybit_api_key" class="block text-xs font-medium text-slate-400 mb-1">Bybit API Key</label>
-              <input type="text" id="bybit_api_key" name="bybit_api_key" value="{{ bybit_api_key }}" autocomplete="off"
-                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition font-mono text-sm" placeholder="BYBIT_API_KEY" />
-            </div>
-            <div>
-              <label for="bybit_api_secret" class="block text-xs font-medium text-slate-400 mb-1">Bybit API Secret</label>
-              <input type="password" id="bybit_api_secret" name="bybit_api_secret" value="{{ bybit_api_secret }}" autocomplete="off"
-                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition font-mono text-sm" placeholder="BYBIT_API_SECRET" />
-            </div>
-            <div>
-              <label for="delta_api_key" class="block text-xs font-medium text-slate-400 mb-1">Delta India API Key</label>
-              <input type="text" id="delta_api_key" name="delta_api_key" value="{{ delta_api_key }}" autocomplete="off"
-                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition font-mono text-sm" placeholder="DELTA_API_KEY" />
-            </div>
-            <div>
-              <label for="delta_api_secret" class="block text-xs font-medium text-slate-400 mb-1">Delta India API Secret</label>
-              <input type="password" id="delta_api_secret" name="delta_api_secret" value="{{ delta_api_secret }}" autocomplete="off"
-                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition font-mono text-sm" placeholder="DELTA_API_SECRET" />
-            </div>
-          </div>
           <div>
             <label for="trading_symbol" class="block text-xs font-medium text-slate-400 mb-1">Trading Symbol</label>
             <input type="text" id="trading_symbol" name="trading_symbol" value="{{ trading_symbol }}"
@@ -266,6 +248,48 @@
       </section>
     </div>
 
+    <!-- Exchange & API Setup (below Power Station row) -->
+    <section class="card mb-6">
+      <h2 class="text-sm font-semibold text-slate-200 mb-2">Exchange &amp; API Setup</h2>
+      <p class="text-xs text-slate-500 mb-4">Exchange selection and API credentials. Restart bot after changing exchange.</p>
+      <form id="exchangeForm" class="space-y-4">
+        <div>
+          <label for="exchange_id" class="block text-xs font-medium text-slate-400 mb-1">Exchange</label>
+          <select id="exchange_id" name="exchange_id"
+            class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition">
+            <option value="bybit" {% if exchange_id == 'bybit' %}selected{% endif %}>bybit (Default)</option>
+            <option value="delta_india" {% if exchange_id == 'delta_india' %}selected{% endif %}>delta_india</option>
+          </select>
+        </div>
+        <div class="rounded-xl border border-slate-700 bg-slate-800/50 p-4 space-y-3">
+          <p class="text-xs font-semibold text-slate-300">API Keys</p>
+          <div>
+            <label for="bybit_api_key" class="block text-xs font-medium text-slate-400 mb-1">Bybit API Key</label>
+            <input type="text" id="bybit_api_key" name="bybit_api_key" value="{{ bybit_api_key }}" autocomplete="off"
+              class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition font-mono text-sm" placeholder="BYBIT_API_KEY" />
+          </div>
+          <div>
+            <label for="bybit_api_secret" class="block text-xs font-medium text-slate-400 mb-1">Bybit API Secret</label>
+            <input type="password" id="bybit_api_secret" name="bybit_api_secret" value="{{ bybit_api_secret }}" autocomplete="off"
+              class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition font-mono text-sm" placeholder="BYBIT_API_SECRET" />
+          </div>
+          <div>
+            <label for="delta_api_key" class="block text-xs font-medium text-slate-400 mb-1">Delta India API Key</label>
+            <input type="text" id="delta_api_key" name="delta_api_key" value="{{ delta_api_key }}" autocomplete="off"
+              class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition font-mono text-sm" placeholder="DELTA_API_KEY" />
+          </div>
+          <div>
+            <label for="delta_api_secret" class="block text-xs font-medium text-slate-400 mb-1">Delta India API Secret</label>
+            <input type="password" id="delta_api_secret" name="delta_api_secret" value="{{ delta_api_secret }}" autocomplete="off"
+              class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition font-mono text-sm" placeholder="DELTA_API_SECRET" />
+          </div>
+        </div>
+        <button type="submit" class="w-full rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-medium py-3 px-4 transition active:scale-[0.98]">
+          Save Exchange Settings
+        </button>
+      </form>
+    </section>
+
     <!-- Row 5: Mock Trade Panel (full width) -->
     <section class="card">
       <h2 class="text-sm font-semibold text-slate-200 mb-2">Mock Trade Panel</h2>
@@ -284,6 +308,7 @@
   <script>
     const botToggle = document.getElementById('botToggle');
     const envForm = document.getElementById('envForm');
+    const exchangeForm = document.getElementById('exchangeForm');
     const saveStatus = document.getElementById('saveStatus');
     const availableBalanceEl = document.getElementById('availableBalance');
     const overallProfitEl = document.getElementById('overallProfit');
@@ -297,9 +322,23 @@
     const btnMockShort = document.getElementById('btnMockShort');
     const autotradeToggle = document.getElementById('autotradeToggle');
 
+    function updateAccountStatusBadges(running, autotrade) {
+      var botEl = document.getElementById('statusBot');
+      var autoEl = document.getElementById('statusAuto');
+      if (botEl) botEl.textContent = running ? 'Bot: 🟢 ON' : 'Bot: 🔴 OFF';
+      if (autoEl) autoEl.textContent = autotrade ? 'Auto: 🟢 ON' : 'Auto: 🔴 OFF';
+    }
+
+    function updateExchangeBadge(exId) {
+      var el = document.getElementById('statusExchange');
+      if (!el) return;
+      el.textContent = (exId === 'delta_india') ? 'Exchange: 🟠 Delta' : 'Exchange: 🔵 Bybit';
+    }
+
     function applyBotStatus(data) {
       const running = !!data.running;
       const autotrade = !!data.autotrade_enabled;
+      updateAccountStatusBadges(running, autotrade);
       botToggle.setAttribute('aria-checked', running ? 'true' : 'false');
       botToggle.classList.toggle('bg-emerald-500', running);
       botToggle.classList.toggle('bg-slate-600', !running);
@@ -577,6 +616,7 @@
       botToggle.classList.toggle('bg-slate-600', !running);
       botToggle.querySelector('span').classList.toggle('translate-x-6', running);
       botToggle.querySelector('span').classList.toggle('translate-x-1', !running);
+      updateAccountStatusBadges(running, autotradeToggle.getAttribute('aria-checked') === 'true');
     });
 
     autotradeToggle.addEventListener('click', async () => {
@@ -594,8 +634,27 @@
         autotradeToggle.classList.toggle('bg-slate-600', !on);
         autotradeToggle.querySelector('span').classList.toggle('translate-x-6', on);
         autotradeToggle.querySelector('span').classList.toggle('translate-x-1', !on);
+        updateAccountStatusBadges(botToggle.getAttribute('aria-checked') === 'true', on);
       } catch (e) {
         alert('Failed to update Auto Trade: ' + e.message);
+      }
+    });
+
+    exchangeForm.addEventListener('submit', async function (e) {
+      e.preventDefault();
+      try {
+        const fd = new FormData(exchangeForm);
+        const res = await fetch('/api/env', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (data.ok) {
+          var sel = document.getElementById('exchange_id');
+          if (sel) updateExchangeBadge(sel.value);
+          alert('Exchange settings saved');
+        } else {
+          alert('Save failed');
+        }
+      } catch (err) {
+        alert('Save failed: ' + err.message);
       }
     });
 
