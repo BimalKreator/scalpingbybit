@@ -20,14 +20,14 @@ SYMBOL = "BTCUSDT"  # use BTCUSD-style for Delta if needed
 EXCHANGE = "delta_india"  # "delta_india" | "bybit"
 
 START_DATE = "2025-01-01T00:00:00"
-END_DATE = "2026-03-18T09:35:00"  # Typo fixed here
+END_DATE = "2026-03-18T11:35:00"  # Typo fixed here
 
-RSI_LENGTH = 14  # base when RSI length not in grid
+RSI_LENGTH = 4  # base when RSI length not in grid
 RSI_LEN_MIN = 2
 RSI_LEN_MAX = 8
 RSI_LEN_STEP = 1
 
-MIN_PROFIT_PCT = 0.08  # Kept small as discussed for Price Move %
+MIN_PROFIT_PCT = 0.04  # Kept small as discussed for Price Move %
 ALLOW_REVERSAL = True
 
 TRADE_AMOUNT_USD = 100.0
@@ -37,7 +37,7 @@ OPTIMIZE_BY = "total_pnl"  # total_pnl | max_drawdown | win_rate | profit_factor
 
 # Grid search ranges (SL and TP updated to your requirement)
 SL_MIN, SL_MAX, SL_STEP = 0.1, 1.5, 0.1
-TP_MIN, TP_MAX, TP_STEP = 0.1, 1.5, 0.1
+TP_MIN, TP_MAX, TP_STEP = 1.0, 2.5, 0.1
 
 # Setting OB/OS to None so it strictly uses Base Params to save time
 RSI_OB_MIN, RSI_OB_MAX, RSI_OB_STEP = None, None, None
