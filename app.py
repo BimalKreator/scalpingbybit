@@ -49,10 +49,28 @@ def get_env_path() -> Path:
     return ENV_PATH_FALLBACK
 
 
-def _sl_tp_multipliers_from_env_file() -> tuple[float, float]:
+def _sl_tp_params_from_env_file() -> tuple[float, float, float]:
+    """Returns (sl_multiplier_max, sl_multiplier_min, tp_multiplier)."""
     p = get_env_path()
     v = dotenv_values(p) if p.is_file() else {}
-    return float(v.get("SL_MULTIPLIER") or 1.0), float(v.get("TP_MULTIPLIER") or 2.0)
+    leg = (v.get("SL_MULTIPLIER") or "").strip()
+    try:
+        leg_f = float(leg) if leg else None
+    except ValueError:
+        leg_f = None
+    try:
+        smx = float(v.get("SL_MULTIPLIER_MAX") or (leg_f if leg_f is not None else 3.0))
+    except (TypeError, ValueError):
+        smx = 3.0
+    try:
+        smn = float(v.get("SL_MULTIPLIER_MIN") or (leg_f if leg_f is not None else 0.5))
+    except (TypeError, ValueError):
+        smn = 0.5
+    try:
+        tpm = float(v.get("TP_MULTIPLIER") or 2.0)
+    except (TypeError, ValueError):
+        tpm = 2.0
+    return max(smx, 1e-12), max(smn, 1e-12), tpm
 
 
 def _bybit_kline_last_closed_high_low(symbol: str) -> tuple[float, float]:
@@ -313,7 +331,10 @@ async def dashboard_page():
         rsi_length=vars.get("RSI_LENGTH", "14"),
         rsi_overbought=vars.get("RSI_OVERBOUGHT", "60"),
         rsi_oversold=vars.get("RSI_OVERSOLD", "40"),
-        sl_multiplier=vars.get("SL_MULTIPLIER", "1.0"),
+        sl_multiplier_max=vars.get("SL_MULTIPLIER_MAX", vars.get("SL_MULTIPLIER", "3.0")),
+        sl_multiplier_min=vars.get("SL_MULTIPLIER_MIN", "0.5"),
+        sl_decay_seconds=vars.get("SL_DECAY_SECONDS", "10"),
+        trailing_sl_enabled=vars.get("TRAILING_SL_ENABLED", "true"),
         tp_multiplier=vars.get("TP_MULTIPLIER", "2.0"),
         min_profit_pct=vars.get("MIN_PROFIT_PCT", "0.5"),
         initial_capital=vars.get("INITIAL_CAPITAL", "0.0"),
@@ -336,7 +357,10 @@ async def api_update_env(
     rsi_length: str = Form(None),
     rsi_overbought: str = Form(None),
     rsi_oversold: str = Form(None),
-    sl_multiplier: str = Form(None),
+    sl_multiplier_max: str = Form(None),
+    sl_multiplier_min: str = Form(None),
+    sl_decay_seconds: str = Form(None),
+    trailing_sl_enabled: str = Form(None),
     tp_multiplier: str = Form(None),
     min_profit_pct: str = Form(None),
     initial_capital: str = Form(None),
@@ -366,8 +390,16 @@ async def api_update_env(
         updates["RSI_OVERBOUGHT"] = rsi_overbought
     if rsi_oversold is not None:
         updates["RSI_OVERSOLD"] = rsi_oversold
-    if sl_multiplier is not None:
-        updates["SL_MULTIPLIER"] = sl_multiplier
+    if sl_multiplier_max is not None:
+        updates["SL_MULTIPLIER_MAX"] = sl_multiplier_max.strip()
+    if sl_multiplier_min is not None:
+        updates["SL_MULTIPLIER_MIN"] = sl_multiplier_min.strip()
+    if sl_decay_seconds is not None:
+        updates["SL_DECAY_SECONDS"] = sl_decay_seconds.strip()
+    if trailing_sl_enabled is not None:
+        updates["TRAILING_SL_ENABLED"] = (
+            "true" if str(trailing_sl_enabled).strip().lower() in ("1", "true", "on", "yes") else "false"
+        )
     if tp_multiplier is not None:
         updates["TP_MULTIPLIER"] = tp_multiplier
     if min_profit_pct is not None:
@@ -642,7 +674,7 @@ async def api_trade_manual(body: ManualTradeBody):
     lev = max(1.0, min(100.0, float(body.leverage))) if body.leverage else 5.0
     sig_hi, sig_lo = await _resolve_manual_signal_candle(body)
     sig_range = max(sig_hi - sig_lo, 1e-12)
-    sl_m, tp_m = _sl_tp_multipliers_from_env_file()
+    sl_mx, sl_mn, tp_m = _sl_tp_params_from_env_file()
     try:
         if _app_exchange_id() == "delta_india":
             k, sec = _delta_keys()
@@ -707,14 +739,18 @@ async def api_trade_manual(body: ManualTradeBody):
                 if not ask2 or float(ask2) <= 0:
                     raise HTTPException(status_code=502, detail="No best ask for SL/TP")
                 base = float(ask2)
-                sl = base - sig_range * sl_m
+                sl_wide = base - sig_range * sl_mx
+                sl_tight = base - sig_range * sl_mn
                 tp = base + sig_range * tp_m
+                sl = sl_wide
             else:
                 if not bid2 or float(bid2) <= 0:
                     raise HTTPException(status_code=502, detail="No best bid for SL/TP")
                 base = float(bid2)
-                sl = base + sig_range * sl_m
+                sl_wide = base + sig_range * sl_mx
+                sl_tight = base + sig_range * sl_mn
                 tp = base - sig_range * tp_m
+                sl = sl_wide
             sl = _delta_round_price(sl, tick_f)
             tp = _delta_round_price(tp, tick_f)
             sl_str = f"{sl:g}"
@@ -734,6 +770,8 @@ async def api_trade_manual(body: ManualTradeBody):
                 body.allow_reversal,
                 signal_high=sig_hi,
                 signal_low=sig_lo,
+                sl_max_price=sl_wide,
+                sl_min_price=sl_tight,
             )
             return {"ok": True, "message": "Trade executed (Delta)"}
 
@@ -787,14 +825,18 @@ async def api_trade_manual(body: ManualTradeBody):
             if not a2:
                 raise HTTPException(status_code=502, detail="No best ask after fill")
             base = float(a2[0][0])
-            sl = base - sig_range * sl_m
+            sl_wide = base - sig_range * sl_mx
+            sl_tight = base - sig_range * sl_mn
             tp = base + sig_range * tp_m
+            sl = sl_wide
         else:
             if not b2:
                 raise HTTPException(status_code=502, detail="No best bid after fill")
             base = float(b2[0][0])
-            sl = base + sig_range * sl_m
+            sl_wide = base + sig_range * sl_mx
+            sl_tight = base + sig_range * sl_mn
             tp = base - sig_range * tp_m
+            sl = sl_wide
         sl_str = f"{sl:.2f}"
         tp_str = f"{tp:.2f}"
         await asyncio.to_thread(lambda: _set_trading_stop_sync(client, body.symbol, sl_str, tp_str))
@@ -808,6 +850,8 @@ async def api_trade_manual(body: ManualTradeBody):
             body.allow_reversal,
             signal_high=sig_hi,
             signal_low=sig_lo,
+            sl_max_price=sl_wide,
+            sl_min_price=sl_tight,
         )
         return {"ok": True, "message": "Trade executed"}
     except HTTPException:
@@ -1033,7 +1077,9 @@ class BacktestRequest(BaseModel):
     rsi_length: int = 14
     rsi_overbought: float = 60.0
     rsi_oversold: float = 40.0
-    sl_multiplier: float = 1.0
+    sl_multiplier_max: float = 3.0
+    sl_multiplier_min: float = 0.5
+    trailing_sl_enabled: bool = True
     tp_multiplier: float = 2.0
     trade_amount_usd: float = 100.0
     leverage: float = 5.0
@@ -1091,7 +1137,9 @@ def _run_backtest_sync(req: BacktestRequest):
         rsi_length=req.rsi_length,
         rsi_overbought=req.rsi_overbought,
         rsi_oversold=req.rsi_oversold,
-        sl_multiplier=req.sl_multiplier,
+        sl_multiplier_max=req.sl_multiplier_max,
+        sl_multiplier_min=req.sl_multiplier_min,
+        trailing_sl_enabled=req.trailing_sl_enabled,
         tp_multiplier=req.tp_multiplier,
         trade_amount_usd=req.trade_amount_usd,
         leverage=req.leverage,

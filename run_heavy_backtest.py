@@ -46,7 +46,9 @@ RSI_OS_MIN, RSI_OS_MAX, RSI_OS_STEP = None, None, None
 # Base params (used only if a dimension has no grid)
 RSI_OVERBOUGHT = 60.0
 RSI_OVERSOLD = 40.0
-SL_MULTIPLIER = 1.0
+SL_MULTIPLIER_MAX = 3.0
+SL_MULTIPLIER_MIN = 0.5
+TRAILING_SL_BACKTEST = True
 TP_MULTIPLIER = 2.0
 
 OUTPUT_CSV = "heavy_backtest_results.csv"
@@ -89,7 +91,9 @@ def main() -> int:
         rsi_length=RSI_LENGTH,
         rsi_overbought=RSI_OVERBOUGHT,
         rsi_oversold=RSI_OVERSOLD,
-        sl_multiplier=SL_MULTIPLIER,
+        sl_multiplier_max=SL_MULTIPLIER_MAX,
+        sl_multiplier_min=SL_MULTIPLIER_MIN,
+        trailing_sl_enabled=TRAILING_SL_BACKTEST,
         tp_multiplier=TP_MULTIPLIER,
         trade_amount_usd=TRADE_AMOUNT_USD,
         leverage=LEVERAGE,
@@ -135,7 +139,7 @@ def main() -> int:
     bp = best.get("best_params") or {}
     print(
         f"  Best ({OPTIMIZE_BY}): RSI_len={bp.get('rsi_length')} RSI_OB={bp.get('rsi_overbought')} "
-        f"RSI_OS={bp.get('rsi_oversold')} SL={bp.get('sl_multiplier')} TP={bp.get('tp_multiplier')} "
+        f"RSI_OS={bp.get('rsi_oversold')} SLmax={bp.get('sl_multiplier_max')} SLmin={bp.get('sl_multiplier_min')} TP={bp.get('tp_multiplier')} "
         f"→ total_pnl={best.get('total_pnl')}"
     )
     

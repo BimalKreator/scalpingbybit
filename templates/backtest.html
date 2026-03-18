@@ -66,14 +66,27 @@
         </div>
         <div class="grid grid-cols-2 gap-3">
           <div>
-            <label for="sl_multiplier" class="block text-xs font-medium text-slate-400 mb-1">SL multiplier</label>
-            <input type="number" id="sl_multiplier" name="sl_multiplier" value="1" step="any"
+            <label for="sl_multiplier_max" class="block text-xs font-medium text-slate-400 mb-1">SL mult max (wide)</label>
+            <input type="number" id="sl_multiplier_max" name="sl_multiplier_max" value="3" step="any"
               class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
           </div>
+          <div>
+            <label for="sl_multiplier_min" class="block text-xs font-medium text-slate-400 mb-1">SL mult min (tight)</label>
+            <input type="number" id="sl_multiplier_min" name="sl_multiplier_min" value="0.5" step="any"
+              class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
           <div>
             <label for="tp_multiplier" class="block text-xs font-medium text-slate-400 mb-1">TP multiplier</label>
             <input type="number" id="tp_multiplier" name="tp_multiplier" value="2" step="any"
               class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
+          </div>
+          <div class="flex items-end pb-3">
+            <label class="flex items-center gap-2 text-xs font-medium text-slate-400 cursor-pointer">
+              <input type="checkbox" id="trailing_sl_enabled_bt" checked class="rounded border-slate-600 bg-slate-800 text-emerald-500" />
+              Breakeven at half-TP (backtest)
+            </label>
           </div>
         </div>
         <div class="grid grid-cols-2 gap-3">
@@ -215,8 +228,10 @@
           rsi_length: parseInt(document.getElementById('rsi_length').value, 10) || 14,
           rsi_overbought: num('rsi_overbought', 60),
           rsi_oversold: num('rsi_oversold', 40),
-          sl_multiplier: num('sl_multiplier', 1),
+          sl_multiplier_max: num('sl_multiplier_max', 3),
+          sl_multiplier_min: num('sl_multiplier_min', 0.5),
           tp_multiplier: num('tp_multiplier', 2),
+          trailing_sl_enabled: document.getElementById('trailing_sl_enabled_bt').checked,
           trade_amount_usd: num('trade_amount_usd', 100),
           leverage: num('leverage', 5),
           min_profit_pct: num('min_profit_pct', 0.5),
@@ -258,7 +273,8 @@
           if (bp.rsi_length != null) parts.push('RSI len: ' + bp.rsi_length);
           if (bp.rsi_overbought != null) parts.push('RSI OB: ' + bp.rsi_overbought);
           if (bp.rsi_oversold != null) parts.push('RSI OS: ' + bp.rsi_oversold);
-          if (bp.sl_multiplier != null) parts.push('SL: ' + bp.sl_multiplier);
+          if (bp.sl_multiplier_max != null) parts.push('SL max: ' + bp.sl_multiplier_max);
+          if (bp.sl_multiplier_min != null) parts.push('SL min: ' + bp.sl_multiplier_min);
           if (bp.tp_multiplier != null) parts.push('TP: ' + bp.tp_multiplier);
           document.getElementById('bestParams').textContent = parts.length ? parts.join(', ') : '–';
         } else {

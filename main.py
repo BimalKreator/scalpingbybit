@@ -40,8 +40,28 @@ RSI_OVERSOLD = float(os.getenv("RSI_OVERSOLD", "40"))
 TRADE_QTY = float(os.getenv("TRADE_QTY", "0.001"))
 TRADE_AMOUNT_USD = float(os.getenv("TRADE_AMOUNT_USD", "100"))
 LEVERAGE = float(os.getenv("LEVERAGE", "5"))
-SL_MULTIPLIER = float(os.getenv("SL_MULTIPLIER", "1.0"))
 TP_MULTIPLIER = float(os.getenv("TP_MULTIPLIER", "2.0"))
+
+
+def _sl_multipliers_from_env() -> tuple[float, float]:
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
+    leg_s = (os.getenv("SL_MULTIPLIER") or "").strip()
+    mx_s = (os.getenv("SL_MULTIPLIER_MAX") or "").strip()
+    mn_s = (os.getenv("SL_MULTIPLIER_MIN") or "").strip()
+    try:
+        leg = float(leg_s) if leg_s else None
+    except ValueError:
+        leg = None
+    try:
+        mx = float(mx_s) if mx_s else (leg if leg is not None else 3.0)
+    except ValueError:
+        mx = 3.0
+    try:
+        mn = float(mn_s) if mn_s else (leg if leg is not None else 0.5)
+    except ValueError:
+        mn = 0.5
+    return max(mx, 1e-12), max(mn, 1e-12)
 MIN_PROFIT_PCT = float(os.getenv("MIN_PROFIT_PCT", "0.5"))
 
 if USE_DELTA:
@@ -88,6 +108,14 @@ _last_tp_price: float | None = None
 _last_position_was_reverse: bool = False
 _monitor_had_position: bool = False
 _manual_reversal_allowed: bool = False
+
+# Dynamic SL: wide → tight after SL_DECAY_SECONDS; optional half-TP breakeven
+_entry_time: float = 0.0
+_sl_max_price: float = 0.0
+_sl_min_price: float = 0.0
+_breakeven_triggered: bool = False
+_last_active_sl_price: float | None = None
+_sl_persist_ts: float = 0.0
 
 # Real-time position state from private WebSocket (linear, our SYMBOL only)
 _position_size: float = 0.0
@@ -150,21 +178,38 @@ def _read_live_state_json_safe() -> dict:
 
 
 def _merge_sl_tp_tracker_into_dict(d: dict) -> None:
-    """Persisted local SL/TP keys for restarts (not exchange stops)."""
+    """Persist active SL (dynamic), TP, tracker bounds, entry time, breakeven flag."""
     try:
-        sl = float(_last_sl_price) if _last_sl_price is not None else 0.0
         tp = float(_last_tp_price) if _last_tp_price is not None else 0.0
     except (TypeError, ValueError):
-        sl, tp = 0.0, 0.0
-    if sl > 0 and tp > 0:
-        d["last_sl_price"] = sl
+        tp = 0.0
+    bb, ba = best_bid, best_ask
+    mid = (bb + ba) / 2.0 if bb > 0 and ba > 0 else 0.0
+    act_sl = 0.0
+    if tp > 0 and get_open_position():
+        if mid > 0:
+            a = _compute_active_sl_price(mid)
+            act_sl = float(a) if a is not None else 0.0
+        if act_sl <= 0 and _last_active_sl_price is not None:
+            act_sl = float(_last_active_sl_price)
+        if act_sl <= 0 and _last_sl_price is not None:
+            act_sl = float(_last_sl_price)
+    if act_sl > 0 and tp > 0:
+        d["last_sl_price"] = act_sl
         d["last_tp_price"] = tp
-        side = (_last_position_side or "").strip()
-        d["last_position_side"] = side if side else ""
+        d["last_position_side"] = (_last_position_side or "").strip() or ""
+        d["tracker_sl_max"] = float(_sl_max_price)
+        d["tracker_sl_min"] = float(_sl_min_price)
+        d["sl_entry_time_unix"] = float(_entry_time)
+        d["sl_breakeven_triggered"] = bool(_breakeven_triggered)
     else:
         d["last_sl_price"] = 0.0
         d["last_tp_price"] = 0.0
         d["last_position_side"] = ""
+        d["tracker_sl_max"] = 0.0
+        d["tracker_sl_min"] = 0.0
+        d["sl_entry_time_unix"] = 0.0
+        d["sl_breakeven_triggered"] = False
 
 
 def _flush_live_state_file_with_tracker() -> None:
@@ -180,24 +225,37 @@ def _flush_live_state_file_with_tracker() -> None:
 
 
 def _load_sl_tp_tracker_from_file_on_startup() -> None:
-    """Restore _last_sl_price / _last_tp_price / side before WS (if file valid)."""
-    global _last_sl_price, _last_tp_price, _last_position_side
+    """Restore SL/TP tracker + dynamic SL state before WS."""
+    global _last_sl_price, _last_tp_price, _last_position_side, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _last_active_sl_price
     try:
         data = _read_live_state_json_safe()
-        sl = data.get("last_sl_price")
         tp = data.get("last_tp_price")
         side_raw = data.get("last_position_side")
-        slf = float(sl) if sl is not None else 0.0
         tpf = float(tp) if tp is not None else 0.0
         side = (str(side_raw).strip() if side_raw is not None else "")
-        if slf > 0 and tpf > 0 and side:
+        tmax = float(data.get("tracker_sl_max") or 0)
+        tmin = float(data.get("tracker_sl_min") or 0)
+        sl_disk = float(data.get("last_sl_price") or 0)
+        if tmax <= 0 and tmin <= 0 and sl_disk > 0:
+            tmax = tmin = sl_disk
+        elif tmax > 0 and tmin <= 0:
+            tmin = tmax
+        et = float(data.get("sl_entry_time_unix") or 0)
+        be = str(data.get("sl_breakeven_triggered", "")).lower() in ("1", "true", "yes")
+        if tpf > 0 and side and (tmax > 0 or sl_disk > 0):
             sll = side.lower()
             if sll in ("buy", "sell"):
-                _last_sl_price = slf
                 _last_tp_price = tpf
                 _last_position_side = "Buy" if sll == "buy" else "Sell"
+                _sl_max_price = tmax if tmax > 0 else sl_disk
+                _sl_min_price = tmin if tmin > 0 else _sl_max_price
+                _last_sl_price = _sl_max_price
+                _entry_time = et if et > 0 else time.time()
+                _breakeven_triggered = be
+                _last_active_sl_price = sl_disk if sl_disk > 0 else _sl_max_price
                 print(
-                    f"[bot] Restored local SL/TP from disk: SL={slf:g} TP={tpf:g} side={_last_position_side}"
+                    f"[bot] Restored SL tracker: TP={tpf:g} side={_last_position_side} "
+                    f"sl_max={_sl_max_price:g} sl_min={_sl_min_price:g} breakeven={be}"
                 )
     except Exception as e:
         print(f"[bot] SL/TP tracker load error (using defaults): {e}")
@@ -205,14 +263,23 @@ def _load_sl_tp_tracker_from_file_on_startup() -> None:
 
 def _clear_sl_tp_tracker_on_file_and_globals() -> None:
     """Reset persisted SL/TP after position is flat (size 0)."""
-    global _last_sl_price, _last_tp_price
+    global _last_sl_price, _last_tp_price, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _last_active_sl_price
     _last_sl_price = None
     _last_tp_price = None
+    _entry_time = 0.0
+    _sl_max_price = 0.0
+    _sl_min_price = 0.0
+    _breakeven_triggered = False
+    _last_active_sl_price = None
     try:
         data = _read_live_state_json_safe()
         data["last_sl_price"] = 0.0
         data["last_tp_price"] = 0.0
         data["last_position_side"] = ""
+        data["tracker_sl_max"] = 0.0
+        data["tracker_sl_min"] = 0.0
+        data["sl_entry_time_unix"] = 0.0
+        data["sl_breakeven_triggered"] = False
         with open(_LIVE_STATE_PATH, "w", encoding="utf-8") as f:
             _json.dump(data, f, indent=2)
     except Exception as e:
@@ -348,9 +415,69 @@ def _get_orderbook_l1() -> tuple[float, float, float, float]:
         return (best_bid, best_ask, bid_qty, ask_qty)
 
 
+def _trailing_sl_enabled() -> bool:
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
+    v = (os.getenv("TRAILING_SL_ENABLED") or "true").strip().lower()
+    return v in ("1", "true", "yes")
+
+
+def _sl_decay_seconds() -> float:
+    try:
+        return max(0.0, float(os.getenv("SL_DECAY_SECONDS", "10")))
+    except (TypeError, ValueError):
+        return 10.0
+
+
+def _compute_active_sl_price(mid_price: float) -> float | None:
+    """
+    Time-based SL: max distance until decay, then min distance.
+    If trailing on and mid crosses half-way to TP (favorable), lock SL at breakeven (entry).
+    """
+    global _breakeven_triggered, _last_active_sl_price
+    if mid_price <= 0:
+        return None
+    with _position_lock:
+        if _position_size <= 0:
+            return None
+    tpf = _last_tp_price
+    ent = _position_entry_price
+    if tpf is None or ent is None:
+        return float(_last_sl_price) if _last_sl_price is not None else None
+    try:
+        ent_f, tpf_f = float(ent), float(tpf)
+    except (TypeError, ValueError):
+        return float(_last_sl_price) if _last_sl_price is not None else None
+    ps = (_last_position_side or "").strip().lower()
+    smax, smin = float(_sl_max_price), float(_sl_min_price)
+    if smax <= 0 and _last_sl_price is not None:
+        smax = smin = float(_last_sl_price)
+    if smin <= 0 and smax > 0:
+        smin = smax
+    if _trailing_sl_enabled():
+        if ps == "buy" and tpf_f > ent_f:
+            half_tp = ent_f + (tpf_f - ent_f) / 2.0
+            if mid_price >= half_tp:
+                _breakeven_triggered = True
+        elif ps == "sell" and tpf_f < ent_f:
+            half_tp = ent_f - (ent_f - tpf_f) / 2.0
+            if mid_price <= half_tp:
+                _breakeven_triggered = True
+    if _breakeven_triggered:
+        act = ent_f
+    elif _entry_time <= 0 or (time.time() - _entry_time) >= _sl_decay_seconds():
+        act = smin if smin > 0 else smax
+    else:
+        act = smax if smax > 0 else float(_last_sl_price or 0)
+    if act <= 0:
+        act = float(_last_sl_price or 0)
+    _last_active_sl_price = act
+    return act
+
+
 def handle_orderbook_message(message: dict) -> None:
     """Update global L1 orderbook from public orderbook.1 stream (snapshot-only for depth 1)."""
-    global best_bid, best_ask, bid_qty, ask_qty
+    global best_bid, best_ask, bid_qty, ask_qty, _sl_persist_ts
     data = message.get("data") or {}
     bids = data.get("b") or []
     asks = data.get("a") or []
@@ -364,11 +491,20 @@ def handle_orderbook_message(message: dict) -> None:
     _sync_position_risk_to_state()
     bb, ba = best_bid, best_ask
     if bb > 0 and ba > 0:
-        _trigger_local_sl_tp_if_needed((bb + ba) / 2.0)
+        mid = (bb + ba) / 2.0
+        _trigger_local_sl_tp_if_needed(mid)
+        global _sl_persist_ts
+        now = time.time()
+        if now - _sl_persist_ts >= 2.0:
+            _sl_persist_ts = now
+            try:
+                _flush_live_state_file_with_tracker()
+            except Exception:
+                pass
 
 
 def _trigger_local_sl_tp_if_needed(mid_price: float) -> None:
-    """If mid hits SL/TP, schedule aggressive exit (is_entry=False). Thread-safe from orderbook WS."""
+    """Exit when mid crosses dynamic active SL or static TP."""
     global _is_closing_position, _loop
     if mid_price <= 0 or _loop is None:
         return
@@ -377,16 +513,19 @@ def _trigger_local_sl_tp_if_needed(mid_price: float) -> None:
             return
         if not get_open_position():
             return
-        if _last_sl_price is None or _last_tp_price is None:
+        if _last_tp_price is None:
+            return
+        act = _compute_active_sl_price(mid_price)
+        if act is None:
             return
         ps = (_last_position_side or "").strip().lower()
-        slf, tpf = float(_last_sl_price), float(_last_tp_price)
+        tpf = float(_last_tp_price)
         hit = False
         if ps == "buy":
-            if mid_price <= slf or mid_price >= tpf:
+            if mid_price <= act or mid_price >= tpf:
                 hit = True
         elif ps == "sell":
-            if mid_price >= slf or mid_price <= tpf:
+            if mid_price >= act or mid_price <= tpf:
                 hit = True
         if not hit:
             return
@@ -442,30 +581,29 @@ async def _async_local_sl_tp_close(trigger_mid: float) -> None:
 
 
 def _position_risk_payload() -> dict:
-    """
-    Dashboard risk bar from bot-local SL/TP (_last_sl_price / _last_tp_price), not exchange stops.
-    has_levels when local prices are valid (> 0). Dollar risk = |entry−sl|×size, reward = |tp−entry|×size.
-    """
+    """Risk bar uses dynamic active SL and static TP."""
     if not get_open_position():
         return {"open": False}
     try:
-        slf = float(_last_sl_price) if _last_sl_price is not None else None
         tpf = float(_last_tp_price) if _last_tp_price is not None else None
     except (TypeError, ValueError):
-        slf, tpf = None, None
-    has_levels = bool(
-        slf is not None
-        and tpf is not None
-        and slf > 0
-        and tpf > 0
-    )
+        tpf = None
+    with _orderbook_lock:
+        bb, ba = best_bid, best_ask
+    mid = (bb + ba) / 2.0 if bb > 0 and ba > 0 else 0.0
+    slf = None
+    if mid > 0:
+        slf = _compute_active_sl_price(mid)
+    if slf is None and _last_active_sl_price is not None:
+        slf = float(_last_active_sl_price)
+    if slf is None and _last_sl_price is not None:
+        slf = float(_last_sl_price)
+    has_levels = bool(slf is not None and tpf is not None and slf > 0 and tpf > 0)
     if not has_levels:
         return {"open": True, "has_levels": False, "side": _last_position_side}
     with _position_lock:
         size = float(_position_size)
         entry = _position_entry_price
-    with _orderbook_lock:
-        bb, ba = best_bid, best_ask
     mid = (bb + ba) / 2 if bb > 0 and ba > 0 else None
     if entry is None or entry <= 0:
         entry = mid
@@ -647,7 +785,7 @@ async def execute_strategy_signal(
 
     load_dotenv(override=True)
     load_dotenv("env", override=True)
-    sl_mult = float(os.getenv("SL_MULTIPLIER", "1.0"))
+    sl_mx, sl_mn = _sl_multipliers_from_env()
     tp_mult = float(os.getenv("TP_MULTIPLIER", "2.0"))
     if len(KLINES) >= 2:
         prev = KLINES[-2]
@@ -660,12 +798,16 @@ async def execute_strategy_signal(
     b_bid, b_ask, _, _ = _get_orderbook_l1()
     if side == "Buy":
         base = b_ask if b_ask and b_ask > 0 else current_price
-        sl = base - (range_ * sl_mult)
+        sl_wide = base - (range_ * sl_mx)
+        sl_tight = base - (range_ * sl_mn)
         tp = base + (range_ * tp_mult)
+        sl = sl_wide
     else:
         base = b_bid if b_bid and b_bid > 0 else current_price
-        sl = base + (range_ * sl_mult)
+        sl_wide = base + (range_ * sl_mx)
+        sl_tight = base + (range_ * sl_mn)
         tp = base - (range_ * tp_mult)
+        sl = sl_wide
     sl_str = f"{sl:.2f}"
     tp_str = f"{tp:.2f}"
 
@@ -715,6 +857,20 @@ async def execute_strategy_signal(
     )
     if ok:
         print("[Mock Signal] SL/TP set successfully.")
+        global _position_entry_price, _last_position_side, _last_signal_candle, _last_sl_price, _last_tp_price
+        global _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _last_active_sl_price, _last_position_was_reverse
+        _last_position_side = side
+        _last_signal_candle = {"high": high, "low": low, "close": float(base)}
+        _sl_max_price, _sl_min_price = sl_wide, sl_tight
+        _last_sl_price = sl_wide
+        _last_tp_price = tp
+        _position_entry_price = float(base)
+        _entry_time = time.time()
+        _breakeven_triggered = False
+        _last_active_sl_price = sl_wide
+        _last_position_was_reverse = False
+        _sync_position_risk_to_state()
+        _flush_live_state_file_with_tracker()
     else:
         print("[Mock Signal] Warning: set_trading_stop failed.")
 
@@ -726,6 +882,7 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
     SHORT: base = best bid → SL = base + range×SL_MULT, TP = base − range×TP_MULT.
     """
     global _last_position_side, _last_signal_candle, _last_sl_price, _last_tp_price, _last_position_was_reverse
+    global _position_entry_price, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _last_active_sl_price
     if get_open_position():
         print("Position already open, skipping new signal")
         return
@@ -753,23 +910,45 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
             print(f"[BALANCE ERROR] Failed to fetch wallet balance: {e}. Skipping trade.")
             return
     b_bid, b_ask, _, _ = _get_orderbook_l1()
-    if side == "Buy":
+    sl_mx, sl_mn = _sl_multipliers_from_env()
+    tp_m = float(os.getenv("TP_MULTIPLIER", str(TP_MULTIPLIER)) or TP_MULTIPLIER)
+
+    if is_reverse:
+        if side == "Buy":
+            if not b_ask or b_ask <= 0:
+                print("No best ask; cannot place LONG reversal.")
+                return
+            base = b_ask
+        else:
+            if not b_bid or b_bid <= 0:
+                print("No best bid; cannot place SHORT reversal.")
+                return
+            base = b_bid
+        current_price = base
+    elif side == "Buy":
         if not b_ask or b_ask <= 0:
             print("No best ask; cannot place LONG.")
             return
         base = b_ask
-        sl = base - (range_ * SL_MULTIPLIER)
-        tp = base + (range_ * TP_MULTIPLIER)
+        sl_wide = base - (range_ * sl_mx)
+        sl_tight = base - (range_ * sl_mn)
+        tp = base + (range_ * tp_m)
+        sl = sl_wide
+        current_price = base
     else:
         if not b_bid or b_bid <= 0:
             print("No best bid; cannot place SHORT.")
             return
         base = b_bid
-        sl = base + (range_ * SL_MULTIPLIER)
-        tp = base - (range_ * TP_MULTIPLIER)
-    sl_str = f"{sl:.2f}"
-    tp_str = f"{tp:.2f}"
-    current_price = base
+        sl_wide = base + (range_ * sl_mx)
+        sl_tight = base + (range_ * sl_mn)
+        tp = base - (range_ * tp_m)
+        sl = sl_wide
+        current_price = base
+
+    if not is_reverse:
+        sl_str = f"{sl:.2f}"
+        tp_str = f"{tp:.2f}"
     if USE_DELTA:
         from delta_client import get_delta_contract_value as _delta_cv
 
@@ -816,6 +995,58 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
         is_entry=True,
     )
 
+    if is_reverse:
+        b_bid2, b_ask2, _, _ = _get_orderbook_l1()
+        if side == "Buy":
+            if not b_ask2 or b_ask2 <= 0:
+                print("No best ask after reversal fill; cannot init dynamic SL.")
+                return
+            ent = float(b_ask2)
+            sl_wide = ent - (range_ * sl_mx)
+            sl_tight = ent - (range_ * sl_mn)
+            tp = ent + (range_ * tp_m)
+        else:
+            if not b_bid2 or b_bid2 <= 0:
+                print("No best bid after reversal fill; cannot init dynamic SL.")
+                return
+            ent = float(b_bid2)
+            sl_wide = ent + (range_ * sl_mx)
+            sl_tight = ent + (range_ * sl_mn)
+            tp = ent - (range_ * tp_m)
+        sl_str = f"{sl_wide:.2f}"
+        tp_str = f"{tp:.2f}"
+        ok_rev = await loop.run_in_executor(
+            None,
+            lambda s=side: _set_position_sl_tp_sync(
+                HTTP_CLIENT, SYMBOL, "linear", sl_str, tp_str, entry_side=s
+            ),
+        )
+        print(
+            "[Reversal] Dynamic SL max/min from signal_range:",
+            sl_str,
+            f"/ {sl_tight:.2f}",
+            "| TP:",
+            tp_str,
+        )
+        _last_position_side = side
+        _last_signal_candle = {"high": high, "low": low, "close": close}
+        _sl_max_price = sl_wide
+        _sl_min_price = sl_tight
+        _last_sl_price = sl_wide
+        _last_tp_price = tp
+        _last_position_was_reverse = True
+        _position_entry_price = ent
+        _entry_time = time.time()
+        _breakeven_triggered = False
+        _last_active_sl_price = sl_wide
+        _sync_position_risk_to_state()
+        _flush_live_state_file_with_tracker()
+        if not ok_rev:
+            print(
+                "Warning: set_trading_stop failed for reversal SL/TP (local state persisted)."
+            )
+        return
+
     ok = await loop.run_in_executor(
         None,
         lambda s=side: _set_position_sl_tp_sync(
@@ -823,14 +1054,18 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
         ),
     )
     if ok:
-        print("Calculated SL:", sl_str, "| TP:", tp_str)
-        global _position_entry_price
+        print("Calculated SL (wide→tight):", sl_str, "| TP:", tp_str)
         _last_position_side = side
         _last_signal_candle = {"high": high, "low": low, "close": close}
-        _last_sl_price = sl
+        _sl_max_price = sl_wide
+        _sl_min_price = sl_tight
+        _last_sl_price = sl_wide
         _last_tp_price = tp
-        _last_position_was_reverse = is_reverse
+        _last_position_was_reverse = False
         _position_entry_price = current_price
+        _entry_time = time.time()
+        _breakeven_triggered = False
+        _last_active_sl_price = sl_wide
         _sync_position_risk_to_state()
         _flush_live_state_file_with_tracker()
     else:
@@ -840,8 +1075,8 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
 def has_valid_entry_signal_now(df: pd.DataFrame) -> tuple[str | None, pd.Series | None]:
     """
     Evaluate latest CLOSED candle for valid LONG or SHORT (1m chart).
-    LONG: signal + previous candle bearish; volume(signal) < volume(previous); RSI < oversold; min-profit.
-    SHORT: signal + previous candle bullish; same volume + RSI rules.
+    LONG: two bearish candles; volume(signal) < volume(previous); RSI < oversold; min-profit.
+    SHORT: two bullish candles; same volume; RSI > overbought; min-profit.
     """
     if len(df) < 3:
         return (None, None)
@@ -870,7 +1105,7 @@ def has_valid_entry_signal_now(df: pd.DataFrame) -> tuple[str | None, pd.Series 
     prev_bullish = close_prev > open_prev
     current_bearish = open_ > close
     prev_bearish = open_prev > close_prev
-    if current_bullish and prev_bullish and vd and float(rsi) < RSI_OVERSOLD:
+    if current_bullish and prev_bullish and vd and float(rsi) > RSI_OVERBOUGHT:
         return ("Sell", row)
     if current_bearish and prev_bearish and vd and float(rsi) < RSI_OVERSOLD:
         return ("Buy", row)
@@ -886,15 +1121,27 @@ def register_manual_trade(
     *,
     signal_high: float | None = None,
     signal_low: float | None = None,
+    sl_max_price: float | None = None,
+    sl_min_price: float | None = None,
 ) -> None:
-    """Register manual trade; reversal uses same Signal_Range (high−low) as live auto."""
+    """Register manual trade; optional sl_max/sl_min for dynamic SL (else single sl_price)."""
     global _last_position_side, _last_sl_price, _last_tp_price, _last_position_was_reverse, _last_signal_candle, _manual_reversal_allowed, _position_entry_price
+    global _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _last_active_sl_price
     _last_position_side = side
-    _last_sl_price = sl_price
-    _last_tp_price = tp_price
+    ep = float(entry_price)
+    if sl_max_price is not None and sl_min_price is not None:
+        _sl_max_price = float(sl_max_price)
+        _sl_min_price = float(sl_min_price)
+    else:
+        _sl_max_price = _sl_min_price = float(sl_price)
+    _last_sl_price = _sl_max_price
+    _last_tp_price = float(tp_price)
     _last_position_was_reverse = False
     _manual_reversal_allowed = allow_reversal
-    _position_entry_price = float(entry_price)
+    _position_entry_price = ep
+    _entry_time = time.time()
+    _breakeven_triggered = False
+    _last_active_sl_price = _sl_max_price
     if signal_high is not None and signal_low is not None and float(signal_high) >= float(signal_low):
         _last_signal_candle = {
             "high": float(signal_high),
@@ -902,9 +1149,9 @@ def register_manual_trade(
             "close": float(entry_price),
         }
     else:
-        sl_mult = float(os.getenv("SL_MULTIPLIER", "1.0"))
-        sl_dist = abs(float(entry_price) - float(sl_price))
-        fake_range = sl_dist / sl_mult if sl_mult > 1e-12 else sl_dist
+        smx, smn = _sl_multipliers_from_env()
+        sl_dist = abs(ep - float(sl_price))
+        fake_range = sl_dist / smx if smx > 1e-12 else sl_dist
         _last_signal_candle = {"high": float(entry_price) + fake_range, "low": float(entry_price), "close": float(entry_price)}
     _sync_position_risk_to_state()
     _flush_live_state_file_with_tracker()
@@ -924,8 +1171,11 @@ def _was_closed_by_sl() -> bool:
     if b_bid <= 0 or b_ask <= 0:
         return False
     current_price = (b_bid + b_ask) / 2
-    dist_sl = abs(current_price - _last_sl_price)
-    dist_tp = abs(current_price - _last_tp_price)
+    sl_ref = float(_last_active_sl_price) if _last_active_sl_price is not None else float(_last_sl_price or 0)
+    if sl_ref <= 0:
+        return False
+    dist_sl = abs(current_price - sl_ref)
+    dist_tp = abs(current_price - float(_last_tp_price))
     return dist_sl <= dist_tp
 
 
@@ -1023,7 +1273,7 @@ def _is_autotrade_enabled() -> bool:
 def check_signals(df: pd.DataFrame) -> None:
     """
     Evaluate latest CLOSED candle for entry (1m chart).
-    LONG/SHORT: two bearish / two bullish; volume(signal) < volume(prev); RSI < oversold; min-profit.
+    LONG: two bearish, vol, RSI < oversold. SHORT: two bullish, vol, RSI > overbought. Min-profit both.
     """
     global LAST_SIGNAL_CANDLE_START, _loop, _signal_queue
     if len(df) < 3 or _loop is None or _signal_queue is None:
@@ -1057,7 +1307,7 @@ def check_signals(df: pd.DataFrame) -> None:
     prev_bullish = close_prev > open_prev
     current_bearish = open_ > close
     prev_bearish = open_prev > close_prev
-    if current_bullish and prev_bullish and vd and rf < RSI_OVERSOLD:
+    if current_bullish and prev_bullish and vd and rf > RSI_OVERBOUGHT:
         print(f"[{datetime.now().isoformat()}] 🔴 SHORT SIGNAL DETECTED ({SYMBOL})")
         LAST_SIGNAL_CANDLE_START = candle_start
         _persist_last_signal_candle_start(candle_start)
@@ -1128,6 +1378,7 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
     both_bearish = current_bearish and prev_bearish
     both_bullish = current_bullish and prev_bullish
     rsi_oversold_ok = rsi_float is not None and rsi_float < RSI_OVERSOLD
+    rsi_overbought_ok = rsi_float is not None and rsi_float > RSI_OVERBOUGHT
 
     range_ = high - low
     tp_mult = float(os.getenv("TP_MULTIPLIER", "2.0"))
@@ -1150,11 +1401,11 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
         {"name": "Previous Candle Bullish", "met": prev_bullish},
         {"name": "Both Bullish", "met": both_bullish},
         {"name": "Volume: signal < previous", "met": vd},
-        {"name": f"RSI < {RSI_OVERSOLD}", "met": rsi_oversold_ok},
+        {"name": f"RSI > {RSI_OVERBOUGHT}", "met": rsi_overbought_ok},
         {"name": f"Expected Profit >= {min_profit_pct}%", "met": expected_profit_pct_ok},
     ]
     long_triggered = both_bearish and vd and rsi_oversold_ok and expected_profit_pct_ok
-    short_triggered = both_bullish and vd and rsi_oversold_ok and expected_profit_pct_ok
+    short_triggered = both_bullish and vd and rsi_overbought_ok and expected_profit_pct_ok
 
     if get_open_position():
         status = "Position Open"

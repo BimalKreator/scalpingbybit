@@ -231,8 +231,10 @@ def run_backtest(
     rsi_length: int = 14,
     rsi_overbought: float = 60.0,
     rsi_oversold: float = 40.0,
-    sl_multiplier: float = 1.0,
+    sl_multiplier_max: float = 3.0,
+    sl_multiplier_min: float = 0.5,
     tp_multiplier: float = 2.0,
+    trailing_sl_enabled: bool = True,
     trade_amount_usd: float = 100.0,
     leverage: float = 5.0,
     initial_capital: float = 10000.0,
@@ -246,9 +248,9 @@ def run_backtest(
 ) -> dict:
     """
     Aligns with live auto-trade (main.py):
-    - Same entry rules (two bearish / two bullish, volume, RSI<oversold, min-profit).
+    - Same entry rules: LONG two bearish + vol + RSI<oversold; SHORT two bullish + vol + RSI>overbought; min-profit.
     - LONG entry at ask proxy (open * (1+spread)); SHORT at bid proxy (open * (1-spread)).
-    - SL/TP from signal-candle range * SL/TP mult from that base (range floored like live).
+    - Dynamic SL: entry candle uses sl_multiplier_max; later candles sl_multiplier_min; optional half-TP breakeven.
     - Delta: position size = (TRADE_AMOUNT*LEVERAGE)/(contract_value*price), floored to qty_step.
     - Bybit: size = (TRADE_AMOUNT*LEVERAGE)/price, same stepping.
     - One reversal after SL only, same signal_range (like on_position_closed path).
@@ -267,8 +269,10 @@ def run_backtest(
         "best_params": {
             "rsi_overbought": rsi_overbought,
             "rsi_oversold": rsi_oversold,
-            "sl_multiplier": sl_multiplier,
+            "sl_multiplier_max": sl_multiplier_max,
+            "sl_multiplier_min": sl_multiplier_min,
             "tp_multiplier": tp_multiplier,
+            "trailing_sl_enabled": trailing_sl_enabled,
         },
     }
     if df.empty or len(df) < rsi_length + 2:
@@ -299,6 +303,11 @@ def run_backtest(
     qty = 0.0
     signal_range = 0.0
     reversal_count = 0
+    entry_bar_idx = -1
+    trade_breakeven = False
+    sl_wide = 0.0
+    sl_tight = 0.0
+    tp_price_pos = 0.0
 
     i = 1
     while i < len(df):
@@ -307,21 +316,37 @@ def run_backtest(
         h, l = float(row["high"]), float(row["low"])
 
         if in_position:
+            if trailing_sl_enabled:
+                if side == "Buy" and tp_price_pos > entry_price:
+                    half_tp = entry_price + (tp_price_pos - entry_price) / 2.0
+                    if h >= half_tp:
+                        trade_breakeven = True
+                elif side == "Sell" and tp_price_pos < entry_price:
+                    half_tp = entry_price - (entry_price - tp_price_pos) / 2.0
+                    if l <= half_tp:
+                        trade_breakeven = True
+            if trade_breakeven:
+                sl_active = entry_price
+            elif i == entry_bar_idx:
+                sl_active = sl_wide
+            else:
+                sl_active = sl_tight
+
             exit_price = None
             exit_reason = None
             if side == "Buy":
-                if l <= sl_price:
-                    exit_price = sl_price
+                if l <= sl_active:
+                    exit_price = sl_active
                     exit_reason = "sl"
-                elif h >= tp_price:
-                    exit_price = tp_price
+                elif h >= tp_price_pos:
+                    exit_price = tp_price_pos
                     exit_reason = "tp"
             else:
-                if h >= sl_price:
-                    exit_price = sl_price
+                if h >= sl_active:
+                    exit_price = sl_active
                     exit_reason = "sl"
-                elif l <= tp_price:
-                    exit_price = tp_price
+                elif l <= tp_price_pos:
+                    exit_price = tp_price_pos
                     exit_reason = "tp"
 
             if exit_price is None:
@@ -360,20 +385,27 @@ def run_backtest(
                 and signal_range > 0
             )
             if do_reversal:
+                # Reversal leg: same dynamic SL as live — wide (max) on entry bar, tight (min) after;
+                # breakeven trailing uses half-TP vs new entry_price / tp_price_pos (loop above).
+                rng = max(signal_range, 1e-12)
                 if side == "Buy":
                     side = "Sell"
                     base = float(exit_price) * (1.0 - _SPREAD_HALF)
                     entry_price = base
-                    rng = max(signal_range, 1e-12)
-                    sl_price = base + rng * sl_multiplier
-                    tp_price = base - rng * tp_multiplier
+                    reversal_sl_price_max = base + rng * sl_multiplier_max
+                    reversal_sl_price_min = base + rng * sl_multiplier_min
+                    sl_wide = reversal_sl_price_max
+                    sl_tight = reversal_sl_price_min
+                    tp_price_pos = base - rng * tp_multiplier
                 else:
                     side = "Buy"
                     base = float(exit_price) * (1.0 + _SPREAD_HALF)
                     entry_price = base
-                    rng = max(signal_range, 1e-12)
-                    sl_price = base - rng * sl_multiplier
-                    tp_price = base + rng * tp_multiplier
+                    reversal_sl_price_max = base - rng * sl_multiplier_max
+                    reversal_sl_price_min = base - rng * sl_multiplier_min
+                    sl_wide = reversal_sl_price_max
+                    sl_tight = reversal_sl_price_min
+                    tp_price_pos = base + rng * tp_multiplier
                 qty = _qty_like_live(
                     entry_price,
                     trade_amount_usd=trade_amount_usd,
@@ -384,11 +416,15 @@ def run_backtest(
                 )
                 reversal_count = 1
                 entry_time = ts
+                entry_bar_idx = i
+                trade_breakeven = False
                 continue
 
             in_position = False
             signal_range = 0.0
             reversal_count = 0
+            entry_bar_idx = -1
+            trade_breakeven = False
             i += 1
             continue
 
@@ -426,7 +462,7 @@ def run_backtest(
         if require_equity_for_entry and equity < trade_amount_usd:
             i += 1
             continue
-        if both_bull and vd and rsi_f < rsi_oversold:
+        if both_bull and vd and rsi_f > rsi_overbought:
             base = o_entry * (1.0 - _SPREAD_HALF)
             entry_price = base
             qty = _qty_like_live(
@@ -440,8 +476,9 @@ def run_backtest(
             if qty < min_order_qty:
                 i += 1
                 continue
-            sl_price = base + range_ * sl_multiplier
-            tp_price = base - range_ * tp_multiplier
+            sl_wide = base + range_ * sl_multiplier_max
+            sl_tight = base + range_ * sl_multiplier_min
+            tp_price_pos = base - range_ * tp_multiplier
             side = "Sell"
             signal_range = range_
             reversal_count = 0
@@ -460,8 +497,9 @@ def run_backtest(
             if qty < min_order_qty:
                 i += 1
                 continue
-            sl_price = base - range_ * sl_multiplier
-            tp_price = base + range_ * tp_multiplier
+            sl_wide = base - range_ * sl_multiplier_max
+            sl_tight = base - range_ * sl_multiplier_min
+            tp_price_pos = base + range_ * tp_multiplier
             side = "Buy"
             signal_range = range_
             reversal_count = 0
@@ -470,6 +508,8 @@ def run_backtest(
         if entered:
             in_position = True
             entry_time = int(row["timestamp"])
+            entry_bar_idx = i
+            trade_breakeven = False
             continue
 
         i += 1
@@ -488,8 +528,10 @@ def run_backtest(
     best_params = {
         "rsi_overbought": rsi_overbought,
         "rsi_oversold": rsi_oversold,
-        "sl_multiplier": sl_multiplier,
+        "sl_multiplier_max": sl_multiplier_max,
+        "sl_multiplier_min": sl_multiplier_min,
         "tp_multiplier": tp_multiplier,
+        "trailing_sl_enabled": trailing_sl_enabled,
     }
     return {
         "total_pnl": round(total_pnl, 4),
@@ -573,8 +615,10 @@ def run_backtest_grid(
     rsi_length: int = 14,
     rsi_overbought: float = 60.0,
     rsi_oversold: float = 40.0,
-    sl_multiplier: float = 1.0,
+    sl_multiplier_max: float = 3.0,
+    sl_multiplier_min: float = 0.5,
     tp_multiplier: float = 2.0,
+    trailing_sl_enabled: bool = True,
     trade_amount_usd: float = 100.0,
     leverage: float = 5.0,
     initial_capital: float = 10000.0,
@@ -621,7 +665,19 @@ def run_backtest_grid(
         qty_step=qty_step,
         min_order_qty=min_order_qty,
         require_equity_for_entry=require_equity_for_entry,
+        trailing_sl_enabled=trailing_sl_enabled,
     )
+
+    def _combo_sl_bounds(combo: dict) -> tuple[float, float]:
+        if "sl_multiplier_max" in combo:
+            return (
+                float(combo["sl_multiplier_max"]),
+                float(combo.get("sl_multiplier_min", sl_multiplier_min)),
+            )
+        if "sl_multiplier" in combo:
+            smx = float(combo["sl_multiplier"])
+            return smx, max(smx * (0.5 / 3.0), 1e-9)
+        return sl_multiplier_max, sl_multiplier_min
     def _score(res: dict) -> float:
         if optimize_by == "total_pnl":
             return float(res["total_pnl"])
@@ -635,11 +691,13 @@ def run_backtest_grid(
         return float(res["total_pnl"])
 
     def _row(combo: dict, res: dict) -> dict:
+        cmx, cmn = _combo_sl_bounds(combo)
         return {
             "rsi_length": int(combo.get("rsi_length", rsi_length)),
             "rsi_overbought": combo.get("rsi_overbought", rsi_overbought),
             "rsi_oversold": combo.get("rsi_oversold", rsi_oversold),
-            "sl_multiplier": combo.get("sl_multiplier", sl_multiplier),
+            "sl_multiplier_max": cmx,
+            "sl_multiplier_min": cmn,
             "tp_multiplier": combo.get("tp_multiplier", tp_multiplier),
             "total_pnl": res["total_pnl"],
             "max_drawdown": res["max_drawdown"],
@@ -656,7 +714,8 @@ def run_backtest_grid(
             rsi_length=rsi_length,
             rsi_overbought=rsi_overbought,
             rsi_oversold=rsi_oversold,
-            sl_multiplier=sl_multiplier,
+            sl_multiplier_max=sl_multiplier_max,
+            sl_multiplier_min=sl_multiplier_min,
             tp_multiplier=tp_multiplier,
             **common_kw,
         )
@@ -665,7 +724,8 @@ def run_backtest_grid(
                 "rsi_length": rsi_length,
                 "rsi_overbought": rsi_overbought,
                 "rsi_oversold": rsi_oversold,
-                "sl_multiplier": sl_multiplier,
+                "sl_multiplier_max": sl_multiplier_max,
+                "sl_multiplier_min": sl_multiplier_min,
                 "tp_multiplier": tp_multiplier,
             }
             return {"best": res, "all_results": [_row(combo, res)]}
@@ -680,12 +740,14 @@ def run_backtest_grid(
 
     for idx, combo in enumerate(param_combos):
         rl = int(combo.get("rsi_length", rsi_length))
+        cmx, cmn = _combo_sl_bounds(combo)
         res = run_backtest(
             df,
             rsi_length=rl,
             rsi_overbought=float(combo.get("rsi_overbought", rsi_overbought)),
             rsi_oversold=float(combo.get("rsi_oversold", rsi_oversold)),
-            sl_multiplier=float(combo.get("sl_multiplier", sl_multiplier)),
+            sl_multiplier_max=cmx,
+            sl_multiplier_min=cmn,
             tp_multiplier=float(combo.get("tp_multiplier", tp_multiplier)),
             **common_kw,
         )
@@ -694,7 +756,8 @@ def run_backtest_grid(
             "rsi_length": rl,
             "rsi_overbought": float(combo.get("rsi_overbought", rsi_overbought)),
             "rsi_oversold": float(combo.get("rsi_oversold", rsi_oversold)),
-            "sl_multiplier": float(combo.get("sl_multiplier", sl_multiplier)),
+            "sl_multiplier_max": cmx,
+            "sl_multiplier_min": cmn,
             "tp_multiplier": float(combo.get("tp_multiplier", tp_multiplier)),
         }
         res_with_params = {**res, "best_params": best_params}
@@ -714,7 +777,8 @@ def run_backtest_grid(
         rsi_length=rsi_length,
         rsi_overbought=rsi_overbought,
         rsi_oversold=rsi_oversold,
-        sl_multiplier=sl_multiplier,
+        sl_multiplier_max=sl_multiplier_max,
+        sl_multiplier_min=sl_multiplier_min,
         tp_multiplier=tp_multiplier,
         **common_kw,
     )
