@@ -5,6 +5,7 @@ Bybit via CCXT; Delta via REST /v2/history/candles. Fees + reversal logic aligne
 from __future__ import annotations
 
 import itertools
+import math
 import time
 from datetime import datetime, timezone
 
@@ -183,6 +184,47 @@ def _exit_fee_rate(exchange: str) -> float:
     return TAKER_EXIT_FEE_BYBIT
 
 
+def _resolve_contract_value(exchange: str, override: float | None) -> float | None:
+    """Delta: contracts = notional / (cv * price). Bybit: None (use price only)."""
+    ex = (exchange or "bybit").lower()
+    if ex != "delta_india":
+        return None
+    if override is not None and override > 0:
+        return float(override)
+    try:
+        from delta_client import get_delta_contract_value
+
+        v = float(get_delta_contract_value())
+        return v if v > 0 else 0.001
+    except Exception:
+        return 0.001
+
+
+def _qty_like_live(
+    price: float,
+    *,
+    trade_amount_usd: float,
+    leverage: float,
+    contract_value: float | None,
+    qty_step: float,
+    min_order_qty: float,
+) -> float:
+    """
+    Match main._place_order_async: Bybit qty = (amt*lev)/price;
+    Delta qty = (amt*lev)/(cv*price); then floor to qty_step, min min_order_qty.
+    """
+    if price <= 0 or trade_amount_usd <= 0 or leverage <= 0:
+        return 0.0
+    if contract_value is not None and contract_value > 0:
+        raw = (trade_amount_usd * leverage) / (contract_value * price)
+    else:
+        raw = (trade_amount_usd * leverage) / price
+    step = qty_step if qty_step and qty_step > 0 else 0.001
+    q = math.floor(raw / step) * step
+    m = min_order_qty if min_order_qty and min_order_qty > 0 else 0.001
+    return max(m, q)
+
+
 def run_backtest(
     df: pd.DataFrame,
     *,
@@ -197,10 +239,21 @@ def run_backtest(
     exchange: str = "bybit",
     min_profit_pct: float = 0.5,
     allow_reversal: bool = True,
+    contract_value: float | None = None,
+    qty_step: float = 0.001,
+    min_order_qty: float = 0.001,
+    require_equity_for_entry: bool = True,
 ) -> dict:
     """
-    Weak Momentum Reversal with min profit % filter, taker fees (Delta 0% exit),
-    and one reversal trade after SL (same signal_range / multipliers).
+    Aligns with live auto-trade (main.py):
+    - Same entry rules (two bearish / two bullish, volume, RSI<oversold, min-profit).
+    - LONG entry at ask proxy (open * (1+spread)); SHORT at bid proxy (open * (1-spread)).
+    - SL/TP from signal-candle range * SL/TP mult from that base (range floored like live).
+    - Delta: position size = (TRADE_AMOUNT*LEVERAGE)/(contract_value*price), floored to qty_step.
+    - Bybit: size = (TRADE_AMOUNT*LEVERAGE)/price, same stepping.
+    - One reversal after SL only, same signal_range (like on_position_closed path).
+    - Fees: entry taker 0.055%; Bybit exit taker, Delta exit 0%.
+    Differences from live: exits use bar high/low vs L1 mid; no partial fills/chunk orders.
     """
     empty = {
         "total_pnl": 0.0,
@@ -224,11 +277,12 @@ def run_backtest(
 
     ex = (exchange or "bybit").lower()
     exit_fee_r = _exit_fee_rate(ex)
-    # Proxy best ask/bid at bar open (live uses L1; backtest has no book)
+    cv = _resolve_contract_value(ex, contract_value)
     _SPREAD_HALF = 0.00015
     print(
         f"[backtest] exchange={ex} min_profit_pct={min_profit_pct} allow_reversal={allow_reversal} "
-        f"entry_fee={TAKER_ENTRY_FEE} exit_fee={exit_fee_r}"
+        f"entry_fee={TAKER_ENTRY_FEE} exit_fee={exit_fee_r} "
+        f"delta_cv={cv if cv else 'n/a'} qty_step={qty_step}"
     )
 
     df = compute_indicators(df.copy(), rsi_length)
@@ -310,15 +364,24 @@ def run_backtest(
                     side = "Sell"
                     base = float(exit_price) * (1.0 - _SPREAD_HALF)
                     entry_price = base
-                    sl_price = base + signal_range * sl_multiplier
-                    tp_price = base - signal_range * tp_multiplier
+                    rng = max(signal_range, 1e-12)
+                    sl_price = base + rng * sl_multiplier
+                    tp_price = base - rng * tp_multiplier
                 else:
                     side = "Buy"
                     base = float(exit_price) * (1.0 + _SPREAD_HALF)
                     entry_price = base
-                    sl_price = base - signal_range * sl_multiplier
-                    tp_price = base + signal_range * tp_multiplier
-                qty = (trade_amount_usd * leverage) / entry_price if entry_price else 0.0
+                    rng = max(signal_range, 1e-12)
+                    sl_price = base - rng * sl_multiplier
+                    tp_price = base + rng * tp_multiplier
+                qty = _qty_like_live(
+                    entry_price,
+                    trade_amount_usd=trade_amount_usd,
+                    leverage=leverage,
+                    contract_value=cv,
+                    qty_step=qty_step,
+                    min_order_qty=min_order_qty,
+                )
                 reversal_count = 1
                 entry_time = ts
                 continue
@@ -347,7 +410,7 @@ def run_backtest(
         low_prev = float(row_sig["low"])
         close_p2 = float(row_prev2["close"])
         open_p2 = float(row_prev2["open"])
-        range_ = high_prev - low_prev
+        range_ = max(high_prev - low_prev, 1e-12)
         tp_dist = range_ * tp_multiplier
         ref_mid = (high_prev + low_prev) / 2 if high_prev > 0 and low_prev > 0 else close_s
         expected_profit_pct = (tp_dist / ref_mid) * 100 if ref_mid > 0 else 0.0
@@ -360,10 +423,23 @@ def run_backtest(
         both_bear = open_s > close_s and open_p2 > close_p2
         entered = False
         o_entry = float(row["open"])
+        if require_equity_for_entry and equity < trade_amount_usd:
+            i += 1
+            continue
         if both_bull and vd and rsi_f < rsi_oversold:
             base = o_entry * (1.0 - _SPREAD_HALF)
             entry_price = base
-            qty = (trade_amount_usd * leverage) / entry_price if entry_price else 0.0
+            qty = _qty_like_live(
+                entry_price,
+                trade_amount_usd=trade_amount_usd,
+                leverage=leverage,
+                contract_value=cv,
+                qty_step=qty_step,
+                min_order_qty=min_order_qty,
+            )
+            if qty < min_order_qty:
+                i += 1
+                continue
             sl_price = base + range_ * sl_multiplier
             tp_price = base - range_ * tp_multiplier
             side = "Sell"
@@ -373,7 +449,17 @@ def run_backtest(
         elif both_bear and vd and rsi_f < rsi_oversold:
             base = o_entry * (1.0 + _SPREAD_HALF)
             entry_price = base
-            qty = (trade_amount_usd * leverage) / entry_price if entry_price else 0.0
+            qty = _qty_like_live(
+                entry_price,
+                trade_amount_usd=trade_amount_usd,
+                leverage=leverage,
+                contract_value=cv,
+                qty_step=qty_step,
+                min_order_qty=min_order_qty,
+            )
+            if qty < min_order_qty:
+                i += 1
+                continue
             sl_price = base - range_ * sl_multiplier
             tp_price = base + range_ * tp_multiplier
             side = "Buy"
@@ -418,6 +504,12 @@ def run_backtest(
         "best_params": best_params,
         "exchange": ex,
         "min_profit_pct": min_profit_pct,
+        "sizing": {
+            "model": "delta_contract_value" if cv else "bybit_linear",
+            "contract_value": cv,
+            "qty_step": qty_step,
+            "min_order_qty": min_order_qty,
+        },
     }
 
 
@@ -490,6 +582,10 @@ def run_backtest_grid(
     exchange: str = "bybit",
     min_profit_pct: float = 0.5,
     allow_reversal: bool = True,
+    contract_value: float | None = None,
+    qty_step: float = 0.001,
+    min_order_qty: float = 0.001,
+    require_equity_for_entry: bool = True,
     rsi_len_min: float | None = None,
     rsi_len_max: float | None = None,
     rsi_len_step: float | None = None,
@@ -521,6 +617,10 @@ def run_backtest_grid(
         exchange=exchange,
         min_profit_pct=min_profit_pct,
         allow_reversal=allow_reversal,
+        contract_value=contract_value,
+        qty_step=qty_step,
+        min_order_qty=min_order_qty,
+        require_equity_for_entry=require_equity_for_entry,
     )
     def _score(res: dict) -> float:
         if optimize_by == "total_pnl":

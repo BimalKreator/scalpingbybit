@@ -1041,6 +1041,10 @@ class BacktestRequest(BaseModel):
     min_profit_pct: float = 0.5
     allow_reversal: bool = True
     optimize_by: str = "total_pnl"
+    contract_value: float | None = None
+    qty_step: float = 0.001
+    min_order_qty: float = 0.001
+    require_equity_for_entry: bool = True
     rsi_len_min: float | None = None
     rsi_len_max: float | None = None
     rsi_len_step: float | None = None
@@ -1096,6 +1100,10 @@ def _run_backtest_sync(req: BacktestRequest):
         exchange=ex_id,
         min_profit_pct=req.min_profit_pct,
         allow_reversal=req.allow_reversal,
+        contract_value=req.contract_value,
+        qty_step=req.qty_step,
+        min_order_qty=req.min_order_qty,
+        require_equity_for_entry=req.require_equity_for_entry,
         rsi_len_min=req.rsi_len_min,
         rsi_len_max=req.rsi_len_max,
         rsi_len_step=req.rsi_len_step,
