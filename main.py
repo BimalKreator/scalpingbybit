@@ -43,6 +43,8 @@ HTTP_CLIENT = HTTP(
     api_secret=BYBIT_API_SECRET or "",
 )
 
+from bybit_client import fetch_instrument_info, _get_order_filled_qty_rest, _set_position_sl_tp_sync
+
 # In-memory store for kline rows; continuously updated (capped at KLINES_MAX for memory)
 KLINES_MAX = 200
 KLINES = []
@@ -261,28 +263,6 @@ def handle_execution_message(message: dict) -> None:
                 _pending_fills[order_id] = (future, acc)
 
 
-def fetch_instrument_info() -> bool:
-    """Fetch qty_step, minOrderQty and minNotionalValue for SYMBOL; update globals. Return True on success."""
-    global _qty_step, _min_order_qty, _instrument_min_notional
-    try:
-        resp = HTTP_CLIENT.get_instruments_info(category="linear", symbol=SYMBOL)
-        if resp.get("retCode") != 0:
-            return False
-        lst = (resp.get("result") or {}).get("list") or []
-        if not lst:
-            return False
-        lot = (lst[0].get("lotSizeFilter") or {})
-        qty_step = float(lot.get("qtyStep") or 0.001)
-        min_order_qty = float(lot.get("minOrderQty") or 0.001)
-        min_notional = float(lot.get("minNotionalValue") or 6.0)
-        _qty_step = qty_step
-        _min_order_qty = min_order_qty
-        _instrument_min_notional = min_notional
-        return True
-    except Exception:
-        return False
-
-
 def _candle_to_ohlc(signal_candle: pd.Series | dict) -> tuple[float, float, float]:
     """Extract high, low, close from Series or dict."""
     return (
@@ -323,25 +303,6 @@ def _place_limit_ioc_sync(side: str, price_str: str, qty_str: str) -> tuple[str 
         return (order_id, ret_code)
     except Exception:
         return (None, -1)
-
-
-def _get_order_filled_qty_rest(order_id: str) -> float:
-    """REST fallback: get cumulative executed qty for order_id."""
-    try:
-        resp = HTTP_CLIENT.get_order_history(
-            category="linear",
-            symbol=SYMBOL,
-            orderId=order_id,
-            limit=1,
-        )
-        if resp.get("retCode") != 0:
-            return 0.0
-        lst = (resp.get("result") or {}).get("list") or []
-        if not lst:
-            return 0.0
-        return float(lst[0].get("cumExecQty") or lst[0].get("execQty") or 0)
-    except Exception:
-        return 0.0
 
 
 async def execute_chunk_order(side: str, total_qty: float) -> None:
@@ -423,7 +384,7 @@ async def execute_chunk_order(side: str, total_qty: float) -> None:
         except asyncio.TimeoutError:
             filled_qty = await loop.run_in_executor(
                 None,
-                lambda: _get_order_filled_qty_rest(order_id),
+                lambda oid=order_id: _get_order_filled_qty_rest(oid, SYMBOL, HTTP_CLIENT),
             )
         finally:
             with _pending_fills_lock:
@@ -473,21 +434,6 @@ def _place_order_via_ws(side: str, sl_str: str, tp_str: str, qty_str: str) -> bo
         return True
     except Exception as e:
         print("Order failed:", e)
-        return False
-
-
-def _set_position_sl_tp_sync(symbol: str, category: str, stop_loss: str, take_profit: str) -> bool:
-    """Set position SL/TP via REST (one-way mode). Returns True on success."""
-    try:
-        resp = HTTP_CLIENT.set_trading_stop(
-            category=category,
-            symbol=symbol,
-            positionIdx=0,
-            stopLoss=stop_loss,
-            takeProfit=take_profit,
-        )
-        return resp.get("retCode") == 0
-    except Exception:
         return False
 
 
@@ -549,7 +495,7 @@ async def execute_strategy_signal(
     except Exception:
         pass
     await execute_chunk_order(side, total_qty)
-    ok = _set_position_sl_tp_sync(SYMBOL, "linear", sl_str, tp_str)
+    ok = _set_position_sl_tp_sync(HTTP_CLIENT, SYMBOL, "linear", sl_str, tp_str)
     if ok:
         print("[Mock Signal] SL/TP set successfully.")
     else:
@@ -621,7 +567,7 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
     loop = asyncio.get_event_loop()
     ok = await loop.run_in_executor(
         None,
-        lambda: _set_position_sl_tp_sync(SYMBOL, "linear", sl_str, tp_str),
+        lambda: _set_position_sl_tp_sync(HTTP_CLIENT, SYMBOL, "linear", sl_str, tp_str),
     )
     if ok:
         print("Calculated SL:", sl_str, "| TP:", tp_str)
@@ -1002,6 +948,7 @@ async def main_async() -> None:
     except Exception as e:
         print(f"SERVER PUBLIC IP: (fetch failed: {e})")
     global ws_kline, ws_orderbook, ws_private, ws_trade, _loop, _signal_queue, LAST_SIGNAL_CANDLE_START
+    global _qty_step, _min_order_qty, _instrument_min_notional
     api_key = BYBIT_API_KEY or ""
     api_secret = BYBIT_API_SECRET or ""
     if not api_key or not api_secret:
@@ -1032,9 +979,13 @@ async def main_async() -> None:
             "status": "Waiting",
         })
 
-    if not fetch_instrument_info():
+    ok_inst, qt, miq, mnv = fetch_instrument_info(SYMBOL, HTTP_CLIENT)
+    if not ok_inst or qt is None or miq is None or mnv is None:
         print("Warning: could not fetch instrument info; using default qty_step=0.001")
     else:
+        _qty_step = qt
+        _min_order_qty = miq
+        _instrument_min_notional = mnv
         print("Instrument info loaded (qty_step, min_notional).")
 
     # Load historical klines before WebSocket so RSI/indicators have data from first second

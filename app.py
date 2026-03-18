@@ -19,6 +19,8 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from dotenv import load_dotenv
 
+from bybit_client import _get_http_client, _get_instrument_lot, _map_exit_reason
+
 # Env file: prefer .env, fallback to "env"
 ENV_PATH = Path(__file__).resolve().parent / ".env"
 ENV_PATH_FALLBACK = Path(__file__).resolve().parent / "env"
@@ -79,30 +81,6 @@ if _env_path != ENV_PATH_FALLBACK:
 
 # Bybit HTTP client for account, positions, and manual chunk execution (REST-only)
 REFERENCE_BALANCE = 67.56  # Overall Profit = Current Balance - REFERENCE_BALANCE
-
-
-def _get_http_client():
-    """Build Pybit HTTP session: load .env first, then HTTP(testnet=False, api_key=..., api_secret=...)."""
-    load_dotenv(str(get_env_path()))
-    from pybit.unified_trading import HTTP
-    session = HTTP(
-        testnet=False,
-        api_key=os.getenv("BYBIT_API_KEY"),
-        api_secret=os.getenv("BYBIT_API_SECRET"),
-    )
-    return session
-
-
-def _get_instrument_lot(symbol: str) -> tuple[float, float]:
-    """Return (qty_step, min_order_qty) for symbol. Raises on failure."""
-    client = _get_http_client()
-    inst = client.get_instruments_info(category="linear", symbol=symbol)
-    if inst.get("retCode") != 0:
-        raise ValueError("Failed to get instrument info")
-    lot = (inst.get("result", {}).get("list") or [{}])[0].get("lotSizeFilter") or {}
-    qty_step = float(lot.get("qtyStep") or 0.001)
-    min_order_qty = float(lot.get("minOrderQty") or 0.001)
-    return (qty_step, min_order_qty)
 
 
 def _run_chunk_order_sync(symbol: str, side: str, total_qty: float) -> tuple[bool, str]:
@@ -365,23 +343,6 @@ async def api_positions():
         print(f"[api/positions] Exception: {e}")
         print(f"Full Error: {repr(e)}")
         return JSONResponse(status_code=502, content={"error": str(e)})
-
-
-def _map_exit_reason(rec: dict) -> str:
-    """Map Bybit execType/orderType to display exit reason."""
-    ex = (rec.get("execType") or "").strip()
-    ot = (rec.get("orderType") or "").strip()
-    if ex == "BustTrade":
-        return "Liquidation"
-    if ex == "Trade":
-        return "Manual Trade" if ot == "Market" else "SL/TP"
-    if ex == "SessionSettlePnL":
-        return "Settle"
-    if ex == "Settle":
-        return "Settle"
-    if ex == "MovePosition":
-        return "MovePosition"
-    return ex or "–"
 
 
 @app.get("/api/closed_trades")
