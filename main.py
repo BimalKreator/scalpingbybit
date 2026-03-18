@@ -550,13 +550,12 @@ def has_valid_entry_signal_now(df: pd.DataFrame) -> tuple[str | None, pd.Series 
     close, open_ = float(row["close"]), float(row["open"])
     high, low = float(row["high"]), float(row["low"])
     close_prev, open_prev = float(row_prev["close"]), float(row_prev["open"])
-    # Expected ROE % for min-profit filter (load dynamically like LEVERAGE)
+    # Expected price-move % to TP (min-profit filter; not ROE / leverage)
     range_ = high - low
     tp_mult = float(os.getenv("TP_MULTIPLIER", "2.0"))
     tp_dist = range_ * tp_mult
-    leverage = float(os.getenv("LEVERAGE", "5"))
     min_profit_pct = float(os.getenv("MIN_PROFIT_PCT", "0.5"))
-    expected_profit_pct = (tp_dist / close) * leverage * 100 if close > 0 else 0.0
+    expected_profit_pct = (tp_dist / close) * 100 if close > 0 else 0.0
     if expected_profit_pct < min_profit_pct:
         return (None, None)
     # SHORT: current bullish (close > open), previous bullish (close_prev > open_prev)
@@ -703,9 +702,8 @@ def check_signals(df: pd.DataFrame) -> None:
     range_ = high - low
     tp_mult = float(os.getenv("TP_MULTIPLIER", "2.0"))
     tp_dist = range_ * tp_mult
-    leverage = float(os.getenv("LEVERAGE", "5"))
     min_profit_pct = float(os.getenv("MIN_PROFIT_PCT", "0.5"))
-    expected_profit_pct = (tp_dist / close) * leverage * 100 if close > 0 else 0.0
+    expected_profit_pct = (tp_dist / close) * 100 if close > 0 else 0.0
     if expected_profit_pct < min_profit_pct:
         return
     row_dict = row.to_dict() if hasattr(row, "to_dict") else dict(row)
@@ -783,13 +781,12 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
     rsi_oversold_ok = rsi_float is not None and rsi_float < RSI_OVERSOLD
     rsi_overbought_ok = rsi_float is not None and rsi_float > RSI_OVERBOUGHT
 
-    # Expected ROE % for min-profit filter
+    # Expected price-move % to TP (not ROE / leverage)
     range_ = high - low
     tp_mult = float(os.getenv("TP_MULTIPLIER", "2.0"))
     tp_dist = range_ * tp_mult
-    leverage = float(os.getenv("LEVERAGE", "5"))
     min_profit_pct = float(os.getenv("MIN_PROFIT_PCT", "0.5"))
-    expected_profit_pct = (tp_dist / close) * leverage * 100 if close > 0 else 0.0
+    expected_profit_pct = (tp_dist / close) * 100 if close > 0 else 0.0
     expected_profit_pct_ok = expected_profit_pct >= min_profit_pct
 
     long_rules = [
