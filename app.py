@@ -2,6 +2,7 @@
 FastAPI web app: dashboard (bot toggle + .env settings), account/positions, manual trading, backtest UI.
 """
 import asyncio
+import json
 import logging
 import math
 import os
@@ -178,6 +179,81 @@ def _delta_positions_to_ui_rows(raw: dict | list | None) -> list[dict]:
             "createdTime": str(p.get("updated_at") or p.get("timestamp") or "0"),
         })
     return out
+
+
+_LIVE_STATE_JSON_PATH = Path(__file__).resolve().parent / ".live_strategy_state.json"
+
+
+def _symbol_matches_state(pos_symbol: str, state_symbol: str) -> bool:
+    """Loose match e.g. BTCUSDT vs BTCUSD."""
+    a = (pos_symbol or "").strip().upper().replace("USDT", "X").replace("USD", "X")
+    b = (state_symbol or "").strip().upper().replace("USDT", "X").replace("USD", "X")
+    if not b:
+        return True
+    return a == b and len(a) > 0
+
+
+def _exchange_sl_tp_missing(stop_loss: str | None, take_profit: str | None) -> bool:
+    for v in (stop_loss, take_profit):
+        s = str(v).strip() if v is not None else ""
+        if s in ("", "-", "0", "0.0", "None", "null"):
+            return True
+        try:
+            if float(s) <= 0:
+                return True
+        except (TypeError, ValueError):
+            return True
+    return False
+
+
+def _load_local_sl_tp_for_positions() -> tuple[float | None, float | None, str]:
+    """Read last_sl_price / last_tp_price from .live_strategy_state.json."""
+    try:
+        if not _LIVE_STATE_JSON_PATH.is_file():
+            return None, None, ""
+        with open(_LIVE_STATE_JSON_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return None, None, ""
+        sl = data.get("last_sl_price")
+        tp = data.get("last_tp_price")
+        sym = str(data.get("symbol") or "").strip()
+        try:
+            slf = float(sl) if sl is not None else 0.0
+            tpf = float(tp) if tp is not None else 0.0
+        except (TypeError, ValueError):
+            return None, None, sym
+        if slf <= 0 or tpf <= 0:
+            return None, None, sym
+        return slf, tpf, sym
+    except Exception as e:
+        print(f"[api/positions] local SL/TP state read skipped: {e}")
+        return None, None, ""
+
+
+def _inject_local_sl_tp_into_positions(positions: list, *, is_delta: bool) -> list:
+    """Override stop_loss / take_profit from bot-local tracker when appropriate."""
+    if not positions:
+        return positions
+    slf, tpf, state_sym = _load_local_sl_tp_for_positions()
+    if slf is None or tpf is None:
+        return positions
+    sl_s = f"{slf:.4f}".rstrip("0").rstrip(".")
+    tp_s = f"{tpf:.4f}".rstrip("0").rstrip(".")
+    single = len(positions) == 1
+    for p in positions:
+        if not isinstance(p, dict):
+            continue
+        psym = str(p.get("symbol") or "")
+        if state_sym:
+            if not _symbol_matches_state(psym, state_sym):
+                continue
+        elif not single and not is_delta:
+            continue
+        if is_delta or _exchange_sl_tp_missing(p.get("stop_loss"), p.get("take_profit")):
+            p["stop_loss"] = sl_s
+            p["take_profit"] = tp_s
+    return positions
 
 
 app = FastAPI(title="Bybit Weak Momentum Reversal")
@@ -388,7 +464,8 @@ async def api_positions():
                 if isinstance(msg, dict):
                     msg = msg.get("message") or raw
                 return JSONResponse(status_code=502, content={"error": str(msg or "Delta positions error")})
-            return _delta_positions_to_ui_rows(raw)
+            rows = _delta_positions_to_ui_rows(raw)
+            return _inject_local_sl_tp_into_positions(rows, is_delta=True)
         except Exception as e:
             print(f"[api/positions] Delta: {e}")
             return JSONResponse(status_code=502, content={"error": str(e)})
@@ -417,7 +494,7 @@ async def api_positions():
                 "unrealisedPnl": p.get("unrealisedPnl", "0"),
                 "createdTime": p.get("createdTime", "0"),
             })
-        return out
+        return _inject_local_sl_tp_into_positions(out, is_delta=False)
     except Exception as e:
         print(f"[api/positions] Exception: {e}")
         print(f"Full Error: {repr(e)}")
