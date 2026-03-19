@@ -809,7 +809,8 @@
       function updateExchangeSlHealth(h) {
         if (!slWrap || !slBadge || !slMeta || !slErr) return;
         var card = document.getElementById('activePositionCard');
-        if (!card || card.classList.contains('hidden')) {
+        var hasActivePosition = !!(card && !card.classList.contains('hidden'));
+        if (!hasActivePosition) {
           slWrap.classList.add('hidden');
           return;
         }
@@ -824,16 +825,28 @@
         slMeta.textContent = 'Last synced: ' + age;
         slBadge.classList.remove('border-emerald-600', 'bg-emerald-900/50', 'text-emerald-300', 'badge-blink');
         slBadge.classList.remove('border-red-600', 'bg-red-900/40', 'text-red-300');
+        slBadge.classList.remove('border-amber-500', 'bg-amber-500', 'text-white');
         slBadge.classList.remove('border-slate-600', 'bg-slate-700', 'text-slate-200');
+        slErr.classList.remove('text-red-300', 'text-amber-300');
+        var stale = status === 'ok' && !isNaN(ts) && ts > 0 && (Math.floor(Date.now() / 1000 - ts) > 15) && hasActivePosition;
         if (status === 'ok') {
-          slBadge.textContent = 'Exchange SL: Secured';
-          slBadge.classList.add('border-emerald-600', 'bg-emerald-900/50', 'text-emerald-300');
-          slErr.classList.add('hidden');
-          slErr.textContent = '';
+          if (stale) {
+            slBadge.textContent = 'Exchange SL: STALE SYNC';
+            slBadge.classList.add('border-amber-500', 'bg-amber-500', 'text-white');
+            slErr.textContent = 'Warning: API Lag > 15s. Exchange protection may be out of date.';
+            slErr.classList.add('text-amber-300');
+            slErr.classList.remove('hidden');
+          } else {
+            slBadge.textContent = 'Exchange SL: Secured';
+            slBadge.classList.add('border-emerald-600', 'bg-emerald-900/50', 'text-emerald-300');
+            slErr.classList.add('hidden');
+            slErr.textContent = '';
+          }
         } else if (status === 'error') {
           slBadge.textContent = 'Exchange SL: FAILED';
           slBadge.classList.add('border-red-600', 'bg-red-900/40', 'text-red-300', 'badge-blink');
           slErr.textContent = err || 'Unknown exchange SL error';
+          slErr.classList.add('text-red-300');
           slErr.classList.remove('hidden');
         } else {
           slBadge.textContent = 'Exchange SL: N/A';
