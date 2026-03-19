@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Closed Trades (Logs) – Momentum Reversal</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -11,10 +12,16 @@
   <style>
     body { font-family: 'DM Sans', system-ui, sans-serif; }
     .safe-bottom { padding-bottom: env(safe-area-inset-bottom, 1rem); }
+    .dark-card { background: rgba(15, 23, 42, 0.85); border: 1px solid rgb(30 41 59); }
+    .table-darkish { --bs-table-bg: rgba(15, 23, 42, 0.6); color: #e2e8f0; }
+    .table-darkish thead th { color: #94a3b8; border-color: rgb(51 65 85); }
+    .table-darkish td { border-color: rgb(30 41 59); vertical-align: middle; }
+    .nav-tabs .nav-link { color: #94a3b8; }
+    .nav-tabs .nav-link.active { color: #fff; background: rgba(30, 41, 59, 0.9); border-color: rgb(51 65 85); }
   </style>
 </head>
 <body class="min-h-screen bg-slate-950 text-slate-100 antialiased">
-  <div class="max-w-4xl mx-auto px-4 py-6 pb-8 safe-bottom">
+  <div class="max-w-6xl mx-auto px-4 py-6 pb-8 safe-bottom">
     <header class="flex items-center justify-between mb-8 flex-wrap gap-2">
       <a href="/" class="text-xl font-semibold tracking-tight text-white">Momentum Reversal</a>
       <nav class="flex items-center gap-4">
@@ -24,71 +31,149 @@
       </nav>
     </header>
 
-    <section class="bg-slate-900/80 rounded-2xl p-5 shadow-xl border border-slate-800 mb-6">
-      <h2 class="text-sm font-semibold text-slate-200 mb-3">Closed Trades (Logs)</h2>
-      <p class="text-xs text-slate-500 mb-4">Last 50 closed positions from Bybit (linear).</p>
-      <div id="closed-trades-container">
-        <p class="text-slate-500 text-sm">Loading…</p>
+    <section class="dark-card rounded-2xl p-5 shadow-xl mb-6">
+      <h2 class="text-sm font-semibold text-slate-200 mb-2">Closed Trades</h2>
+      <p class="text-xs text-slate-500 mb-4">Delta India: bot-logged closes. Bybit: last 50 linear closed PnL from the exchange (when not on Delta).</p>
+
+      <ul class="nav nav-tabs border-secondary mb-3" id="closedTradesTab" role="tablist">
+        <li class="nav-item" role="presentation">
+          <button class="nav-link active" id="nav-delta-tab" data-bs-toggle="tab" data-bs-target="#nav-delta" type="button" role="tab" aria-controls="nav-delta" aria-selected="true">Delta India</button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" id="nav-bybit-tab" data-bs-toggle="tab" data-bs-target="#nav-bybit" type="button" role="tab" aria-controls="nav-bybit" aria-selected="false">Bybit</button>
+        </li>
+      </ul>
+      <div class="tab-content" id="closedTradesTabContent">
+        <div class="tab-pane fade show active" id="nav-delta" role="tabpanel" aria-labelledby="nav-delta-tab" tabindex="0">
+          <div id="delta-loading" class="text-slate-500 text-sm">Loading…</div>
+          <div class="table-responsive d-none" id="delta-wrap">
+            <table class="table table-sm table-darkish table-bordered w-100">
+              <thead>
+                <tr>
+                  <th>Token</th>
+                  <th>Side</th>
+                  <th>Entry Time (IST)</th>
+                  <th>Exit Time (IST)</th>
+                  <th>Entry</th>
+                  <th>Exit</th>
+                  <th>Lev</th>
+                  <th>Margin</th>
+                  <th>PnL</th>
+                  <th>Fees</th>
+                  <th>Exit Reason</th>
+                </tr>
+              </thead>
+              <tbody id="tbody-delta"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="tab-pane fade" id="nav-bybit" role="tabpanel" aria-labelledby="nav-bybit-tab" tabindex="0">
+          <div id="bybit-loading" class="text-slate-500 text-sm">Loading…</div>
+          <div class="table-responsive d-none" id="bybit-wrap">
+            <table class="table table-sm table-darkish table-bordered w-100">
+              <thead>
+                <tr>
+                  <th>Token</th>
+                  <th>Side</th>
+                  <th>Entry Time (IST)</th>
+                  <th>Exit Time (IST)</th>
+                  <th>Entry</th>
+                  <th>Exit</th>
+                  <th>Lev</th>
+                  <th>Margin</th>
+                  <th>PnL</th>
+                  <th>Fees</th>
+                  <th>Exit Reason</th>
+                </tr>
+              </thead>
+              <tbody id="tbody-bybit"></tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </section>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <script>
     (function () {
-      const container = document.getElementById('closed-trades-container');
+      var tbodyDelta = document.getElementById('tbody-delta');
+      var tbodyBybit = document.getElementById('tbody-bybit');
+      var deltaLoading = document.getElementById('delta-loading');
+      var bybitLoading = document.getElementById('bybit-loading');
+      var deltaWrap = document.getElementById('delta-wrap');
+      var bybitWrap = document.getElementById('bybit-wrap');
+
       function formatNum(x) {
         if (x === undefined || x === null || x === '') return '–';
-        const n = Number(x);
+        var n = Number(x);
         if (isNaN(n)) return String(x);
         return n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 6 });
       }
       function toIST(ms) {
         if (!ms || ms === '0') return '–';
-        const n = parseInt(ms, 10);
+        var n = parseInt(ms, 10);
         if (isNaN(n)) return '–';
         return new Date(n).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
       }
-      fetch('/api/closed_trades')
-        .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
-        .then(function (r) {
-          if (!r.ok || !Array.isArray(r.data)) {
-            container.innerHTML = '<p class="text-red-400 text-sm">Error loading closed trades.</p>';
-            return;
-          }
-          const list = r.data;
-          if (list.length === 0) {
-            container.innerHTML = '<p class="text-slate-500 text-sm">No closed trades in the last 7 days.</p>';
-            return;
-          }
-          // Responsive: desktop table, mobile cards
-          let tableHtml = '<div class="overflow-x-auto"><table class="w-full text-left text-sm border-collapse">' +
-            '<thead><tr class="text-slate-500 border-b border-slate-700">' +
-            '<th class="py-2 pr-2">Token</th><th class="py-2 pr-2">Side</th><th class="py-2 pr-2">Entry Time (IST)</th><th class="py-2 pr-2">Exit Time (IST)</th>' +
-            '<th class="py-2 pr-2">Entry</th><th class="py-2 pr-2">Exit</th><th class="py-2 pr-2">Leverage</th><th class="py-2 pr-2">Margin</th>' +
-            '<th class="py-2 pr-2">PnL</th><th class="py-2 pr-2">Fees</th><th class="py-2 pr-2">Exit Reason</th></tr></thead><tbody>';
-          list.forEach(function (row) {
-            const pnl = Number(row.closedPnl);
-            const pnlClass = pnl >= 0 ? 'text-emerald-400' : 'text-red-400';
-            const sideClass = (row.side || '').toUpperCase() === 'BUY' ? 'text-emerald-400' : 'text-red-400';
-            tableHtml += '<tr class="border-b border-slate-800">' +
-              '<td class="py-2 pr-2 font-medium">' + (row.symbol || '–') + '</td>' +
-              '<td class="py-2 pr-2 ' + sideClass + '">' + (row.side || '–') + '</td>' +
-              '<td class="py-2 pr-2 text-slate-300">' + toIST(row.createdTime) + '</td>' +
-              '<td class="py-2 pr-2 text-slate-300">' + toIST(row.updatedTime) + '</td>' +
-              '<td class="py-2 pr-2">' + (row.avgEntryPrice || '–') + '</td>' +
-              '<td class="py-2 pr-2">' + (row.avgExitPrice || '–') + '</td>' +
-              '<td class="py-2 pr-2">' + (row.leverage || '–') + '</td>' +
-              '<td class="py-2 pr-2">' + (row.marginUsed !== undefined && row.marginUsed !== '' ? formatNum(row.marginUsed) : '–') + '</td>' +
-              '<td class="py-2 pr-2 ' + pnlClass + ' font-medium">' + formatNum(row.closedPnl) + '</td>' +
-              '<td class="py-2 pr-2">' + formatNum(row.fees) + '</td>' +
-              '<td class="py-2 pr-2 text-slate-400">' + (row.exitReason || '–') + '</td></tr>';
+      function buildRowHtml(row) {
+        var pnl = Number(row.closedPnl);
+        var pnlClass = pnl >= 0 ? 'text-success' : 'text-danger';
+        var side = (row.side || '').toUpperCase();
+        var sideClass = side === 'BUY' ? 'text-success' : 'text-danger';
+        return '<tr>' +
+          '<td class="fw-medium">' + (row.symbol || '–') + '</td>' +
+          '<td class="' + sideClass + '">' + (row.side || '–') + '</td>' +
+          '<td class="text-slate-300">' + toIST(row.createdTime) + '</td>' +
+          '<td class="text-slate-300">' + toIST(row.updatedTime) + '</td>' +
+          '<td>' + (row.avgEntryPrice || '–') + '</td>' +
+          '<td>' + (row.avgExitPrice || '–') + '</td>' +
+          '<td>' + (row.leverage || '–') + '</td>' +
+          '<td>' + (row.marginUsed !== undefined && row.marginUsed !== '' ? formatNum(row.marginUsed) : '–') + '</td>' +
+          '<td class="' + pnlClass + ' fw-medium">' + formatNum(row.closedPnl) + '</td>' +
+          '<td>' + formatNum(row.fees) + '</td>' +
+          '<td class="text-slate-400">' + (row.exitReason || '–') + '</td>' +
+          '</tr>';
+      }
+
+      function fetchClosedTrades() {
+        fetch('/api/closed_trades')
+          .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+          .then(function (r) {
+            deltaLoading.classList.add('d-none');
+            bybitLoading.classList.add('d-none');
+            if (!r.ok || (r.data && r.data.error)) {
+              tbodyDelta.innerHTML = '<tr><td colspan="11" class="text-danger">Error loading closed trades.</td></tr>';
+              tbodyBybit.innerHTML = tbodyDelta.innerHTML;
+              deltaWrap.classList.remove('d-none');
+              bybitWrap.classList.remove('d-none');
+              return;
+            }
+            var list = Array.isArray(r.data) ? r.data : [];
+            var deltaHtml = '';
+            var bybitHtml = '';
+            list.forEach(function (row) {
+              var ex = row.exchange || 'Bybit';
+              var tr = buildRowHtml(row);
+              if (ex === 'Delta India') deltaHtml += tr;
+              else bybitHtml += tr;
+            });
+            tbodyDelta.innerHTML = deltaHtml || '<tr><td colspan="11" class="text-slate-500">No Delta India closed trades logged yet.</td></tr>';
+            tbodyBybit.innerHTML = bybitHtml || '<tr><td colspan="11" class="text-slate-500">No Bybit closed trades (or running on Delta-only mode).</td></tr>';
+            deltaWrap.classList.remove('d-none');
+            bybitWrap.classList.remove('d-none');
+          })
+          .catch(function (e) {
+            deltaLoading.classList.add('d-none');
+            bybitLoading.classList.add('d-none');
+            var msg = '<tr><td colspan="11" class="text-danger">' + (e.message || 'Failed to load') + '</td></tr>';
+            tbodyDelta.innerHTML = msg;
+            tbodyBybit.innerHTML = msg;
+            deltaWrap.classList.remove('d-none');
+            bybitWrap.classList.remove('d-none');
           });
-          tableHtml += '</tbody></table></div>';
-          container.innerHTML = tableHtml;
-        })
-        .catch(function (e) {
-          container.innerHTML = '<p class="text-red-400 text-sm">Error: ' + (e.message || 'Failed to load') + '</p>';
-        });
+      }
+      fetchClosedTrades();
     })();
   </script>
 </body>

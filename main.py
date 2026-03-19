@@ -28,6 +28,8 @@ _ENV_DOTFILE = Path(__file__).resolve().parent / ".env"
 
 # Institutional-grade trade journaling (auditable “why did we enter?”).
 TRADE_JOURNAL_PATH = Path(__file__).resolve().parent / "logs" / "trade_journal.log"
+CLOSED_TRADES_JSON_PATH = Path(__file__).resolve().parent / "logs" / "closed_trades.json"
+_closed_trades_file_lock = threading.Lock()
 
 
 def _to_float_or_none(v):
@@ -1910,14 +1912,113 @@ def register_manual_trade(
     _flush_live_state_file_with_tracker()
 
 
-def _was_closed_by_sl() -> bool:
-    """Deterministic local-close reason gate for reversal logic."""
-    return _local_close_reason == "SL"
+def _was_closed_by_sl(current_price: float) -> bool:
+    """
+    True if the close should be treated as stop-loss for reversal logic.
+    Uses local exit reason when set; otherwise infers exchange-executed SL from last mark vs SL.
+    """
+    global _local_close_reason, _last_active_sl_price, _last_position_side
+
+    if _local_close_reason == "SL":
+        return True
+    if _local_close_reason in ("TP", "PARTIAL"):
+        return False
+
+    if _local_close_reason == "" and _last_active_sl_price is not None:
+        try:
+            if not current_price or float(current_price) <= 0:
+                return False
+            sl_val = float(_last_active_sl_price)
+            cp = float(current_price)
+            if _last_position_side == "Buy" and cp <= sl_val:
+                return True
+            if _last_position_side == "Sell" and cp >= sl_val:
+                return True
+        except (TypeError, ValueError):
+            pass
+
+    return False
 
 
-def on_position_closed() -> None:
+def _append_delta_closed_trade_to_file(
+    *,
+    snap_entry: float | None,
+    snap_size: float,
+    exit_price: float,
+) -> None:
+    """Append one closed trade row for Delta India (shown on Closed Trades page)."""
+    if not USE_DELTA:
+        return
+    try:
+        os.makedirs(CLOSED_TRADES_JSON_PATH.parent, exist_ok=True)
+        lev = float(os.getenv("LEVERAGE", "5") or "5")
+        if lev <= 0:
+            lev = 1.0
+        from delta_client import get_delta_contract_value
+
+        cv = float(get_delta_contract_value())
+        side = (_last_position_side or "").strip()
+        side_upper = "BUY" if side == "Buy" else "SELL" if side == "Sell" else side.upper() or "–"
+        entry_f = float(snap_entry) if snap_entry is not None and snap_entry > 0 else 0.0
+        exit_f = float(exit_price) if exit_price and float(exit_price) > 0 else 0.0
+        sz = max(0.0, float(snap_size))
+        margin_used = 0.0
+        if entry_f > 0 and sz > 0:
+            margin_used = (sz * cv * entry_f) / lev
+        closed_pnl = 0.0
+        if entry_f > 0 and exit_f > 0 and sz > 0:
+            if side == "Buy":
+                closed_pnl = sz * cv * (exit_f - entry_f)
+            elif side == "Sell":
+                closed_pnl = sz * cv * (entry_f - exit_f)
+        reason = (_local_close_reason or "").strip()
+        if reason == "SL":
+            exit_reason = "Stop Loss"
+        elif reason == "TP":
+            exit_reason = "Take Profit"
+        elif reason == "PARTIAL":
+            exit_reason = "Partial"
+        elif _was_closed_by_sl(exit_price):
+            exit_reason = "Stop Loss (exchange)"
+        else:
+            exit_reason = reason or "—"
+        created_ms = int(max(0.0, float(_entry_time)) * 1000) if _entry_time else int(time.time() * 1000)
+        updated_ms = int(time.time() * 1000)
+        row = {
+            "exchange": "Delta India",
+            "symbol": SYMBOL,
+            "side": side_upper,
+            "createdTime": str(created_ms),
+            "updatedTime": str(updated_ms),
+            "avgEntryPrice": f"{entry_f:g}" if entry_f > 0 else "",
+            "avgExitPrice": f"{exit_f:g}" if exit_f > 0 else "",
+            "leverage": str(int(lev)) if abs(lev - round(lev)) < 1e-9 else str(lev),
+            "marginUsed": round(margin_used, 4) if margin_used else "",
+            "closedPnl": str(round(closed_pnl, 6)),
+            "fees": 0,
+            "exitReason": exit_reason,
+        }
+        with _closed_trades_file_lock:
+            existing: list = []
+            if CLOSED_TRADES_JSON_PATH.is_file():
+                try:
+                    with open(CLOSED_TRADES_JSON_PATH, encoding="utf-8") as f:
+                        raw = _json.load(f)
+                    if isinstance(raw, list):
+                        existing = raw
+                except Exception:
+                    existing = []
+            existing.append(row)
+            with open(CLOSED_TRADES_JSON_PATH, "w", encoding="utf-8") as f:
+                _json.dump(existing, f, indent=2)
+    except Exception as e:
+        logging.warning("Could not append closed trade file: %s", e, exc_info=True)
+
+
+def on_position_closed(current_price: float) -> None:
     """
     Run when position stream reports size 0 for SYMBOL (position closed).
+    Pass orderbook mid so exchange-executed SLs (empty _local_close_reason) still trigger reversal.
     After SL: always queue reversal (opposite side, same signal candle range) — never superseded by a
     fresh strategy signal at the same moment (momentum continuation / fake reversal logic).
     Limit: if the *reversal* leg also hits SL, no second reverse (wait for next signal).
@@ -1925,7 +2026,7 @@ def on_position_closed() -> None:
     global _monitor_had_position, _last_position_side, _last_signal_candle, _last_position_was_reverse, _loop, _signal_queue, _manual_reversal_allowed
     if _last_position_side is None or _last_signal_candle is None or _loop is None or _signal_queue is None:
         return
-    if not _was_closed_by_sl():
+    if not _was_closed_by_sl(current_price):
         return
     if _last_position_was_reverse:
         print("Reverse trade hit SL – no further reverse (limit 1 reverse per loss).")
@@ -1974,6 +2075,15 @@ def handle_position_message(message: dict) -> None:
         return
     with _position_lock:
         had_before = _position_size > 0
+        snap_size_at_close = float(_position_size) if had_before else 0.0
+        snap_entry_at_close: float | None = None
+        if had_before and _position_entry_price is not None:
+            try:
+                pe = float(_position_entry_price)
+                if pe > 0:
+                    snap_entry_at_close = pe
+            except (TypeError, ValueError):
+                snap_entry_at_close = None
         has_now = size_for_symbol > 0
         _position_size = size_for_symbol
         if size_for_symbol <= 0:
@@ -1984,8 +2094,16 @@ def handle_position_message(message: dict) -> None:
         if had_before != has_now:
             print(f"[{datetime.now().isoformat()}] Position update {SYMBOL}: size={size_for_symbol} ({'open' if has_now else 'closed'})")
         if had_before and size_for_symbol == 0:
+            with _orderbook_lock:
+                bb, ba = best_bid, best_ask
+            mid = (bb + ba) / 2.0 if bb > 0 and ba > 0 else 0.0
             _monitor_had_position = False
-            on_position_closed()
+            on_position_closed(mid)
+            _append_delta_closed_trade_to_file(
+                snap_entry=snap_entry_at_close,
+                snap_size=snap_size_at_close,
+                exit_price=mid,
+            )
             _clear_sl_tp_tracker_on_file_and_globals()
         elif size_for_symbol > 0:
             _monitor_had_position = True

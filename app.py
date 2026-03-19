@@ -586,9 +586,25 @@ async def api_positions():
         return JSONResponse(status_code=502, content={"error": str(e)})
 
 
+_CLOSED_TRADES_JSON_PATH = Path(__file__).resolve().parent / "logs" / "closed_trades.json"
+
+
 @app.get("/api/closed_trades")
 async def api_closed_trades():
-    """Fetch closed PnL from Bybit (linear, limit 50). Return formatted list for Closed Trades page."""
+    """Bot-logged Delta closes (JSON) + Bybit closed PnL API when not on Delta India."""
+    merged: list = []
+    try:
+        if _CLOSED_TRADES_JSON_PATH.is_file():
+            with open(_CLOSED_TRADES_JSON_PATH, encoding="utf-8") as f:
+                raw = json.load(f)
+            if isinstance(raw, list):
+                merged.extend(raw)
+    except Exception as e:
+        logging.warning("[api/closed_trades] Could not read closed_trades.json: %s", e)
+
+    if _app_exchange_id() == "delta_india":
+        return merged
+
     try:
         client = _get_http_client()
         resp = client.get_closed_pnl(category="linear", limit=50)
@@ -596,7 +612,6 @@ async def api_closed_trades():
             msg = resp.get("retMsg", "Bybit API error")
             return JSONResponse(status_code=502, content={"error": msg})
         lst = resp.get("result", {}).get("list", [])
-        out = []
         for r in lst:
             qty = float(r.get("qty") or r.get("closedSize") or 0)
             entry = float(r.get("avgEntryPrice") or 0)
@@ -606,7 +621,8 @@ async def api_closed_trades():
             open_fee = float(r.get("openFee") or 0)
             close_fee = float(r.get("closeFee") or 0)
             fees = open_fee + close_fee
-            out.append({
+            merged.append({
+                "exchange": "Bybit",
                 "symbol": r.get("symbol", ""),
                 "side": r.get("side", ""),
                 "createdTime": r.get("createdTime", "0"),
@@ -619,7 +635,7 @@ async def api_closed_trades():
                 "fees": round(fees, 6),
                 "exitReason": _map_exit_reason(r),
             })
-        return out
+        return merged
     except Exception as e:
         print(f"[api/closed_trades] Exception: {e}")
         return JSONResponse(status_code=502, content={"error": str(e)})
