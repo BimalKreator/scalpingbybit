@@ -38,6 +38,7 @@ from delta_client import (
     normalize_delta_contract_size,
     normalize_delta_symbol,
 )
+from main import _initial_sl_setting_guard
 
 # Env file: prefer .env, fallback to "env"
 ENV_PATH = Path(__file__).resolve().parent / ".env"
@@ -737,90 +738,171 @@ async def api_trade_manual(body: ManualTradeBody):
     sig_range = max(sig_hi - sig_lo, 1e-12)
     sl_mx, sl_mn, tp_m = _sl_tp_params_from_env_file()
     try:
-        if _app_exchange_id() == "delta_india":
-            k, sec = _delta_keys()
-            if not k or not sec:
-                raise HTTPException(status_code=502, detail="DELTA_API_KEY / DELTA_API_SECRET required")
-            ok_inst, qty_step, min_order_qty, _mnv = await asyncio.to_thread(
-                fetch_instrument_info_delta, body.symbol
-            )
-            if (
-                not ok_inst
-                or qty_step is None
-                or min_order_qty is None
-                or float(qty_step) <= 0
-            ):
-                raise HTTPException(status_code=502, detail="Delta product not found for symbol")
-            qty_step = float(qty_step)
-            min_order_qty = float(min_order_qty)
-            tick_f = float(get_delta_tick_size())
-            cv_f = float(get_delta_contract_value())
-            pid = get_delta_product_id()
-            dsym = normalize_delta_symbol(body.symbol)
-            l1 = await asyncio.to_thread(get_delta_ticker_l1, body.symbol)
-            if not l1:
-                raise HTTPException(status_code=502, detail="Delta ticker unavailable")
-            bid, ask, mid = l1
-            price = float(ask if body.side == "Buy" else bid)
+        async with _initial_sl_setting_guard():
+            if _app_exchange_id() == "delta_india":
+                k, sec = _delta_keys()
+                if not k or not sec:
+                    raise HTTPException(status_code=502, detail="DELTA_API_KEY / DELTA_API_SECRET required")
+                ok_inst, qty_step, min_order_qty, _mnv = await asyncio.to_thread(
+                    fetch_instrument_info_delta, body.symbol
+                )
+                if (
+                    not ok_inst
+                    or qty_step is None
+                    or min_order_qty is None
+                    or float(qty_step) <= 0
+                ):
+                    raise HTTPException(status_code=502, detail="Delta product not found for symbol")
+                qty_step = float(qty_step)
+                min_order_qty = float(min_order_qty)
+                tick_f = float(get_delta_tick_size())
+                cv_f = float(get_delta_contract_value())
+                pid = get_delta_product_id()
+                dsym = normalize_delta_symbol(body.symbol)
+                l1 = await asyncio.to_thread(get_delta_ticker_l1, body.symbol)
+                if not l1:
+                    raise HTTPException(status_code=502, detail="Delta ticker unavailable")
+                bid, ask, mid = l1
+                price = float(ask if body.side == "Buy" else bid)
+                if price <= 0:
+                    price = mid
+                raw_qty = (body.usd_amount * lev) / (cv_f * price)
+                total_qty = max(
+                    min_order_qty, float(math.floor(raw_qty / qty_step) * qty_step)
+                )
+                if abs(qty_step - 1.0) < 1e-12:
+                    total_qty = float(int(total_qty))
+                contracts = normalize_delta_contract_size(raw_qty, qty_step, min_order_qty)
+                if contracts < 1:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Order size rounds to zero; increase USD amount or leverage.",
+                    )
+                order_body = {
+                    "product_id": int(pid),
+                    "product_symbol": dsym,
+                    "size": int(contracts),
+                    "side": "buy" if body.side == "Buy" else "sell",
+                    "order_type": "market_order",
+                }
+                resp = await asyncio.to_thread(
+                    lambda b=order_body: _delta_request(
+                        "POST", "/v2/orders", k, sec, json_body=b
+                    )
+                )
+                if not resp or not isinstance(resp, dict) or not resp.get("success"):
+                    err = (resp or {}).get("error", {}) if isinstance(resp, dict) else {}
+                    detail = err.get("message") if isinstance(err, dict) else str(resp)
+                    raise HTTPException(status_code=400, detail=detail or "Delta order failed")
+                l1b = await asyncio.to_thread(get_delta_ticker_l1, body.symbol)
+                if not l1b:
+                    raise HTTPException(status_code=502, detail="Delta L1 after fill unavailable")
+                bid2, ask2, _mid2 = l1b
+                if body.side == "Buy":
+                    if not ask2 or float(ask2) <= 0:
+                        raise HTTPException(status_code=502, detail="No best ask for SL/TP")
+                    base = float(ask2)
+                    sl_wide = base - sig_range * sl_mx
+                    sl_tight = base - sig_range * sl_mn
+                    tp = base + sig_range * tp_m
+                    sl = sl_wide
+                else:
+                    if not bid2 or float(bid2) <= 0:
+                        raise HTTPException(status_code=502, detail="No best bid for SL/TP")
+                    base = float(bid2)
+                    sl_wide = base + sig_range * sl_mx
+                    sl_tight = base + sig_range * sl_mn
+                    tp = base - sig_range * tp_m
+                    sl = sl_wide
+                sl = _delta_round_price(sl, tick_f)
+                tp = _delta_round_price(tp, tick_f)
+                sl_str = f"{sl:g}"
+                tp_str = f"{tp:g}"
+                await asyncio.to_thread(
+                    lambda: _set_position_sl_tp_sync_delta(
+                        None, body.symbol, "linear", sl_str, tp_str, entry_side=body.side
+                    )
+                )
+                from main import register_manual_trade
+
+                register_manual_trade(
+                    body.side,
+                    base,
+                    sl,
+                    tp,
+                    body.allow_reversal,
+                    signal_high=sig_hi,
+                    signal_low=sig_lo,
+                    sl_max_price=sl_wide,
+                    sl_min_price=sl_tight,
+                )
+                return {"ok": True, "message": "Trade executed (Delta)"}
+
+            client = _get_http_client()
+            try:
+                client.set_leverage(
+                    category="linear",
+                    symbol=body.symbol,
+                    buyLeverage=str(int(lev)),
+                    sellLeverage=str(int(lev)),
+                )
+            except Exception:
+                pass  # ignore if leverage already set to that value
+            ob = client.get_orderbook(category="linear", symbol=body.symbol, limit=1)
+            if ob.get("retCode") != 0:
+                raise HTTPException(status_code=502, detail="Failed to get orderbook")
+            result = ob.get("result") or {}
+            asks = (result.get("a") or [])[:1]
+            bids = (result.get("b") or [])[:1]
+            if body.side == "Buy" and asks:
+                price = float(asks[0][0])
+            elif body.side == "Sell" and bids:
+                price = float(bids[0][0])
+            else:
+                raise HTTPException(status_code=502, detail="No L1 price")
             if price <= 0:
-                price = mid
-            raw_qty = (body.usd_amount * lev) / (cv_f * price)
-            total_qty = max(
-                min_order_qty, float(math.floor(raw_qty / qty_step) * qty_step)
-            )
-            if abs(qty_step - 1.0) < 1e-12:
-                total_qty = float(int(total_qty))
-            contracts = normalize_delta_contract_size(raw_qty, qty_step, min_order_qty)
-            if contracts < 1:
+                raise HTTPException(status_code=502, detail="Invalid price")
+            total_qty = (body.usd_amount * lev) / price
+            try:
+                qty_step, min_order_qty = _get_instrument_lot(body.symbol)
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=str(e))
+            total_qty = math.floor(total_qty / qty_step) * qty_step
+            if total_qty < min_order_qty:
                 raise HTTPException(
                     status_code=400,
-                    detail="Order size rounds to zero; increase USD amount or leverage.",
+                    detail=f"Quantity {total_qty:.6f} below minOrderQty {min_order_qty}. Increase trade amount or leverage.",
                 )
-            order_body = {
-                "product_id": int(pid),
-                "product_symbol": dsym,
-                "size": int(contracts),
-                "side": "buy" if body.side == "Buy" else "sell",
-                "order_type": "market_order",
-            }
-            resp = await asyncio.to_thread(
-                lambda b=order_body: _delta_request(
-                    "POST", "/v2/orders", k, sec, json_body=b
-                )
+            success, err = await asyncio.to_thread(
+                execute_chunk_order_rest, body.symbol, body.side, total_qty, True
             )
-            if not resp or not isinstance(resp, dict) or not resp.get("success"):
-                err = (resp or {}).get("error", {}) if isinstance(resp, dict) else {}
-                detail = err.get("message") if isinstance(err, dict) else str(resp)
-                raise HTTPException(status_code=400, detail=detail or "Delta order failed")
-            l1b = await asyncio.to_thread(get_delta_ticker_l1, body.symbol)
-            if not l1b:
-                raise HTTPException(status_code=502, detail="Delta L1 after fill unavailable")
-            bid2, ask2, _mid2 = l1b
+            if not success:
+                raise HTTPException(status_code=400, detail=err or "Chunk execution failed")
+            ob2 = client.get_orderbook(category="linear", symbol=body.symbol, limit=1)
+            if ob2.get("retCode") != 0:
+                raise HTTPException(status_code=502, detail="Orderbook after fill failed")
+            res2 = ob2.get("result") or {}
+            a2 = (res2.get("a") or [])[:1]
+            b2 = (res2.get("b") or [])[:1]
             if body.side == "Buy":
-                if not ask2 or float(ask2) <= 0:
-                    raise HTTPException(status_code=502, detail="No best ask for SL/TP")
-                base = float(ask2)
+                if not a2:
+                    raise HTTPException(status_code=502, detail="No best ask after fill")
+                base = float(a2[0][0])
                 sl_wide = base - sig_range * sl_mx
                 sl_tight = base - sig_range * sl_mn
                 tp = base + sig_range * tp_m
                 sl = sl_wide
             else:
-                if not bid2 or float(bid2) <= 0:
-                    raise HTTPException(status_code=502, detail="No best bid for SL/TP")
-                base = float(bid2)
+                if not b2:
+                    raise HTTPException(status_code=502, detail="No best bid after fill")
+                base = float(b2[0][0])
                 sl_wide = base + sig_range * sl_mx
                 sl_tight = base + sig_range * sl_mn
                 tp = base - sig_range * tp_m
                 sl = sl_wide
-            sl = _delta_round_price(sl, tick_f)
-            tp = _delta_round_price(tp, tick_f)
-            sl_str = f"{sl:g}"
-            tp_str = f"{tp:g}"
-            await asyncio.to_thread(
-                lambda: _set_position_sl_tp_sync_delta(
-                    None, body.symbol, "linear", sl_str, tp_str, entry_side=body.side
-                )
-            )
+            sl_str = f"{sl:.2f}"
+            tp_str = f"{tp:.2f}"
+            await asyncio.to_thread(lambda: _set_trading_stop_sync(client, body.symbol, sl_str, tp_str))
             from main import register_manual_trade
 
             register_manual_trade(
@@ -834,87 +916,7 @@ async def api_trade_manual(body: ManualTradeBody):
                 sl_max_price=sl_wide,
                 sl_min_price=sl_tight,
             )
-            return {"ok": True, "message": "Trade executed (Delta)"}
-
-        client = _get_http_client()
-        try:
-            client.set_leverage(
-                category="linear",
-                symbol=body.symbol,
-                buyLeverage=str(int(lev)),
-                sellLeverage=str(int(lev)),
-            )
-        except Exception:
-            pass  # ignore if leverage already set to that value
-        ob = client.get_orderbook(category="linear", symbol=body.symbol, limit=1)
-        if ob.get("retCode") != 0:
-            raise HTTPException(status_code=502, detail="Failed to get orderbook")
-        result = ob.get("result") or {}
-        asks = (result.get("a") or [])[:1]
-        bids = (result.get("b") or [])[:1]
-        if body.side == "Buy" and asks:
-            price = float(asks[0][0])
-        elif body.side == "Sell" and bids:
-            price = float(bids[0][0])
-        else:
-            raise HTTPException(status_code=502, detail="No L1 price")
-        if price <= 0:
-            raise HTTPException(status_code=502, detail="Invalid price")
-        total_qty = (body.usd_amount * lev) / price
-        try:
-            qty_step, min_order_qty = _get_instrument_lot(body.symbol)
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=str(e))
-        total_qty = math.floor(total_qty / qty_step) * qty_step
-        if total_qty < min_order_qty:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Quantity {total_qty:.6f} below minOrderQty {min_order_qty}. Increase trade amount or leverage.",
-            )
-        success, err = await asyncio.to_thread(
-            execute_chunk_order_rest, body.symbol, body.side, total_qty, True
-        )
-        if not success:
-            raise HTTPException(status_code=400, detail=err or "Chunk execution failed")
-        ob2 = client.get_orderbook(category="linear", symbol=body.symbol, limit=1)
-        if ob2.get("retCode") != 0:
-            raise HTTPException(status_code=502, detail="Orderbook after fill failed")
-        res2 = ob2.get("result") or {}
-        a2 = (res2.get("a") or [])[:1]
-        b2 = (res2.get("b") or [])[:1]
-        if body.side == "Buy":
-            if not a2:
-                raise HTTPException(status_code=502, detail="No best ask after fill")
-            base = float(a2[0][0])
-            sl_wide = base - sig_range * sl_mx
-            sl_tight = base - sig_range * sl_mn
-            tp = base + sig_range * tp_m
-            sl = sl_wide
-        else:
-            if not b2:
-                raise HTTPException(status_code=502, detail="No best bid after fill")
-            base = float(b2[0][0])
-            sl_wide = base + sig_range * sl_mx
-            sl_tight = base + sig_range * sl_mn
-            tp = base - sig_range * tp_m
-            sl = sl_wide
-        sl_str = f"{sl:.2f}"
-        tp_str = f"{tp:.2f}"
-        await asyncio.to_thread(lambda: _set_trading_stop_sync(client, body.symbol, sl_str, tp_str))
-        from main import register_manual_trade
-
-        register_manual_trade(
-            body.side,
-            base,
-            sl,
-            tp,
-            body.allow_reversal,
-            signal_high=sig_hi,
-            signal_low=sig_lo,
-            sl_max_price=sl_wide,
-            sl_min_price=sl_tight,
-        )
-        return {"ok": True, "message": "Trade executed"}
+            return {"ok": True, "message": "Trade executed"}
     except HTTPException:
         raise
     except Exception as e:

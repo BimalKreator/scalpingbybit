@@ -4,6 +4,7 @@ WebSocket trade for orders. Async chunking execution (Limit IOC) with L1 liquidi
 Weak Momentum Reversal: indicators, live orders, and reverse-trade safety loop.
 """
 import asyncio
+from contextlib import asynccontextmanager
 import math
 import threading
 import time
@@ -253,6 +254,21 @@ _local_close_reason: str = ""  # "", "SL", "TP", "PARTIAL"
 _sl_persist_ts: float = 0.0
 # True while _place_order_async is executing entry + initial SL (blocks SL supervisor hijack).
 _is_setting_initial_sl: bool = False
+
+
+@asynccontextmanager
+async def _initial_sl_setting_guard():
+    """
+    Hold _is_setting_initial_sl for entry + initial SL/TP + local tracker init
+    (_place_order_async, manual API trades). Releases in finally on any exit path.
+    """
+    global _is_setting_initial_sl
+    _is_setting_initial_sl = True
+    try:
+        yield
+    finally:
+        _is_setting_initial_sl = False
+
 
 # Real-time position state from private WebSocket (linear, our SYMBOL only)
 _position_size: float = 0.0
@@ -2288,14 +2304,13 @@ async def _sl_supervisor_loop() -> None:
                     verified = await _confirm_exchange_sl_verified_after_sync()
                 ok = ok_sync and verified
                 if ok_sync and not verified:
-                    logging.error(
+                    logging.warning(
                         "[SL Supervisor] Sync API succeeded but open stop verification failed "
-                        "(sl=%s tp=%s side=%s)",
+                        "(sl=%s tp=%s side=%s); will retry",
                         act_sl,
                         tpf,
                         ps,
                     )
-                    _set_health_error("Exchange SL sync unverified: no open stop on book")
                 if ok:
                     _exchange_sl_price = float(act_sl)
                     _set_exchange_sl_health("ok", "")
@@ -2305,10 +2320,6 @@ async def _sl_supervisor_loop() -> None:
                         act_sl,
                         tpf,
                         ps,
-                    )
-                    _set_exchange_sl_health(
-                        "error",
-                        f"Supervisor initial attach failed (sl={act_sl}, tp={tpf}, side={ps})",
                     )
                 continue
 
@@ -2335,33 +2346,27 @@ async def _sl_supervisor_loop() -> None:
                 verified = await _confirm_exchange_sl_verified_after_sync()
             ok = ok_sync and verified
             if ok_sync and not verified:
-                logging.error(
+                logging.warning(
                     "[SL Supervisor] Sync API succeeded but open stop verification failed "
-                    "(sl=%s tp=%s side=%s)",
+                    "(sl=%s tp=%s side=%s); will retry",
                     act_sl,
                     tpf,
                     ps,
                 )
-                _set_health_error("Exchange SL sync unverified: no open stop on book")
             if ok:
                 _exchange_sl_price = float(act_sl)
                 _set_exchange_sl_health("ok", "")
             else:
                 logging.error(
-                    "[SL Supervisor] Exchange SL update failed (sl=%s tp=%s side=%s)",
+                    "[SL Supervisor] Exchange SL update failed (sl=%s tp=%s side=%s); will retry",
                     act_sl,
                     tpf,
                     ps,
-                )
-                _set_exchange_sl_health(
-                    "error",
-                    f"Supervisor update failed (sl={act_sl}, tp={tpf}, side={ps})",
                 )
         except asyncio.CancelledError:
             raise
         except Exception:
             logging.error("[SL Supervisor] loop error", exc_info=True)
-            _set_exchange_sl_health("error", "SL supervisor loop exception")
             await asyncio.sleep(1)
 
 
