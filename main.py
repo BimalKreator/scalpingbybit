@@ -240,6 +240,9 @@ MEMORY_KEEP_ROWS = 1000
 # Queue for entry signals (side, row_dict, is_reverse) from kline/position callbacks
 _signal_queue: asyncio.Queue | None = None
 
+# Watchdog: last time we received any websocket message (orderbook ticks); used to force reconnect if data stops
+_last_ws_msg_ts: float = 0.0
+
 # Live Strategy Monitor: shared state (also written to JSON for dashboard in app.py)
 import json as _json
 from pathlib import Path as _Path
@@ -752,7 +755,8 @@ def _compute_active_sl_price(mid_price: float) -> float | None:
 
 def handle_orderbook_message(message: dict) -> None:
     """Update global L1 orderbook from public orderbook.1 stream (snapshot-only for depth 1)."""
-    global best_bid, best_ask, bid_qty, ask_qty, _sl_persist_ts
+    global best_bid, best_ask, bid_qty, ask_qty, _sl_persist_ts, _last_ws_msg_ts
+    _last_ws_msg_ts = time.time()
     data = message.get("data") or {}
     bids = data.get("b") or []
     asks = data.get("a") or []
@@ -2156,7 +2160,16 @@ async def main_async() -> None:
                     ws_private = live_stream.ws_private
                     ws_trade = live_stream.ws_trade
 
-                logging.warning("Websocket stream exited cleanly. Reconnecting...")
+                global _last_ws_msg_ts
+                _last_ws_msg_ts = time.time()
+                logging.info("Websocket started. Watchdog monitoring active.")
+
+                while True:
+                    await asyncio.sleep(5)
+                    if time.time() - _last_ws_msg_ts > 60:
+                        raise ConnectionError(
+                            "Watchdog Timeout: No websocket data received for 60s. Forcing reconnect."
+                        )
             except asyncio.CancelledError:
                 raise
             except Exception as e:
