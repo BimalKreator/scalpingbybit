@@ -17,6 +17,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv, dotenv_values
 import os
+import logging
+
+# Ensure logging output folders exist (prevents "os error 2" crashes on startup).
+os.makedirs("logs", exist_ok=True)
+logging.basicConfig(level=logging.INFO)
 
 _ENV_DOTFILE = Path(__file__).resolve().parent / ".env"
 
@@ -676,6 +681,8 @@ async def _delayed_sl_check(
                     f"[Local SL/TP] Fake SL spike avoided (SHORT): mid={current_mid:.4f} "
                     f"< SL={original_sl_price:.4f} after {delay_ms}ms"
                 )
+    except Exception as e:
+        logging.error(f"[Local SL/TP] delayed SL check failed: {e}", exc_info=True)
     finally:
         _sl_trigger_task_running = False
 
@@ -1658,7 +1665,8 @@ async def _signal_consumer() -> None:
         except asyncio.CancelledError:
             break
         except Exception as e:
-            print("Signal consumer error:", e)
+            logging.error("CRITICAL ERROR in _signal_consumer: %s", e, exc_info=True)
+            await asyncio.sleep(5)  # backoff then resume consuming signals
 
 
 async def main_async() -> None:

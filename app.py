@@ -454,7 +454,8 @@ async def api_account():
         initial_capital = 0.0
     if _app_exchange_id() == "delta_india":
         k, s = _delta_keys()
-        print(f"[api/account] Delta keys present: {bool(k and s)}")
+        # Avoid spamming PM2 logs during dashboard polling.
+        # print(f"[api/account] Delta keys present: {bool(k and s)}")
         if not k or not s:
             return JSONResponse(status_code=502, content={"error": "DELTA_API_KEY / DELTA_API_SECRET required"})
         try:
