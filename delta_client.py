@@ -542,20 +542,6 @@ def _verify_open_stop_order(api_key: str, api_secret: str, symbol: str) -> bool:
     return False
 
 
-def _delta_response_contains_substr(resp: Any, substr: str) -> bool:
-    """Case-insensitive search in JSON-serialized response (error codes, nested messages)."""
-    if resp is None:
-        return False
-    needle = (substr or "").lower()
-    if not needle:
-        return False
-    try:
-        blob = json.dumps(resp, default=str).lower()
-    except (TypeError, ValueError):
-        blob = str(resp).lower()
-    return needle in blob
-
-
 def _set_position_sl_tp_sync(
     http_client: Any,
     symbol: str,
@@ -610,13 +596,6 @@ def _set_position_sl_tp_sync(
         resp = {"success": False, "error": str(e)}
 
     if resp and resp.get("success"):
-        return True
-
-    if _delta_response_contains_substr(resp, "bracket_order_exists"):
-        print(
-            "[Delta] bracket_order_exists — protective bracket already on exchange; "
-            "treating as success."
-        )
         return True
 
     print(f"[Delta] bracket failed, trying separate SL/TP: {resp}")

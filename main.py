@@ -757,24 +757,20 @@ def is_safe_mode_active() -> bool:
 async def _confirm_exchange_sl_verified_after_sync() -> bool:
     """
     After _set_position_sl_tp_sync returns True, confirm a protective SL exists (Delta REST).
-    Polls up to 4 times with 1.5s between attempts (read DB eventual consistency).
+    Wait 1.5s before each read (up to 3 tries ≈ 4.5s) so Delta's read path can catch up.
     """
     if not USE_DELTA:
         return True
-    loop = asyncio.get_running_loop()
-    for attempt in range(4):
-        ok = await loop.run_in_executor(
-            None,
-            lambda: _verify_open_stop_order(
-                DELTA_API_KEY or "",
-                DELTA_API_SECRET or "",
-                SYMBOL,
-            ),
+    for _ in range(3):
+        await asyncio.sleep(1.5)
+        is_verified = await asyncio.to_thread(
+            _verify_open_stop_order,
+            DELTA_API_KEY or "",
+            DELTA_API_SECRET or "",
+            SYMBOL,
         )
-        if ok:
+        if is_verified:
             return True
-        if attempt < 3:
-            await asyncio.sleep(1.5)
     return False
 
 
