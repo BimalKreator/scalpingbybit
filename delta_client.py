@@ -487,6 +487,61 @@ async def execute_chunk_order_ws(
     print("[Delta] Market order fill poll timeout for order", oid_m)
 
 
+def _order_is_exchange_stop_loss(o: dict, sym_norm: str) -> bool:
+    """True if this open order looks like a protective stop-loss (not take-profit)."""
+    p_sym = (o.get("product_symbol") or "").strip().upper().replace("USDT", "USD")
+    if p_sym and p_sym != sym_norm:
+        return False
+    try:
+        sp = o.get("stop_price")
+        if sp is None or sp == "":
+            return False
+        if float(sp) <= 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    sot = str(o.get("stop_order_type") or "").lower()
+    if "take_profit" in sot:
+        return False
+    if "stop_loss" in sot or sot in ("stop", "stop_order"):
+        return True
+    # Bracket / standalone SL: market trigger, reduce-only (Delta V2)
+    ro = bool(o.get("reduce_only"))
+    ot = str(o.get("order_type") or "").lower()
+    if ro and ot == "market_order":
+        return True
+    return False
+
+
+def _verify_open_stop_order(api_key: str, api_secret: str, symbol: str) -> bool:
+    """
+    GET /v2/orders?product_id=&state=open — return True if a valid stop-loss-style
+    order exists for this product/symbol.
+    """
+    if not api_key or not api_secret:
+        return False
+    pid = int(get_delta_product_id())
+    if pid <= 0:
+        return False
+    sym_norm = normalize_delta_symbol(symbol)
+    query = f"?product_id={pid}&state=open"
+    resp = _delta_request("GET", "/v2/orders", api_key, api_secret, query_str=query)
+    if not isinstance(resp, dict) or not resp.get("success"):
+        return False
+    raw = resp.get("result")
+    orders: list[Any] = []
+    if isinstance(raw, list):
+        orders = raw
+    elif isinstance(raw, dict):
+        orders = raw.get("orders") or raw.get("live_orders") or []
+    if not isinstance(orders, list):
+        return False
+    for o in orders:
+        if isinstance(o, dict) and _order_is_exchange_stop_loss(o, sym_norm):
+            return True
+    return False
+
+
 def _set_position_sl_tp_sync(
     http_client: Any,
     symbol: str,

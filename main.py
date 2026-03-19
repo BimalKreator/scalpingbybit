@@ -116,6 +116,8 @@ def _set_health_error(message: str) -> None:
 
 def _set_health_ok(message: str = "Bot is running smoothly") -> None:
     """Clear error state after recovery."""
+    if globals().get("_circuit_breaker_active", False):
+        return
     try:
         import app
         app.SYSTEM_HEALTH["status"] = "ok"
@@ -136,6 +138,27 @@ def _set_exchange_sl_health(status: str, error_text: str = "") -> None:
         app.EXCHANGE_SL_HEALTH["status"] = str(status)
         app.EXCHANGE_SL_HEALTH["last_update_ts"] = time.time()
         app.EXCHANGE_SL_HEALTH["last_error"] = str(error_text or "")
+    except Exception:
+        pass
+
+
+def _set_circuit_breaker(active: bool, reason: str = "") -> None:
+    """Safe mode gate: block new entries while continuing protection/recovery loops."""
+    global _circuit_breaker_active, _circuit_breaker_reason
+    _circuit_breaker_active = bool(active)
+    _circuit_breaker_reason = str(reason or "")
+    try:
+        import app
+        app.SYSTEM_HEALTH["safe_mode_active"] = _circuit_breaker_active
+        app.SYSTEM_HEALTH["safe_mode_reason"] = _circuit_breaker_reason
+        app.SYSTEM_HEALTH["last_heartbeat"] = time.time()
+        if _circuit_breaker_active:
+            app.SYSTEM_HEALTH["status"] = "error"
+            app.SYSTEM_HEALTH["message"] = f"Safe Mode active: {_circuit_breaker_reason or 'circuit breaker'}"
+        else:
+            if app.SYSTEM_HEALTH.get("status") == "error":
+                app.SYSTEM_HEALTH["status"] = "ok"
+                app.SYSTEM_HEALTH["message"] = "Bot is running smoothly"
     except Exception:
         pass
 
@@ -194,6 +217,7 @@ if USE_DELTA:
         fetch_historical_klines_delta,
         fetch_instrument_info as _delta_fetch_instrument_info,
         _set_position_sl_tp_sync,
+        _verify_open_stop_order,
     )
 
     def fetch_instrument_info(symbol: str, http_client=None):
@@ -216,6 +240,9 @@ else:
         fetch_instrument_info,
         _set_position_sl_tp_sync,
     )
+
+    def _verify_open_stop_order(api_key: str, api_secret: str, symbol: str) -> bool:  # noqa: ARG001
+        return True
 
 # In-memory store for kline rows; continuously updated (capped at KLINES_MAX for memory)
 try:
@@ -242,10 +269,14 @@ _sl_max_price: float = 0.0
 _sl_min_price: float = 0.0
 _breakeven_triggered: bool = False
 _half_target_exited: bool = False
+_half_target_reached: bool = False
 _last_active_sl_price: float | None = None
 _exchange_sl_price: float = 0.0
 _local_close_reason: str = ""  # "", "SL", "TP", "PARTIAL"
 _sl_persist_ts: float = 0.0
+_sl_sync_failures: int = 0
+_circuit_breaker_active: bool = False
+_circuit_breaker_reason: str = ""
 
 # Real-time position state from private WebSocket (linear, our SYMBOL only)
 _position_size: float = 0.0
@@ -262,6 +293,7 @@ ask_qty: float = 0.0
 # Set from WS callback via loop.call_soon_threadsafe
 _pending_fills: dict[str, tuple[asyncio.Future[float], float]] = {}
 _pending_fills_lock = threading.Lock()
+_exit_mutex = asyncio.Lock()
 
 # Instrument cache (qty_step, min_order_qty, min_notional from Bybit)
 _qty_step: float = 0.001
@@ -342,6 +374,7 @@ def _merge_sl_tp_tracker_into_dict(d: dict) -> None:
         d["sl_entry_time_unix"] = float(_entry_time)
         d["sl_breakeven_triggered"] = bool(_breakeven_triggered)
         d["sl_half_target_exited"] = bool(_half_target_exited)
+        d["sl_half_target_reached"] = bool(_half_target_reached)
     else:
         d["last_sl_price"] = 0.0
         d["last_tp_price"] = 0.0
@@ -351,6 +384,7 @@ def _merge_sl_tp_tracker_into_dict(d: dict) -> None:
         d["sl_entry_time_unix"] = 0.0
         d["sl_breakeven_triggered"] = False
         d["sl_half_target_exited"] = False
+        d["sl_half_target_reached"] = False
 
 
 def _flush_live_state_file_with_tracker() -> None:
@@ -367,7 +401,7 @@ def _flush_live_state_file_with_tracker() -> None:
 
 def _load_sl_tp_tracker_from_file_on_startup() -> None:
     """Restore SL/TP tracker + dynamic SL state before WS."""
-    global _last_sl_price, _last_tp_price, _last_position_side, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _last_active_sl_price, _exchange_sl_price
+    global _last_sl_price, _last_tp_price, _last_position_side, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _half_target_reached, _last_active_sl_price, _exchange_sl_price
     try:
         data = _read_live_state_json_safe()
         tp = data.get("last_tp_price")
@@ -384,6 +418,7 @@ def _load_sl_tp_tracker_from_file_on_startup() -> None:
         et = float(data.get("sl_entry_time_unix") or 0)
         be = str(data.get("sl_breakeven_triggered", "")).lower() in ("1", "true", "yes")
         hte = str(data.get("sl_half_target_exited", "")).lower() in ("1", "true", "yes")
+        htr = str(data.get("sl_half_target_reached", "")).lower() in ("1", "true", "yes")
         if tpf > 0 and side and (tmax > 0 or sl_disk > 0):
             sll = side.lower()
             if sll in ("buy", "sell"):
@@ -395,6 +430,7 @@ def _load_sl_tp_tracker_from_file_on_startup() -> None:
                 _entry_time = et if et > 0 else time.time()
                 _breakeven_triggered = be
                 _half_target_exited = hte
+                _half_target_reached = htr
                 _last_active_sl_price = sl_disk if sl_disk > 0 else _sl_max_price
                 _exchange_sl_price = _last_active_sl_price
                 print(
@@ -407,7 +443,7 @@ def _load_sl_tp_tracker_from_file_on_startup() -> None:
 
 def _clear_sl_tp_tracker_on_file_and_globals() -> None:
     """Reset persisted SL/TP after position is flat (size 0)."""
-    global _last_sl_price, _last_tp_price, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _last_active_sl_price, _exchange_sl_price, _local_close_reason
+    global _last_sl_price, _last_tp_price, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _half_target_reached, _last_active_sl_price, _exchange_sl_price, _local_close_reason
     _last_sl_price = None
     _last_tp_price = None
     _entry_time = 0.0
@@ -415,6 +451,7 @@ def _clear_sl_tp_tracker_on_file_and_globals() -> None:
     _sl_min_price = 0.0
     _breakeven_triggered = False
     _half_target_exited = False
+    _half_target_reached = False
     _last_active_sl_price = None
     _exchange_sl_price = 0.0
     _local_close_reason = ""
@@ -429,6 +466,7 @@ def _clear_sl_tp_tracker_on_file_and_globals() -> None:
         data["sl_entry_time_unix"] = 0.0
         data["sl_breakeven_triggered"] = False
         data["sl_half_target_exited"] = False
+        data["sl_half_target_reached"] = False
         with open(_LIVE_STATE_PATH, "w", encoding="utf-8") as f:
             _json.dump(data, f, indent=2)
     except Exception as e:
@@ -711,6 +749,25 @@ def get_open_position() -> bool:
         return _position_size > 0
 
 
+def is_safe_mode_active() -> bool:
+    """True when circuit breaker / Safe Mode is on (degraded exchange health)."""
+    return bool(_circuit_breaker_active)
+
+
+async def _confirm_exchange_sl_verified_after_sync() -> bool:
+    """After _set_position_sl_tp_sync returns True, confirm a protective SL exists (Delta REST)."""
+    if not USE_DELTA:
+        return True
+    return await asyncio.get_running_loop().run_in_executor(
+        None,
+        lambda: _verify_open_stop_order(
+            DELTA_API_KEY or "",
+            DELTA_API_SECRET or "",
+            SYMBOL,
+        ),
+    )
+
+
 def _get_orderbook_l1() -> tuple[float, float, float, float]:
     """Return (best_bid, best_ask, bid_qty, ask_qty) under lock."""
     with _orderbook_lock:
@@ -765,7 +822,7 @@ def _compute_active_sl_price(mid_price: float) -> float | None:
     Time-based SL: max distance until decay, then min distance.
     If trailing on and mid crosses half-way to TP (favorable), lock SL at breakeven (entry).
     """
-    global _breakeven_triggered, _last_active_sl_price
+    global _breakeven_triggered, _half_target_reached, _last_active_sl_price
     if mid_price <= 0:
         return None
     with _position_lock:
@@ -785,14 +842,18 @@ def _compute_active_sl_price(mid_price: float) -> float | None:
         smax = smin = float(_last_sl_price)
     if smin <= 0 and smax > 0:
         smin = smax
-    if _trailing_sl_enabled():
-        if ps == "buy" and tpf_f > ent_f:
-            half_tp = ent_f + (tpf_f - ent_f) / 2.0
-            if mid_price >= half_tp:
+    # Half-target hit detection (independent from trailing SL enable flag).
+    if ps == "buy" and tpf_f > ent_f:
+        half_tp = ent_f + (tpf_f - ent_f) / 2.0
+        if mid_price >= half_tp:
+            _half_target_reached = True
+            if _trailing_sl_enabled():
                 _breakeven_triggered = True
-        elif ps == "sell" and tpf_f < ent_f:
-            half_tp = ent_f - (ent_f - tpf_f) / 2.0
-            if mid_price <= half_tp:
+    elif ps == "sell" and tpf_f < ent_f:
+        half_tp = ent_f - (ent_f - tpf_f) / 2.0
+        if mid_price <= half_tp:
+            _half_target_reached = True
+            if _trailing_sl_enabled():
                 _breakeven_triggered = True
     if _breakeven_triggered:
         buf = _breakeven_buffer_decimal()
@@ -841,7 +902,7 @@ def handle_orderbook_message(message: dict) -> None:
 
 def _trigger_local_sl_tp_if_needed(mid_price: float) -> None:
     """Exit when mid crosses TP immediately, or SL (optionally after SL_DELAY_MS re-check)."""
-    global _is_closing_position, _loop, _sl_trigger_task_running, _half_target_exited, _local_close_reason
+    global _is_closing_position, _loop, _sl_trigger_task_running, _half_target_exited, _half_target_reached, _local_close_reason
     if mid_price <= 0 or _loop is None:
         return
     schedule_partial = False
@@ -868,7 +929,7 @@ def _trigger_local_sl_tp_if_needed(mid_price: float) -> None:
         else:
             return
         if not tp_hit and not sl_hit:
-            if _breakeven_triggered and _partial_tp_enabled() and not _half_target_exited:
+            if _half_target_reached and _partial_tp_enabled() and not _half_target_exited:
                 _half_target_exited = True
                 schedule_partial = True
             if not schedule_partial:
@@ -1025,53 +1086,54 @@ async def _delayed_sl_check(
 async def _async_local_sl_tp_close(trigger_mid: float) -> None:
     """Close position at market/IOC when local mid crossed SL or TP."""
     global _is_closing_position
-    try:
-        # Never get stuck: retry close until the position is actually closed.
-        while True:
-            with _position_lock:
-                sz = float(_position_size)
-                ps = (_last_position_side or "").strip()
-            if sz <= 0 or not get_open_position():
-                return
+    async with _exit_mutex:
+        try:
+            # Never get stuck: retry close until the position is actually closed.
+            while True:
+                with _position_lock:
+                    sz = float(_position_size)
+                    ps = (_last_position_side or "").strip()
+                if sz <= 0 or not get_open_position():
+                    return
 
-            close_side = "Sell" if ps.lower() == "buy" else "Buy"
-            print(
-                f"[Local SL/TP] mid={trigger_mid:.4f} → closing {ps} size={sz} side={close_side} (exchange stops are backup only)"
-            )
-
-            loop = asyncio.get_running_loop()
-            try:
-                await execute_chunk_order_ws(
-                    close_side,
-                    sz,
-                    SYMBOL,
-                    _qty_step,
-                    _min_order_qty,
-                    _get_orderbook_l1,
-                    loop,
-                    ws_trade,
-                    _pending_fills,
-                    _pending_fills_lock,
-                    HTTP_CLIENT,
-                    is_entry=False,
+                close_side = "Sell" if ps.lower() == "buy" else "Buy"
+                print(
+                    f"[Local SL/TP] mid={trigger_mid:.4f} → closing {ps} size={sz} side={close_side} (exchange stops are backup only)"
                 )
-            except Exception as e:
-                logging.error("Exit API failed, retrying in 1s...", exc_info=True)
-                _set_health_error("Exit API failed; retrying")
-                await asyncio.sleep(1)
-                continue
 
-            # If call didn't throw but the position didn't close, keep retrying.
-            await asyncio.sleep(0.7)
-            if get_open_position():
-                logging.warning("Exit not confirmed yet; retrying close in 1s...")
-                await asyncio.sleep(1)
-                continue
-            return
-    finally:
-        await asyncio.sleep(1.5)
-        with _local_sl_tp_lock:
-            _is_closing_position = False
+                loop = asyncio.get_running_loop()
+                try:
+                    await execute_chunk_order_ws(
+                        close_side,
+                        sz,
+                        SYMBOL,
+                        _qty_step,
+                        _min_order_qty,
+                        _get_orderbook_l1,
+                        loop,
+                        ws_trade,
+                        _pending_fills,
+                        _pending_fills_lock,
+                        HTTP_CLIENT,
+                        is_entry=False,
+                    )
+                except Exception as e:
+                    logging.error("Exit API failed, retrying in 1s...", exc_info=True)
+                    _set_health_error("Exit API failed; retrying")
+                    await asyncio.sleep(1)
+                    continue
+
+                # If call didn't throw but the position didn't close, keep retrying.
+                await asyncio.sleep(0.7)
+                if get_open_position():
+                    logging.warning("Exit not confirmed yet; retrying close in 1s...")
+                    await asyncio.sleep(1)
+                    continue
+                return
+        finally:
+            await asyncio.sleep(1.5)
+            with _local_sl_tp_lock:
+                _is_closing_position = False
 
 
 async def _async_partial_tp_close(trigger_mid: float) -> None:
@@ -1079,79 +1141,80 @@ async def _async_partial_tp_close(trigger_mid: float) -> None:
     At half-target (breakeven engaged): close ~50% of position, floored to qty step.
     Does not set _is_closing_position; remaining size keeps using SL/TP monitoring.
     """
-    try:
-        while True:
-            with _position_lock:
-                sz = float(_position_size)
-                ps = (_last_position_side or "").strip()
-            if sz <= 0 or not get_open_position():
-                return
+    async with _exit_mutex:
+        try:
+            while True:
+                with _position_lock:
+                    sz = float(_position_size)
+                    ps = (_last_position_side or "").strip()
+                if sz <= 0 or not get_open_position():
+                    return
 
-            close_side = "Sell" if ps.lower() == "buy" else "Buy"
-            half_raw = sz / 2.0
-            half_size = math.floor(half_raw / _qty_step) * _qty_step
-            if half_size < _min_order_qty:
-                logging.info(
-                    "Position too small to partial exit, holding full size (half=%s min=%s)",
-                    half_size,
-                    _min_order_qty,
-                )
-                return
+                close_side = "Sell" if ps.lower() == "buy" else "Buy"
+                half_raw = sz / 2.0
+                half_size = math.floor(half_raw / _qty_step) * _qty_step
+                if half_size < _min_order_qty:
+                    logging.info(
+                        "Position too small to partial exit, holding full size (half=%s min=%s)",
+                        half_size,
+                        _min_order_qty,
+                    )
+                    return
 
-            print(
-                f"[PARTIAL TP] mid={trigger_mid:.4f} → closing {half_size} of {sz} side={close_side} "
-                f"(scale-out at half-target)"
-            )
-            loop = asyncio.get_running_loop()
-            try:
-                await execute_chunk_order_ws(
-                    close_side,
-                    half_size,
-                    SYMBOL,
-                    _qty_step,
-                    _min_order_qty,
-                    _get_orderbook_l1,
-                    loop,
-                    ws_trade,
-                    _pending_fills,
-                    _pending_fills_lock,
-                    HTTP_CLIENT,
-                    is_entry=False,
+                print(
+                    f"[PARTIAL TP] mid={trigger_mid:.4f} → closing {half_size} of {sz} side={close_side} "
+                    f"(scale-out at half-target)"
                 )
-            except Exception as e:
-                logging.error("[PARTIAL TP] order failed, retrying in 1s: %s", e, exc_info=True)
+                loop = asyncio.get_running_loop()
+                try:
+                    await execute_chunk_order_ws(
+                        close_side,
+                        half_size,
+                        SYMBOL,
+                        _qty_step,
+                        _min_order_qty,
+                        _get_orderbook_l1,
+                        loop,
+                        ws_trade,
+                        _pending_fills,
+                        _pending_fills_lock,
+                        HTTP_CLIENT,
+                        is_entry=False,
+                    )
+                except Exception as e:
+                    logging.error("[PARTIAL TP] order failed, retrying in 1s: %s", e, exc_info=True)
+                    await asyncio.sleep(1)
+                    continue
+
+                await asyncio.sleep(0.7)
+                with _position_lock:
+                    sz_after = float(_position_size)
+                if sz_after <= 0 or not get_open_position():
+                    _append_partial_exit_journal(
+                        trigger_mid=trigger_mid,
+                        closed_qty=float(half_size),
+                        position_size_before=float(sz),
+                    )
+                    try:
+                        _flush_live_state_file_with_tracker()
+                    except Exception:
+                        pass
+                    return
+                if sz_after <= sz - half_size * 0.85:
+                    _append_partial_exit_journal(
+                        trigger_mid=trigger_mid,
+                        closed_qty=float(half_size),
+                        position_size_before=float(sz),
+                    )
+                    try:
+                        _flush_live_state_file_with_tracker()
+                    except Exception:
+                        pass
+                    return
+                logging.warning("[PARTIAL TP] size reduction not confirmed (before=%s after=%s); retrying", sz, sz_after)
                 await asyncio.sleep(1)
-                continue
-
-            await asyncio.sleep(0.7)
-            with _position_lock:
-                sz_after = float(_position_size)
-            if sz_after <= 0 or not get_open_position():
-                _append_partial_exit_journal(
-                    trigger_mid=trigger_mid,
-                    closed_qty=float(half_size),
-                    position_size_before=float(sz),
-                )
-                try:
-                    _flush_live_state_file_with_tracker()
-                except Exception:
-                    pass
-                return
-            if sz_after <= sz - half_size * 0.85:
-                _append_partial_exit_journal(
-                    trigger_mid=trigger_mid,
-                    closed_qty=float(half_size),
-                    position_size_before=float(sz),
-                )
-                try:
-                    _flush_live_state_file_with_tracker()
-                except Exception:
-                    pass
-                return
-            logging.warning("[PARTIAL TP] size reduction not confirmed (before=%s after=%s); retrying", sz, sz_after)
-            await asyncio.sleep(1)
-    except asyncio.CancelledError:
-        raise
+        except asyncio.CancelledError:
+            raise
 
 
 def _position_risk_payload() -> dict:
@@ -1445,13 +1508,22 @@ async def execute_strategy_signal(
         HTTP_CLIENT,
         is_entry=True,
     )
-    ok = _set_position_sl_tp_sync(
+    ok_sync = _set_position_sl_tp_sync(
         HTTP_CLIENT, SYMBOL, "linear", sl_str, tp_str, entry_side=side
     )
+    verified = True
+    if ok_sync and USE_DELTA:
+        verified = bool(
+            _verify_open_stop_order(DELTA_API_KEY or "", DELTA_API_SECRET or "", SYMBOL)
+        )
+    ok = ok_sync and verified
+    if ok_sync and not verified:
+        print("[Mock Signal] SL/TP API OK but open stop verification failed on exchange.")
+        _set_health_error("Mock signal: exchange SL unverified")
     if ok:
         print("[Mock Signal] SL/TP set successfully.")
         global _position_entry_price, _last_position_side, _last_signal_candle, _last_sl_price, _last_tp_price
-        global _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _last_active_sl_price, _last_position_was_reverse, _local_close_reason
+        global _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _half_target_reached, _last_active_sl_price, _last_position_was_reverse, _local_close_reason
         _last_position_side = side
         _last_signal_candle = {"high": high, "low": low, "close": float(base)}
         _sl_max_price, _sl_min_price = sl_wide, sl_tight
@@ -1461,6 +1533,7 @@ async def execute_strategy_signal(
         _entry_time = time.time()
         _breakeven_triggered = False
         _half_target_exited = False
+        _half_target_reached = False
         _local_close_reason = ""
         _last_active_sl_price = sl_wide
         _last_position_was_reverse = False
@@ -1470,6 +1543,17 @@ async def execute_strategy_signal(
         print("[Mock Signal] Warning: set_trading_stop failed.")
 
 
+async def _wait_for_entry_fill_confirmation(max_iters: int = 10, sleep_s: float = 0.5) -> bool:
+    """Wait until WS position state confirms open size > 0."""
+    for _ in range(max(1, int(max_iters))):
+        await asyncio.sleep(max(0.05, float(sleep_s)))
+        if get_open_position():
+            with _position_lock:
+                if float(_position_size) > 0:
+                    return True
+    return False
+
+
 async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -> None:
     """
     Chunk execution then SL/TP. Signal_Range = signal candle high − low.
@@ -1477,9 +1561,12 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
     SHORT: base = best bid → SL = base + range×SL_MULT, TP = base − range×TP_MULT.
     """
     global _last_position_side, _last_signal_candle, _last_sl_price, _last_tp_price, _last_position_was_reverse
-    global _position_entry_price, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _last_active_sl_price, _exchange_sl_price, _local_close_reason
+    global _position_entry_price, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _half_target_reached, _last_active_sl_price, _exchange_sl_price, _local_close_reason
     if get_open_position():
         print("Position already open, skipping new signal")
+        return
+    if _circuit_breaker_active:
+        print("Safe Mode active: blocking new entries/reversals until recovery.")
         return
     if not is_reverse and not _is_autotrade_enabled():
         print("Auto Trade is OFF (read from .env); skipping queued entry.")
@@ -1589,6 +1676,12 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
         HTTP_CLIENT,
         is_entry=True,
     )
+    fill_ok = await _wait_for_entry_fill_confirmation(10, 0.5)
+    if not fill_ok:
+        logging.critical("CRITICAL: Entry fill confirmation timeout. Aborting exchange SL/TP placement.")
+        _set_health_error("Entry fill confirmation timeout")
+        _set_circuit_breaker(True, "Entry fill confirmation timeout")
+        return
 
     if is_reverse:
         b_bid2, b_ask2, _, _ = _get_orderbook_l1()
@@ -1610,12 +1703,25 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
             tp = ent - (range_ * tp_m)
         sl_str = f"{sl_wide:.2f}"
         tp_str = f"{tp:.2f}"
-        ok_rev = await loop.run_in_executor(
+        ok_sync_rev = await loop.run_in_executor(
             None,
             lambda s=side: _set_position_sl_tp_sync(
                 HTTP_CLIENT, SYMBOL, "linear", sl_str, tp_str, entry_side=s
             ),
         )
+        verified_rev = True
+        if ok_sync_rev:
+            verified_rev = await _confirm_exchange_sl_verified_after_sync()
+        ok_rev = ok_sync_rev and verified_rev
+        if ok_sync_rev and not verified_rev:
+            logging.error(
+                "[Reversal] set_trading_stop API OK but open stop verification failed "
+                "(sl=%s tp=%s side=%s)",
+                sl_str,
+                tp_str,
+                side,
+            )
+            _set_health_error("Reversal exchange SL unverified: no open stop on book")
         if ok_rev:
             _set_exchange_sl_health("ok", "")
         else:
@@ -1641,6 +1747,7 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
         _entry_time = time.time()
         _breakeven_triggered = False
         _half_target_exited = False
+        _half_target_reached = False
         _local_close_reason = ""
         _last_active_sl_price = sl_wide
         if ok_rev:
@@ -1663,12 +1770,25 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
         )
         return
 
-    ok = await loop.run_in_executor(
+    ok_sync = await loop.run_in_executor(
         None,
         lambda s=side: _set_position_sl_tp_sync(
             HTTP_CLIENT, SYMBOL, "linear", sl_str, tp_str, entry_side=s
         ),
     )
+    verified = True
+    if ok_sync:
+        verified = await _confirm_exchange_sl_verified_after_sync()
+    ok = ok_sync and verified
+    if ok_sync and not verified:
+        logging.error(
+            "[Entry] set_trading_stop API OK but open stop verification failed "
+            "(sl=%s tp=%s side=%s)",
+            sl_str,
+            tp_str,
+            side,
+        )
+        _set_health_error("Initial exchange SL unverified: no open stop on book")
     if ok:
         _set_exchange_sl_health("ok", "")
     else:
@@ -1691,6 +1811,7 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
     _entry_time = time.time()
     _breakeven_triggered = False
     _half_target_exited = False
+    _half_target_reached = False
     _local_close_reason = ""
     _last_active_sl_price = sl_wide
     if ok:
@@ -1760,10 +1881,15 @@ def register_manual_trade(
     signal_low: float | None = None,
     sl_max_price: float | None = None,
     sl_min_price: float | None = None,
-) -> None:
-    """Register manual trade; optional sl_max/sl_min for dynamic SL (else single sl_price)."""
+) -> bool:
+    """Register manual trade; optional sl_max/sl_min for dynamic SL (else single sl_price). Returns False if Safe Mode blocks."""
     global _last_position_side, _last_sl_price, _last_tp_price, _last_position_was_reverse, _last_signal_candle, _manual_reversal_allowed, _position_entry_price
-    global _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _last_active_sl_price, _local_close_reason
+    global _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _half_target_reached, _last_active_sl_price, _local_close_reason
+    if _circuit_breaker_active:
+        logging.critical(
+            "Manual trade rejected: System is in Safe Mode due to degraded exchange API health"
+        )
+        return False
     _last_position_side = side
     ep = float(entry_price)
     if sl_max_price is not None and sl_min_price is not None:
@@ -1779,6 +1905,7 @@ def register_manual_trade(
     _entry_time = time.time()
     _breakeven_triggered = False
     _half_target_exited = False
+    _half_target_reached = False
     _local_close_reason = ""
     _last_active_sl_price = _sl_max_price
     if signal_high is not None and signal_low is not None and float(signal_high) >= float(signal_low):
@@ -1794,6 +1921,7 @@ def register_manual_trade(
         _last_signal_candle = {"high": float(entry_price) + fake_range, "low": float(entry_price), "close": float(entry_price)}
     _sync_position_risk_to_state()
     _flush_live_state_file_with_tracker()
+    return True
 
 
 def _was_closed_by_sl() -> bool:
@@ -1898,6 +2026,8 @@ def check_signals(df: pd.DataFrame) -> None:
     LONG: two bearish, vol, RSI < oversold. SHORT: two bullish, vol, RSI > overbought. Min-profit both.
     """
     global LAST_SIGNAL_CANDLE_START, _loop, _signal_queue
+    if _circuit_breaker_active:
+        return
     if len(df) < 3 or _loop is None or _signal_queue is None:
         return
     row = df.iloc[-2]
@@ -2122,6 +2252,15 @@ async def _signal_consumer() -> None:
             if item[0] != "entry":
                 continue
             _, side, row_dict, is_reverse = item
+            if is_reverse:
+                load_dotenv(override=True)
+                load_dotenv("env", override=True)
+                try:
+                    rev_cd = max(0.0, float(os.getenv("REVERSAL_COOLDOWN_SEC", "0")))
+                except (TypeError, ValueError):
+                    rev_cd = 0.0
+                if rev_cd > 0:
+                    await asyncio.sleep(rev_cd)
             await _place_order_async(side, row_dict, is_reverse)
         except asyncio.CancelledError:
             break
@@ -2137,13 +2276,16 @@ async def _sl_supervisor_loop() -> None:
     - Re-attempt initial exchange SL/TP attach if previous attempt failed.
     - Tighten exchange SL when local active SL tightens materially.
     """
-    global _exchange_sl_price
+    global _exchange_sl_price, _sl_sync_failures
     while True:
         try:
             await asyncio.sleep(2)
             if not USE_DELTA:
                 continue
             if not get_open_position():
+                _sl_sync_failures = 0
+                if _circuit_breaker_active and _circuit_breaker_reason in ("SL supervisor failures >= 5", "orderbook freeze >15s with open position", "Entry fill confirmation timeout"):
+                    _set_circuit_breaker(False, "")
                 _set_exchange_sl_health("inactive", "")
                 continue
             ps = (_last_position_side or "").strip()
@@ -2161,7 +2303,7 @@ async def _sl_supervisor_loop() -> None:
 
             if _exchange_sl_price <= 0:
                 # Initial attach failed earlier; keep retrying while position is open.
-                ok = await asyncio.get_running_loop().run_in_executor(
+                ok_sync = await asyncio.get_running_loop().run_in_executor(
                     None,
                     lambda sl=float(act_sl), tp=float(tpf), sd=ps: _set_position_sl_tp_sync(
                         HTTP_CLIENT,
@@ -2172,14 +2314,33 @@ async def _sl_supervisor_loop() -> None:
                         entry_side=sd,
                     ),
                 )
+                verified = True
+                if ok_sync:
+                    verified = await _confirm_exchange_sl_verified_after_sync()
+                ok = ok_sync and verified
+                if ok_sync and not verified:
+                    logging.error(
+                        "[SL Supervisor] Sync API succeeded but open stop verification failed "
+                        "(sl=%s tp=%s side=%s)",
+                        act_sl,
+                        tpf,
+                        ps,
+                    )
+                    _set_health_error("Exchange SL sync unverified: no open stop on book")
                 if ok:
                     _exchange_sl_price = float(act_sl)
                     _set_exchange_sl_health("ok", "")
+                    _sl_sync_failures = 0
+                    if _circuit_breaker_active:
+                        _set_circuit_breaker(False, "")
                 else:
+                    _sl_sync_failures += 1
                     _set_exchange_sl_health(
                         "error",
                         f"Supervisor initial attach failed (sl={act_sl}, tp={tpf}, side={ps})",
                     )
+                    if _sl_sync_failures >= 5:
+                        _set_circuit_breaker(True, "SL supervisor failures >= 5")
                 continue
 
             tol = 0.0005
@@ -2189,7 +2350,7 @@ async def _sl_supervisor_loop() -> None:
             )
             if not should_tighten:
                 continue
-            ok = await asyncio.get_running_loop().run_in_executor(
+            ok_sync = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda sl=float(act_sl), tp=float(tpf), sd=ps: _set_position_sl_tp_sync(
                     HTTP_CLIENT,
@@ -2200,10 +2361,27 @@ async def _sl_supervisor_loop() -> None:
                     entry_side=sd,
                 ),
             )
+            verified = True
+            if ok_sync:
+                verified = await _confirm_exchange_sl_verified_after_sync()
+            ok = ok_sync and verified
+            if ok_sync and not verified:
+                logging.error(
+                    "[SL Supervisor] Sync API succeeded but open stop verification failed "
+                    "(sl=%s tp=%s side=%s)",
+                    act_sl,
+                    tpf,
+                    ps,
+                )
+                _set_health_error("Exchange SL sync unverified: no open stop on book")
             if ok:
                 _exchange_sl_price = float(act_sl)
                 _set_exchange_sl_health("ok", "")
+                _sl_sync_failures = 0
+                if _circuit_breaker_active:
+                    _set_circuit_breaker(False, "")
             else:
+                _sl_sync_failures += 1
                 logging.error(
                     "[SL Supervisor] Exchange SL update failed (sl=%s tp=%s side=%s)",
                     act_sl,
@@ -2214,6 +2392,8 @@ async def _sl_supervisor_loop() -> None:
                     "error",
                     f"Supervisor update failed (sl={act_sl}, tp={tpf}, side={ps})",
                 )
+                if _sl_sync_failures >= 5:
+                    _set_circuit_breaker(True, "SL supervisor failures >= 5")
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -2232,7 +2412,7 @@ async def main_async() -> None:
     global ws_kline, ws_orderbook, ws_private, ws_trade, _loop, _signal_queue, LAST_SIGNAL_CANDLE_START
     global _position_size, _position_entry_price, _monitor_had_position
     global _last_position_side, _last_tp_price, _sl_max_price, _sl_min_price, _last_sl_price, _last_active_sl_price
-    global _entry_time, _breakeven_triggered, _half_target_exited, _exchange_sl_price, _local_close_reason
+    global _entry_time, _breakeven_triggered, _half_target_exited, _half_target_reached, _exchange_sl_price, _local_close_reason
     global _qty_step, _min_order_qty, _instrument_min_notional
     if USE_DELTA:
         api_key = DELTA_API_KEY or ""
@@ -2308,6 +2488,20 @@ async def main_async() -> None:
                         tp_str,
                         entry_side=side,
                     )
+                    if ok and USE_DELTA:
+                        ok = await asyncio.to_thread(
+                            _verify_open_stop_order,
+                            DELTA_API_KEY or "",
+                            DELTA_API_SECRET or "",
+                            SYMBOL,
+                        )
+                        if not ok:
+                            logging.error(
+                                "Emergency failsafe: SL/TP API OK but open stop verification failed "
+                                "(attempt %s/5)",
+                                attempt,
+                            )
+                            _set_health_error("Emergency failsafe SL unverified on exchange")
                     if ok:
                         break
                 except Exception as e:
@@ -2334,6 +2528,7 @@ async def main_async() -> None:
             _entry_time = time.time()
             _breakeven_triggered = False
             _half_target_exited = False
+            _half_target_reached = False
             _local_close_reason = ""
             _exchange_sl_price = float(failsafe_sl)
             _sync_position_risk_to_state()
@@ -2439,7 +2634,12 @@ async def main_async() -> None:
 
                 while True:
                     await asyncio.sleep(5)
-                    if time.time() - _last_ws_msg_ts > 60:
+                    ws_stale_for = time.time() - _last_ws_msg_ts
+                    if ws_stale_for > 15 and get_open_position():
+                        _set_circuit_breaker(True, "orderbook freeze >15s with open position")
+                    elif ws_stale_for <= 15 and _circuit_breaker_active and _circuit_breaker_reason == "orderbook freeze >15s with open position":
+                        _set_circuit_breaker(False, "")
+                    if ws_stale_for > 60:
                         raise ConnectionError(
                             "Watchdog Timeout: No websocket data received for 60s. Forcing reconnect."
                         )
