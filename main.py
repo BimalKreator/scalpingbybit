@@ -116,8 +116,6 @@ def _set_health_error(message: str) -> None:
 
 def _set_health_ok(message: str = "Bot is running smoothly") -> None:
     """Clear error state after recovery."""
-    if globals().get("_circuit_breaker_active", False):
-        return
     try:
         import app
         app.SYSTEM_HEALTH["status"] = "ok"
@@ -138,27 +136,6 @@ def _set_exchange_sl_health(status: str, error_text: str = "") -> None:
         app.EXCHANGE_SL_HEALTH["status"] = str(status)
         app.EXCHANGE_SL_HEALTH["last_update_ts"] = time.time()
         app.EXCHANGE_SL_HEALTH["last_error"] = str(error_text or "")
-    except Exception:
-        pass
-
-
-def _set_circuit_breaker(active: bool, reason: str = "") -> None:
-    """Safe mode gate: block new entries while continuing protection/recovery loops."""
-    global _circuit_breaker_active, _circuit_breaker_reason
-    _circuit_breaker_active = bool(active)
-    _circuit_breaker_reason = str(reason or "")
-    try:
-        import app
-        app.SYSTEM_HEALTH["safe_mode_active"] = _circuit_breaker_active
-        app.SYSTEM_HEALTH["safe_mode_reason"] = _circuit_breaker_reason
-        app.SYSTEM_HEALTH["last_heartbeat"] = time.time()
-        if _circuit_breaker_active:
-            app.SYSTEM_HEALTH["status"] = "error"
-            app.SYSTEM_HEALTH["message"] = f"Safe Mode active: {_circuit_breaker_reason or 'circuit breaker'}"
-        else:
-            if app.SYSTEM_HEALTH.get("status") == "error":
-                app.SYSTEM_HEALTH["status"] = "ok"
-                app.SYSTEM_HEALTH["message"] = "Bot is running smoothly"
     except Exception:
         pass
 
@@ -274,9 +251,6 @@ _last_active_sl_price: float | None = None
 _exchange_sl_price: float = 0.0
 _local_close_reason: str = ""  # "", "SL", "TP", "PARTIAL"
 _sl_persist_ts: float = 0.0
-_sl_sync_failures: int = 0
-_circuit_breaker_active: bool = False
-_circuit_breaker_reason: str = ""
 
 # Real-time position state from private WebSocket (linear, our SYMBOL only)
 _position_size: float = 0.0
@@ -747,11 +721,6 @@ def get_open_position() -> bool:
     """True if there is an open position for SYMBOL (from private position WebSocket)."""
     with _position_lock:
         return _position_size > 0
-
-
-def is_safe_mode_active() -> bool:
-    """True when circuit breaker / Safe Mode is on (degraded exchange health)."""
-    return bool(_circuit_breaker_active)
 
 
 async def _confirm_exchange_sl_verified_after_sync() -> bool:
@@ -1569,9 +1538,6 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
     if get_open_position():
         print("Position already open, skipping new signal")
         return
-    if _circuit_breaker_active:
-        print("Safe Mode active: blocking new entries/reversals until recovery.")
-        return
     if not is_reverse and not _is_autotrade_enabled():
         print("Auto Trade is OFF (read from .env); skipping queued entry.")
         return
@@ -1684,7 +1650,6 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
     if not fill_ok:
         logging.critical("CRITICAL: Entry fill confirmation timeout. Aborting exchange SL/TP placement.")
         _set_health_error("Entry fill confirmation timeout")
-        _set_circuit_breaker(True, "Entry fill confirmation timeout")
         return
 
     if is_reverse:
@@ -1885,15 +1850,10 @@ def register_manual_trade(
     signal_low: float | None = None,
     sl_max_price: float | None = None,
     sl_min_price: float | None = None,
-) -> bool:
-    """Register manual trade; optional sl_max/sl_min for dynamic SL (else single sl_price). Returns False if Safe Mode blocks."""
+) -> None:
+    """Register manual trade; optional sl_max/sl_min for dynamic SL (else single sl_price)."""
     global _last_position_side, _last_sl_price, _last_tp_price, _last_position_was_reverse, _last_signal_candle, _manual_reversal_allowed, _position_entry_price
     global _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _half_target_reached, _last_active_sl_price, _local_close_reason
-    if _circuit_breaker_active:
-        logging.critical(
-            "Manual trade rejected: System is in Safe Mode due to degraded exchange API health"
-        )
-        return False
     _last_position_side = side
     ep = float(entry_price)
     if sl_max_price is not None and sl_min_price is not None:
@@ -1925,7 +1885,6 @@ def register_manual_trade(
         _last_signal_candle = {"high": float(entry_price) + fake_range, "low": float(entry_price), "close": float(entry_price)}
     _sync_position_risk_to_state()
     _flush_live_state_file_with_tracker()
-    return True
 
 
 def _was_closed_by_sl() -> bool:
@@ -2030,8 +1989,6 @@ def check_signals(df: pd.DataFrame) -> None:
     LONG: two bearish, vol, RSI < oversold. SHORT: two bullish, vol, RSI > overbought. Min-profit both.
     """
     global LAST_SIGNAL_CANDLE_START, _loop, _signal_queue
-    if _circuit_breaker_active:
-        return
     if len(df) < 3 or _loop is None or _signal_queue is None:
         return
     row = df.iloc[-2]
@@ -2280,16 +2237,13 @@ async def _sl_supervisor_loop() -> None:
     - Re-attempt initial exchange SL/TP attach if previous attempt failed.
     - Tighten exchange SL when local active SL tightens materially.
     """
-    global _exchange_sl_price, _sl_sync_failures
+    global _exchange_sl_price
     while True:
         try:
             await asyncio.sleep(2)
             if not USE_DELTA:
                 continue
             if not get_open_position():
-                _sl_sync_failures = 0
-                if _circuit_breaker_active and _circuit_breaker_reason in ("SL supervisor failures >= 5", "orderbook freeze >15s with open position", "Entry fill confirmation timeout"):
-                    _set_circuit_breaker(False, "")
                 _set_exchange_sl_health("inactive", "")
                 continue
             ps = (_last_position_side or "").strip()
@@ -2334,17 +2288,17 @@ async def _sl_supervisor_loop() -> None:
                 if ok:
                     _exchange_sl_price = float(act_sl)
                     _set_exchange_sl_health("ok", "")
-                    _sl_sync_failures = 0
-                    if _circuit_breaker_active:
-                        _set_circuit_breaker(False, "")
                 else:
-                    _sl_sync_failures += 1
+                    logging.error(
+                        "[SL Supervisor] Initial attach failed or unverified (sl=%s tp=%s side=%s); will retry",
+                        act_sl,
+                        tpf,
+                        ps,
+                    )
                     _set_exchange_sl_health(
                         "error",
                         f"Supervisor initial attach failed (sl={act_sl}, tp={tpf}, side={ps})",
                     )
-                    if _sl_sync_failures >= 5:
-                        _set_circuit_breaker(True, "SL supervisor failures >= 5")
                 continue
 
             tol = 0.0005
@@ -2381,11 +2335,7 @@ async def _sl_supervisor_loop() -> None:
             if ok:
                 _exchange_sl_price = float(act_sl)
                 _set_exchange_sl_health("ok", "")
-                _sl_sync_failures = 0
-                if _circuit_breaker_active:
-                    _set_circuit_breaker(False, "")
             else:
-                _sl_sync_failures += 1
                 logging.error(
                     "[SL Supervisor] Exchange SL update failed (sl=%s tp=%s side=%s)",
                     act_sl,
@@ -2396,8 +2346,6 @@ async def _sl_supervisor_loop() -> None:
                     "error",
                     f"Supervisor update failed (sl={act_sl}, tp={tpf}, side={ps})",
                 )
-                if _sl_sync_failures >= 5:
-                    _set_circuit_breaker(True, "SL supervisor failures >= 5")
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -2634,10 +2582,6 @@ async def main_async() -> None:
                 while True:
                     await asyncio.sleep(5)
                     ws_stale_for = time.time() - _last_ws_msg_ts
-                    if ws_stale_for > 15 and get_open_position():
-                        _set_circuit_breaker(True, "orderbook freeze >15s with open position")
-                    elif ws_stale_for <= 15 and _circuit_breaker_active and _circuit_breaker_reason == "orderbook freeze >15s with open position":
-                        _set_circuit_breaker(False, "")
                     if ws_stale_for > 60:
                         raise ConnectionError(
                             "Watchdog Timeout: No websocket data received for 60s. Forcing reconnect."

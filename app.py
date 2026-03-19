@@ -48,8 +48,6 @@ SYSTEM_HEALTH = {
     "status": "ok",
     "message": "Bot is running smoothly",
     "last_heartbeat": time.time(),
-    "safe_mode_active": False,
-    "safe_mode_reason": "",
 }
 EXCHANGE_SL_HEALTH = {
     "status": "inactive",
@@ -730,13 +728,6 @@ class CloseTradeBody(BaseModel):
 @app.post("/api/trade/manual")
 async def api_trade_manual(body: ManualTradeBody):
     """Manual trade: SL/TP from Signal_Range (last closed 1m H−L or optional high/low) × env multipliers, anchored to best bid/ask after fill."""
-    from main import is_safe_mode_active
-
-    if is_safe_mode_active():
-        raise HTTPException(
-            status_code=503,
-            detail="Manual trade rejected: System is in Safe Mode due to degraded exchange API health",
-        )
     if body.side not in ("Buy", "Sell"):
         raise HTTPException(status_code=400, detail="side must be Buy or Sell")
     if body.usd_amount <= 0:
@@ -832,7 +823,7 @@ async def api_trade_manual(body: ManualTradeBody):
             )
             from main import register_manual_trade
 
-            if not register_manual_trade(
+            register_manual_trade(
                 body.side,
                 base,
                 sl,
@@ -842,11 +833,7 @@ async def api_trade_manual(body: ManualTradeBody):
                 signal_low=sig_lo,
                 sl_max_price=sl_wide,
                 sl_min_price=sl_tight,
-            ):
-                raise HTTPException(
-                    status_code=503,
-                    detail="Manual trade rejected: System is in Safe Mode due to degraded exchange API health",
-                )
+            )
             return {"ok": True, "message": "Trade executed (Delta)"}
 
         client = _get_http_client()
@@ -916,7 +903,7 @@ async def api_trade_manual(body: ManualTradeBody):
         await asyncio.to_thread(lambda: _set_trading_stop_sync(client, body.symbol, sl_str, tp_str))
         from main import register_manual_trade
 
-        if not register_manual_trade(
+        register_manual_trade(
             body.side,
             base,
             sl,
@@ -926,11 +913,7 @@ async def api_trade_manual(body: ManualTradeBody):
             signal_low=sig_lo,
             sl_max_price=sl_wide,
             sl_min_price=sl_tight,
-        ):
-            raise HTTPException(
-                status_code=503,
-                detail="Manual trade rejected: System is in Safe Mode due to degraded exchange API health",
-            )
+        )
         return {"ok": True, "message": "Trade executed"}
     except HTTPException:
         raise
