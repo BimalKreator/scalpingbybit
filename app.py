@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+import time
 from pathlib import Path
 
 # Suppress uvicorn access log spam (GET /api/account 200, etc.) so bot logic prints are visible
@@ -41,6 +42,13 @@ from delta_client import (
 # Env file: prefer .env, fallback to "env"
 ENV_PATH = Path(__file__).resolve().parent / ".env"
 ENV_PATH_FALLBACK = Path(__file__).resolve().parent / "env"
+
+# Heartbeat & system health (updated by main.py on errors/recovery)
+SYSTEM_HEALTH = {
+    "status": "ok",
+    "message": "Bot is running smoothly",
+    "last_heartbeat": time.time(),
+}
 
 
 def get_env_path() -> Path:
@@ -650,6 +658,12 @@ async def api_strategy_status():
 @app.get("/api/bot/status")
 async def api_bot_status():
     return {"running": BOT_RUNNING, "autotrade_enabled": _autotrade_enabled_from_env()}
+
+
+@app.get("/api/health")
+async def api_health():
+    """Return system health for dashboard heartbeat / warning banner."""
+    return dict(SYSTEM_HEALTH)
 
 
 class AutotradeToggleBody(BaseModel):

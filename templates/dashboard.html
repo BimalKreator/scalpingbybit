@@ -95,6 +95,7 @@
   </style>
 </head>
 <body class="min-h-screen bg-slate-950 text-slate-100 antialiased">
+  <div id="health-banner" style="display: none; position: fixed; top: 0; left: 0; right: 0; width: 100%; background: #dc2626; color: white; text-align: center; padding: 10px 16px; z-index: 9999; font-weight: bold; box-shadow: 0 2px 8px rgba(0,0,0,0.3);"></div>
   <div class="max-w-6xl mx-auto px-4 py-6 pb-8 safe-bottom">
     <!-- Header: nav visible at top -->
     <header class="flex items-center justify-between mb-6 flex-wrap gap-2 border-b border-slate-800 pb-4">
@@ -778,6 +779,38 @@
     setInterval(pollAccount, 2000);
     setInterval(pollPositions, 2000);
     pollAccount();
+
+    (function healthPoll() {
+      var lastAlertedMessage = '';
+      var banner = document.getElementById('health-banner');
+      setInterval(function () {
+        fetch('/api/health')
+          .then(function (res) { return res.ok ? res.json() : Promise.reject(new Error('Health check failed')); })
+          .then(function (data) {
+            if (data && data.status === 'ok') {
+              banner.style.display = 'none';
+              banner.textContent = '';
+              lastAlertedMessage = '';
+              return;
+            }
+            var msg = (data && data.message) ? data.message : 'System error';
+            banner.textContent = msg;
+            banner.style.display = 'block';
+            if (msg !== lastAlertedMessage) {
+              lastAlertedMessage = msg;
+              alert('System health: ' + msg);
+            }
+          })
+          .catch(function () {
+            banner.textContent = 'Connection lost – cannot reach server';
+            banner.style.display = 'block';
+            if (lastAlertedMessage !== 'Connection lost') {
+              lastAlertedMessage = 'Connection lost';
+              alert('Connection lost – cannot reach server. Check if the bot is running.');
+            }
+          });
+      }, 3000);
+    })();
     pollPositions();
 
     botToggle.addEventListener('click', async () => {

@@ -480,20 +480,33 @@ def _set_position_sl_tp_sync(
     body = {
         "product_id": int(_DELTA_PRODUCT_ID),
         "product_symbol": _DELTA_SYMBOL,
+        "size": bracket_size,
+        "side": close_side,
         "stop_loss_order": {
-            "order_type": "stop_market",
+            # Delta V2 schema only allows order_type: limit_order, market_order.
+            # stop_price acts as the trigger for a market_order.
+            "order_type": "market_order",
             "stop_price": stop_loss,
         },
         "take_profit_order": {
-            "order_type": "take_profit_market",
+            "order_type": "market_order",
             "stop_price": take_profit,
         },
         "bracket_stop_trigger_method": "last_traded_price",
     }
-    resp = _delta_request("POST", "/v2/orders/bracket", api_key, api_secret, json_body=body)
+    resp = None
+    try:
+        resp = _delta_request("POST", "/v2/orders/bracket", api_key, api_secret, json_body=body)
+    except Exception as e:
+        resp = {"success": False, "error": str(e)}
+
     if resp and resp.get("success"):
         return True
+
     print(f"[Delta] bracket failed, trying separate SL/TP: {resp}")
+    print(f"[EXCHANGE ERROR] Failed to place SL/TP. Response: {resp}. Payload sent: {body}")
+    sl_ok = False
+    tp_ok = False
     for ob, label in (
         (
             {
@@ -501,7 +514,7 @@ def _set_position_sl_tp_sync(
                 "product_symbol": _DELTA_SYMBOL,
                 "size": bracket_size,
                 "side": close_side,
-                "order_type": "stop_market",
+                "order_type": "market_order",
                 "stop_price": stop_loss,
                 "reduce_only": True,
             },
@@ -513,17 +526,29 @@ def _set_position_sl_tp_sync(
                 "product_symbol": _DELTA_SYMBOL,
                 "size": bracket_size,
                 "side": close_side,
-                "order_type": "take_profit_market",
+                "order_type": "market_order",
                 "stop_price": take_profit,
                 "reduce_only": True,
             },
             "TP",
         ),
     ):
-        r = _delta_request("POST", "/v2/orders", api_key, api_secret, json_body=ob)
+        r = None
+        try:
+            r = _delta_request("POST", "/v2/orders", api_key, api_secret, json_body=ob)
+        except Exception as e:
+            r = {"success": False, "error": str(e)}
         if not r or not r.get("success"):
             print(f"[Delta] {label} order failed: {r}")
-    return True
+            print(f"[EXCHANGE ERROR] Failed to place SL/TP. Response: {r}. Payload sent: {ob}")
+            continue
+        if label == "SL":
+            sl_ok = True
+        elif label == "TP":
+            tp_ok = True
+    # Safety: if we managed to place SL but TP failed, still treat as "good enough"
+    # to avoid liquidation if the bot dies.
+    return sl_ok or tp_ok
 
 
 def _get_order_filled_qty_rest(order_id: str, symbol: str, http_client: Any) -> float:

@@ -25,6 +25,84 @@ logging.basicConfig(level=logging.INFO)
 
 _ENV_DOTFILE = Path(__file__).resolve().parent / ".env"
 
+# Institutional-grade trade journaling (auditable “why did we enter?”).
+TRADE_JOURNAL_PATH = Path(__file__).resolve().parent / "logs" / "trade_journal.log"
+
+
+def _to_float_or_none(v):
+    try:
+        if v is None:
+            return None
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return float(v)
+    except Exception:
+        return None
+
+
+def _append_trade_journal_entry(*, side: str, is_reverse: bool, signal_candle: dict, candle_range: float, sl_max: float, sl_min: float, tp: float, set_trading_stop_ok: bool) -> None:
+    """
+    Append one line JSON entry to logs/trade_journal.log.
+    This records the exact indicator values + SL/TP geometry that triggered the trade.
+    """
+    try:
+        side_name = "Long" if str(side).strip().lower() == "buy" else "Short"
+        rsi = signal_candle.get("RSI")
+        vol = signal_candle.get("volume")
+        vol_dec = signal_candle.get("volume_decreasing")
+        entry_ts = _to_float_or_none(signal_candle.get("start"))
+        candle_start_iso = datetime.fromtimestamp(entry_ts / 1000.0).isoformat() if entry_ts else None
+
+        journal = {
+            "timestamp": datetime.now().isoformat(),
+            "symbol": SYMBOL,
+            "side": side_name,
+            "is_reversal": bool(is_reverse),
+            "set_trading_stop_ok": bool(set_trading_stop_ok),
+            "expected": {
+                "tp_price": float(tp),
+                "sl_max_price": float(sl_max),
+                "sl_min_price": float(sl_min),
+            },
+            "signal_candle": {
+                # These are the exact fields available in row_dict from check_signals().
+                "start": entry_ts,
+                "start_iso": candle_start_iso,
+                "RSI": _to_float_or_none(rsi),
+                "Volume": _to_float_or_none(vol),
+                "Volume_Decreasing": bool(vol_dec) if vol_dec is not None else None,
+                "Candle_Range": float(candle_range),
+            },
+        }
+        TRADE_JOURNAL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(TRADE_JOURNAL_PATH, "a", encoding="utf-8") as f:
+            f.write(_json.dumps(journal, ensure_ascii=False) + "\n")
+    except Exception as e:
+        # Journaling must never crash the bot.
+        logging.error("Trade journal write failed: %s", e, exc_info=True)
+
+
+def _set_health_error(message: str) -> None:
+    """Update shared system health so dashboard can show warning. No-op if app not loaded."""
+    try:
+        import app
+        app.SYSTEM_HEALTH["status"] = "error"
+        app.SYSTEM_HEALTH["message"] = message
+        app.SYSTEM_HEALTH["last_heartbeat"] = time.time()
+    except Exception:
+        pass
+
+
+def _set_health_ok(message: str = "Bot is running smoothly") -> None:
+    """Clear error state after recovery."""
+    try:
+        import app
+        app.SYSTEM_HEALTH["status"] = "ok"
+        app.SYSTEM_HEALTH["message"] = message
+        app.SYSTEM_HEALTH["last_heartbeat"] = time.time()
+    except Exception:
+        pass
+
 
 # Load API keys and strategy params from .env (also try 'env' if .env is missing)
 load_dotenv(override=True)
@@ -155,6 +233,10 @@ _instrument_min_notional: float = 6.0
 _loop: asyncio.AbstractEventLoop | None = None
 # SL trigger delay: only one delayed SL check at a time
 _sl_trigger_task_running: bool = False
+
+# Hard caps to prevent unbounded in-memory dataframe growth (long-running bot risk).
+MEMORY_CAP_ROWS = 1500
+MEMORY_KEEP_ROWS = 1000
 # Queue for entry signals (side, row_dict, is_reverse) from kline/position callbacks
 _signal_queue: asyncio.Queue | None = None
 
@@ -301,6 +383,160 @@ def _clear_sl_tp_tracker_on_file_and_globals() -> None:
         print(f"[sl_tp_tracker] Could not persist tracker clear: {e}")
 
 
+def _symbols_equivalent(a: str, b: str) -> bool:
+    """Loose match BTCUSDT vs BTCUSD etc."""
+    aa = (a or "").strip().upper().replace("USDT", "X").replace("USD", "X")
+    bb = (b or "").strip().upper().replace("USDT", "X").replace("USD", "X")
+    return aa != "" and aa == bb
+
+
+def _fetch_exchange_open_position_for_symbol_sync() -> dict | None:
+    """
+    Poll exchange REST for an open position on `SYMBOL`.
+    Returns: {side, entry_price, size, stop_loss, take_profit} or None.
+    """
+    try:
+        if USE_DELTA:
+            from delta_client import _delta_request
+
+            k = os.getenv("DELTA_API_KEY") or ""
+            s = os.getenv("DELTA_API_SECRET") or ""
+            if not k or not s:
+                return None
+            raw = _delta_request("GET", "/v2/positions/margined", k, s)
+            if not raw or not isinstance(raw, dict) or not raw.get("success"):
+                return None
+            for p in (raw.get("result") or []):
+                sz = _to_float_or_none(p.get("size") or 0)
+                if sz is None or abs(sz) <= 1e-12:
+                    continue
+                psym = str(p.get("product_symbol") or "")
+                sym_ui = psym.replace("USD", "USDT") if psym.endswith("USD") else psym
+                if not _symbols_equivalent(sym_ui, SYMBOL):
+                    continue
+                side = "Buy" if sz > 0 else "Sell"
+                entry = _to_float_or_none(p.get("entry_price") or p.get("entryPrice") or 0)
+                stop_loss = _to_float_or_none(
+                    p.get("stop_loss") or p.get("stop_loss_price") or p.get("stopLoss") or 0
+                )
+                take_profit = _to_float_or_none(
+                    p.get("take_profit") or p.get("take_profit_price") or p.get("takeProfit") or 0
+                )
+                return {
+                    "side": side,
+                    "entry_price": entry or 0.0,
+                    "size": abs(float(sz)),
+                    "stop_loss": stop_loss,
+                    "take_profit": take_profit,
+                }
+            return None
+
+        # Bybit
+        if HTTP_CLIENT is None:
+            return None
+        resp = HTTP_CLIENT.get_positions(category="linear", settleCoin="USDT")
+        if not resp or resp.get("retCode") != 0:
+            return None
+        positions = (resp.get("result") or {}).get("list", []) or []
+        for p in positions:
+            sym = str(p.get("symbol") or "").strip()
+            if not _symbols_equivalent(sym, SYMBOL):
+                continue
+            sz = _to_float_or_none(p.get("size") or 0) or 0.0
+            if sz <= 0:
+                continue
+            side = (p.get("side") or "").strip()
+            if side not in ("Buy", "Sell"):
+                side = "Buy"
+            entry = _to_float_or_none(p.get("avgPrice") or p.get("avgEntryPrice") or 0) or 0.0
+            sl = _to_float_or_none(p.get("stopLoss") or 0)
+            tp = _to_float_or_none(p.get("takeProfit") or 0)
+            return {
+                "side": side,
+                "entry_price": entry,
+                "size": sz,
+                "stop_loss": sl,
+                "take_profit": tp,
+            }
+        return None
+    except Exception as e:
+        logging.error("Open-position poll failed: %s", e, exc_info=True)
+        _set_health_error("Open-position poll failed")
+        return None
+
+
+def _fetch_exchange_mark_mid_for_symbol_sync(entry_price_fallback: float = 0.0) -> float:
+    """Fetch mid/mark price synchronously for emergency SL computation."""
+    try:
+        if USE_DELTA:
+            from delta_client import get_delta_ticker_l1
+
+            l1 = get_delta_ticker_l1(SYMBOL)
+            if l1:
+                _bid, _ask, mid = l1
+                if mid and mid > 0:
+                    return float(mid)
+            return float(entry_price_fallback or 0.0)
+
+        # Bybit
+        if HTTP_CLIENT is None:
+            return float(entry_price_fallback or 0.0)
+        ob = HTTP_CLIENT.get_orderbook(category="linear", symbol=SYMBOL, limit=1)
+        if ob and ob.get("retCode") == 0:
+            bids = (ob.get("result") or {}).get("b") or []
+            asks = (ob.get("result") or {}).get("a") or []
+            if bids and asks:
+                bb = _to_float_or_none(bids[0][0] if isinstance(bids[0], (list, tuple)) else 0)
+                aa = _to_float_or_none(asks[0][0] if isinstance(asks[0], (list, tuple)) else 0)
+                if bb and aa and bb > 0 and aa > 0:
+                    return (bb + aa) / 2.0
+        return float(entry_price_fallback or 0.0)
+    except Exception as e:
+        logging.error("Mark-mid fetch failed: %s", e, exc_info=True)
+        _set_health_error("Mark-mid fetch failed")
+        return float(entry_price_fallback or 0.0)
+
+
+def _local_state_compatible_with_open_position(local_state: dict, open_pos: dict) -> bool:
+    if not local_state or not isinstance(local_state, dict):
+        return False
+    if not open_pos:
+        return False
+    side_state = str(local_state.get("last_position_side") or "").strip()
+    if side_state != open_pos.get("side"):
+        return False
+
+    tp_state = _to_float_or_none(local_state.get("last_tp_price"))
+    sl_max_state = _to_float_or_none(local_state.get("tracker_sl_max") or local_state.get("last_sl_price"))
+    sl_min_state = _to_float_or_none(local_state.get("tracker_sl_min") or local_state.get("last_sl_price"))
+
+    if tp_state is None or tp_state <= 0:
+        return False
+    if sl_max_state is None or sl_max_state <= 0:
+        return False
+    if sl_min_state is None or sl_min_state <= 0:
+        return False
+
+    # Optional sanity check vs exchange-side values (when present)
+    tp_ex = open_pos.get("take_profit")
+    if tp_ex is not None and tp_ex > 0:
+        if abs(tp_ex - tp_state) / tp_state > 0.02:
+            return False
+
+    sl_ex = open_pos.get("stop_loss")
+    if sl_ex is not None:
+        sl_ex_f = _to_float_or_none(sl_ex)
+        sl_state = _to_float_or_none(local_state.get("last_sl_price"))
+        # If exchange reports a stop-loss and local state doesn't have one, treat as mismatch.
+        if sl_ex_f is not None and sl_ex_f > 0 and (sl_state is None or sl_state <= 0):
+            return False
+        # If both exist, require them to be close.
+        if sl_ex_f is not None and sl_ex_f > 0 and sl_state is not None and sl_state > 0:
+            if abs(sl_ex_f - sl_state) / sl_state > 0.02:
+                return False
+    return True
+
+
 # Average entry from exchange WS (or set on fill / manual)
 _position_entry_price: float | None = None
 
@@ -369,6 +605,9 @@ def fetch_historical_klines() -> bool:
         ok = fetch_historical_klines_delta(SYMBOL, KLINES, KLINES_MAX)
     else:
         ok = fetch_historical_klines_bybit(HTTP_CLIENT, SYMBOL, KLINES, KLINES_MAX)
+    # Enforce hard cap immediately after the initial load.
+    if len(KLINES) > MEMORY_CAP_ROWS:
+        KLINES = KLINES[-MEMORY_KEEP_ROWS:]
     if ok:
         print(
             f"Loaded {len(KLINES)} historical klines for {SYMBOL} "
@@ -392,7 +631,10 @@ def ensure_updated(rows: list) -> None:
             KLINES[existing] = r
         else:
             KLINES.append(r)
-    if len(KLINES) > KLINES_MAX:
+    # Hard cap: avoid OOM on multi-day runs.
+    if len(KLINES) > MEMORY_CAP_ROWS:
+        KLINES = KLINES[-MEMORY_KEEP_ROWS:]
+    elif len(KLINES) > KLINES_MAX:
         KLINES = KLINES[-KLINES_MAX:]
 
 
@@ -683,6 +925,7 @@ async def _delayed_sl_check(
                 )
     except Exception as e:
         logging.error(f"[Local SL/TP] delayed SL check failed: {e}", exc_info=True)
+        _set_health_error("Delayed SL check failed")
     finally:
         _sl_trigger_task_running = False
 
@@ -691,32 +934,48 @@ async def _async_local_sl_tp_close(trigger_mid: float) -> None:
     """Close position at market/IOC when local mid crossed SL or TP."""
     global _is_closing_position
     try:
-        with _position_lock:
-            sz = float(_position_size)
-            ps = (_last_position_side or "").strip()
-        if sz <= 0:
+        # Never get stuck: retry close until the position is actually closed.
+        while True:
+            with _position_lock:
+                sz = float(_position_size)
+                ps = (_last_position_side or "").strip()
+            if sz <= 0 or not get_open_position():
+                return
+
+            close_side = "Sell" if ps.lower() == "buy" else "Buy"
+            print(
+                f"[Local SL/TP] mid={trigger_mid:.4f} → closing {ps} size={sz} side={close_side} (exchange stops are backup only)"
+            )
+
+            loop = asyncio.get_running_loop()
+            try:
+                await execute_chunk_order_ws(
+                    close_side,
+                    sz,
+                    SYMBOL,
+                    _qty_step,
+                    _min_order_qty,
+                    _get_orderbook_l1,
+                    loop,
+                    ws_trade,
+                    _pending_fills,
+                    _pending_fills_lock,
+                    HTTP_CLIENT,
+                    is_entry=False,
+                )
+            except Exception as e:
+                logging.error("Exit API failed, retrying in 1s...", exc_info=True)
+                _set_health_error("Exit API failed; retrying")
+                await asyncio.sleep(1)
+                continue
+
+            # If call didn't throw but the position didn't close, keep retrying.
+            await asyncio.sleep(0.7)
+            if get_open_position():
+                logging.warning("Exit not confirmed yet; retrying close in 1s...")
+                await asyncio.sleep(1)
+                continue
             return
-        close_side = "Sell" if ps.lower() == "buy" else "Buy"
-        print(
-            f"[Local SL/TP] mid={trigger_mid:.4f} → closing {ps} size={sz} side={close_side} (exchange stops are backup only)"
-        )
-        loop = asyncio.get_running_loop()
-        await execute_chunk_order_ws(
-            close_side,
-            sz,
-            SYMBOL,
-            _qty_step,
-            _min_order_qty,
-            _get_orderbook_l1,
-            loop,
-            ws_trade,
-            _pending_fills,
-            _pending_fills_lock,
-            HTTP_CLIENT,
-            is_entry=False,
-        )
-    except Exception as e:
-        print(f"[Local SL/TP] close error: {e}")
     finally:
         await asyncio.sleep(1.5)
         with _local_sl_tp_lock:
@@ -1207,6 +1466,16 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
             print(
                 "Warning: set_trading_stop failed for reversal SL/TP (local state persisted)."
             )
+        _append_trade_journal_entry(
+            side=side,
+            is_reverse=is_reverse,
+            signal_candle=signal_candle,
+            candle_range=float(range_),
+            sl_max=float(sl_wide),
+            sl_min=float(sl_tight),
+            tp=float(tp),
+            set_trading_stop_ok=bool(ok_rev),
+        )
         return
 
     ok = await loop.run_in_executor(
@@ -1230,6 +1499,16 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
         _last_active_sl_price = sl_wide
         _sync_position_risk_to_state()
         _flush_live_state_file_with_tracker()
+        _append_trade_journal_entry(
+            side=side,
+            is_reverse=is_reverse,
+            signal_candle=signal_candle,
+            candle_range=float(range_),
+            sl_max=float(sl_wide),
+            sl_min=float(sl_tight),
+            tp=float(tp),
+            set_trading_stop_ok=bool(ok),
+        )
     else:
         print("Warning: set_trading_stop failed for SL/TP")
 
@@ -1656,6 +1935,7 @@ async def _signal_consumer() -> None:
     if _signal_queue is None:
         return
     while True:
+        _set_health_ok("Bot is running smoothly")
         try:
             item = await _signal_queue.get()
             if item[0] != "entry":
@@ -1666,6 +1946,7 @@ async def _signal_consumer() -> None:
             break
         except Exception as e:
             logging.error("CRITICAL ERROR in _signal_consumer: %s", e, exc_info=True)
+            _set_health_error("Signal consumer error; auto-recovering")
             await asyncio.sleep(5)  # backoff then resume consuming signals
 
 
@@ -1677,6 +1958,9 @@ async def main_async() -> None:
     except Exception as e:
         print(f"SERVER PUBLIC IP: (fetch failed: {e})")
     global ws_kline, ws_orderbook, ws_private, ws_trade, _loop, _signal_queue, LAST_SIGNAL_CANDLE_START
+    global _position_size, _position_entry_price, _monitor_had_position
+    global _last_position_side, _last_tp_price, _sl_max_price, _sl_min_price, _last_sl_price, _last_active_sl_price
+    global _entry_time, _breakeven_triggered
     global _qty_step, _min_order_qty, _instrument_min_notional
     if USE_DELTA:
         api_key = DELTA_API_KEY or ""
@@ -1703,7 +1987,88 @@ async def main_async() -> None:
                     print(f"[bot] Loaded last_signal_candle_start from file: {LAST_SIGNAL_CANDLE_START}")
     except Exception as e:
         print(f"[bot] Could not load last_signal_candle_start: {e}")
-    _load_sl_tp_tracker_from_file_on_startup()
+    # Resurrection Protocol: before any websocket loops begin, verify whether the exchange has
+    # an active position and reconcile with local `.live_strategy_state.json`.
+    open_pos = await asyncio.to_thread(_fetch_exchange_open_position_for_symbol_sync)
+    if open_pos:
+        local_state = _read_live_state_json_safe()
+        if _local_state_compatible_with_open_position(local_state, open_pos):
+            logging.info("Resurrecting active trade from local state")
+            _set_health_ok("Bot is running smoothly")
+            _load_sl_tp_tracker_from_file_on_startup()
+            with _position_lock:
+                _position_size = float(open_pos.get("size") or 0.0)
+                _position_entry_price = float(open_pos.get("entry_price") or 0.0)
+            _monitor_had_position = True
+            _last_position_side = open_pos.get("side") or _last_position_side
+            _sync_position_risk_to_state()
+            _flush_live_state_file_with_tracker()
+        else:
+            logging.critical(
+                "CRITICAL: Open position found without local state. Applying emergency failsafe SL."
+            )
+            _set_health_error("Open position without local state; applying failsafe SL")
+            mark_mid = await asyncio.to_thread(
+                _fetch_exchange_mark_mid_for_symbol_sync, open_pos.get("entry_price") or 0.0
+            )
+            side = open_pos.get("side") or ""
+            buf_pct = 0.02
+            if side == "Buy":
+                failsafe_sl = mark_mid * (1.0 - buf_pct)
+                failsafe_tp = open_pos.get("take_profit") or (mark_mid * 10.0)
+            else:
+                failsafe_sl = mark_mid * (1.0 + buf_pct)
+                failsafe_tp = open_pos.get("take_profit") or (mark_mid * 0.1)
+            if failsafe_tp is None or failsafe_tp <= 0:
+                failsafe_tp = mark_mid * (0.1 if side == "Sell" else 10.0)
+            sl_str = f"{float(failsafe_sl):.2f}"
+            tp_str = f"{float(failsafe_tp):.2f}"
+            ok = False
+            for attempt in range(1, 6):
+                try:
+                    ok = await asyncio.to_thread(
+                        _set_position_sl_tp_sync,
+                        HTTP_CLIENT,
+                        SYMBOL,
+                        "linear",
+                        sl_str,
+                        tp_str,
+                        entry_side=side,
+                    )
+                    if ok:
+                        break
+                except Exception as e:
+                    ok = False
+                    logging.error(
+                        "Emergency failsafe SL/TP placement failed (attempt %s/5): %s",
+                        attempt,
+                        e,
+                        exc_info=True,
+                    )
+                    _set_health_error("Emergency failsafe SL/TP placement failed")
+                await asyncio.sleep(0.5)
+
+            with _position_lock:
+                _position_size = float(open_pos.get("size") or 0.0)
+                _position_entry_price = float(open_pos.get("entry_price") or mark_mid)
+            _monitor_had_position = True
+            _last_position_side = side
+            _last_tp_price = float(failsafe_tp)
+            _sl_max_price = float(failsafe_sl)
+            _sl_min_price = float(failsafe_sl)
+            _last_sl_price = float(failsafe_sl)
+            _last_active_sl_price = float(failsafe_sl)
+            _entry_time = time.time()
+            _breakeven_triggered = False
+            _sync_position_risk_to_state()
+            _flush_live_state_file_with_tracker()
+            if not ok:
+                logging.error("Emergency failsafe SL/TP may not have been placed successfully (ok=False).")
+                _set_health_error("Failsafe SL/TP may not be active")
+    else:
+        # No active position on the exchange: wipe any stale local tracker state.
+        _clear_sl_tp_tracker_on_file_and_globals()
+
     _loop = asyncio.get_running_loop()
     _signal_queue = asyncio.Queue()
     with _live_state_lock:
@@ -1733,45 +2098,7 @@ async def main_async() -> None:
         df_init = pd.DataFrame(KLINES)
         df_init = compute_indicators(df_init)
         _update_live_strategy_state(df_init)
-
-    if USE_DELTA:
-        live_stream = DeltaLiveStream()
-        try:
-            await live_stream.start(
-                api_key,
-                api_secret,
-                SYMBOL,
-                handle_kline_message,
-                handle_orderbook_message,
-                handle_position_message,
-                handle_execution_message,
-            )
-        except BaseException:
-            await live_stream.stop_async()
-            raise
-        ws_kline = None
-        ws_orderbook = None
-        ws_private = None
-        ws_trade = None
-    else:
-        live_stream = BybitLiveStream()
-        try:
-            await live_stream.start(
-                api_key,
-                api_secret,
-                SYMBOL,
-                handle_kline_message,
-                handle_orderbook_message,
-                handle_position_message,
-                handle_execution_message,
-            )
-        except BaseException:
-            live_stream.stop()
-            raise
-        ws_kline = live_stream.ws_kline
-        ws_orderbook = live_stream.ws_orderbook
-        ws_private = live_stream.ws_private
-        ws_trade = live_stream.ws_trade
+    live_stream = None
 
     # Write initial live strategy state so dashboard can show symbol/status before first kline
     try:
@@ -1793,7 +2120,83 @@ async def main_async() -> None:
     print("Running (async chunk execution). Ctrl+C to stop.\n")
 
     try:
-        await asyncio.Future()
+        while True:
+            try:
+                _set_health_ok("Bot is running smoothly")
+                logging.info("Starting Exchange Websocket stream...")
+
+                if USE_DELTA:
+                    live_stream = DeltaLiveStream()
+                    await live_stream.start(
+                        api_key,
+                        api_secret,
+                        SYMBOL,
+                        handle_kline_message,
+                        handle_orderbook_message,
+                        handle_position_message,
+                        handle_execution_message,
+                    )
+                    ws_kline = None
+                    ws_orderbook = None
+                    ws_private = None
+                    ws_trade = None
+                else:
+                    live_stream = BybitLiveStream()
+                    await live_stream.start(
+                        api_key,
+                        api_secret,
+                        SYMBOL,
+                        handle_kline_message,
+                        handle_orderbook_message,
+                        handle_position_message,
+                        handle_execution_message,
+                    )
+                    ws_kline = live_stream.ws_kline
+                    ws_orderbook = live_stream.ws_orderbook
+                    ws_private = live_stream.ws_private
+                    ws_trade = live_stream.ws_trade
+
+                logging.warning("Websocket stream exited cleanly. Reconnecting...")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logging.error(
+                    f"CRITICAL: Websocket stream crashed/disconnected: {e}",
+                    exc_info=True,
+                )
+                _set_health_error("Websocket disconnected; reconnecting in 5s")
+            finally:
+                # Cleanly stop any previous partial connections, and discard pending signals
+                # so we don't place orders using stale ws_trade handles.
+                try:
+                    if live_stream is not None:
+                        if USE_DELTA:
+                            await live_stream.stop_async()
+                        else:
+                            live_stream.stop()
+                except Exception as e:
+                    logging.error(
+                        f"CRITICAL: websocket stop failed during reconnect: {e}",
+                        exc_info=True,
+                    )
+                    _set_health_error("Websocket stop failed during reconnect")
+
+                ws_kline = None
+                ws_orderbook = None
+                ws_private = None
+                ws_trade = None
+
+                # Drop queued entry signals during disconnect so they don't execute
+                # without fresh orderbook/position context.
+                if _signal_queue is not None:
+                    try:
+                        while True:
+                            _ = _signal_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        pass
+
+            logging.info("Waiting 5 seconds before reconnecting websocket...")
+            await asyncio.sleep(5)
     except asyncio.CancelledError:
         pass
     finally:
@@ -1802,10 +2205,14 @@ async def main_async() -> None:
             await consumer
         except asyncio.CancelledError:
             pass
-        if USE_DELTA:
-            await live_stream.stop_async()
-        else:
-            live_stream.stop()
+        try:
+            if live_stream is not None:
+                if USE_DELTA:
+                    await live_stream.stop_async()
+                else:
+                    live_stream.stop()
+        except Exception:
+            pass
         ws_kline = None
         ws_orderbook = None
         ws_private = None
