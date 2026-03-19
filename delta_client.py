@@ -262,6 +262,28 @@ def _delta_tick_price_str(price: float, tick: float) -> str:
     return s if s else "0"
 
 
+def _get_exact_open_size(api_key: str, api_secret: str, symbol: str) -> int:
+    """
+    Return exact absolute open position size (contracts) for symbol from /v2/positions/margined.
+    Returns 0 when no open position or on error.
+    """
+    try:
+        dsym = normalize_delta_symbol(symbol)
+        raw = _delta_request("GET", "/v2/positions/margined", api_key, api_secret)
+        if not raw or not isinstance(raw, dict) or not raw.get("success"):
+            return 0
+        for p in (raw.get("result") or []):
+            psym = str(p.get("product_symbol") or p.get("symbol") or "").strip().upper()
+            if psym != dsym:
+                continue
+            sz = float(p.get("size") or 0)
+            return max(0, int(abs(sz)))
+        return 0
+    except Exception as e:
+        print(f"[Delta] _get_exact_open_size failed: {e}")
+        return 0
+
+
 async def execute_chunk_order_ws(
     side: str,
     total_qty: float,
@@ -476,21 +498,36 @@ def _set_position_sl_tp_sync(
     if not api_key or not api_secret or _DELTA_PRODUCT_ID <= 0:
         return False
     close_side = "sell" if (entry_side or "Buy") == "Buy" else "buy"
-    bracket_size = int(999999)
+    exact_size = 0
+    for _ in range(3):
+        exact_size = _get_exact_open_size(api_key, api_secret, symbol)
+        if exact_size > 0:
+            break
+        time.sleep(0.5)
+    if exact_size <= 0:
+        print("[Delta] Refusing SL/TP placement: exact open size is 0 after retries.")
+        return False
+    tick = get_delta_tick_size()
+    try:
+        sl_fmt = _delta_tick_price_str(float(stop_loss), tick)
+        tp_fmt = _delta_tick_price_str(float(take_profit), tick)
+    except Exception:
+        print(f"[Delta] Invalid stop/take values. stop_loss={stop_loss} take_profit={take_profit}")
+        return False
     body = {
         "product_id": int(_DELTA_PRODUCT_ID),
         "product_symbol": _DELTA_SYMBOL,
-        "size": bracket_size,
+        "size": int(exact_size),
         "side": close_side,
         "stop_loss_order": {
             # Delta V2 schema only allows order_type: limit_order, market_order.
             # stop_price acts as the trigger for a market_order.
             "order_type": "market_order",
-            "stop_price": stop_loss,
+            "stop_price": sl_fmt,
         },
         "take_profit_order": {
             "order_type": "market_order",
-            "stop_price": take_profit,
+            "stop_price": tp_fmt,
         },
         "bracket_stop_trigger_method": "last_traded_price",
     }
@@ -512,11 +549,12 @@ def _set_position_sl_tp_sync(
             {
                 "product_id": int(_DELTA_PRODUCT_ID),
                 "product_symbol": _DELTA_SYMBOL,
-                "size": bracket_size,
+                "size": int(exact_size),
                 "side": close_side,
                 "order_type": "market_order",
-                "stop_price": stop_loss,
+                "stop_price": sl_fmt,
                 "reduce_only": True,
+                "close_on_trigger": True,
             },
             "SL",
         ),
@@ -524,11 +562,12 @@ def _set_position_sl_tp_sync(
             {
                 "product_id": int(_DELTA_PRODUCT_ID),
                 "product_symbol": _DELTA_SYMBOL,
-                "size": bracket_size,
+                "size": int(exact_size),
                 "side": close_side,
                 "order_type": "market_order",
-                "stop_price": take_profit,
+                "stop_price": tp_fmt,
                 "reduce_only": True,
+                "close_on_trigger": True,
             },
             "TP",
         ),
@@ -546,9 +585,8 @@ def _set_position_sl_tp_sync(
             sl_ok = True
         elif label == "TP":
             tp_ok = True
-    # Safety: if we managed to place SL but TP failed, still treat as "good enough"
-    # to avoid liquidation if the bot dies.
-    return sl_ok or tp_ok
+    # Liquidation safety: SL must exist. TP-only is not acceptable for risk control.
+    return sl_ok
 
 
 def _get_order_filled_qty_rest(order_id: str, symbol: str, http_client: Any) -> float:

@@ -228,6 +228,7 @@ _sl_min_price: float = 0.0
 _breakeven_triggered: bool = False
 _half_target_exited: bool = False
 _last_active_sl_price: float | None = None
+_exchange_sl_price: float = 0.0
 _sl_persist_ts: float = 0.0
 
 # Real-time position state from private WebSocket (linear, our SYMBOL only)
@@ -350,7 +351,7 @@ def _flush_live_state_file_with_tracker() -> None:
 
 def _load_sl_tp_tracker_from_file_on_startup() -> None:
     """Restore SL/TP tracker + dynamic SL state before WS."""
-    global _last_sl_price, _last_tp_price, _last_position_side, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _last_active_sl_price
+    global _last_sl_price, _last_tp_price, _last_position_side, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _last_active_sl_price, _exchange_sl_price
     try:
         data = _read_live_state_json_safe()
         tp = data.get("last_tp_price")
@@ -379,6 +380,7 @@ def _load_sl_tp_tracker_from_file_on_startup() -> None:
                 _breakeven_triggered = be
                 _half_target_exited = hte
                 _last_active_sl_price = sl_disk if sl_disk > 0 else _sl_max_price
+                _exchange_sl_price = _last_active_sl_price
                 print(
                     f"[bot] Restored SL tracker: TP={tpf:g} side={_last_position_side} "
                     f"sl_max={_sl_max_price:g} sl_min={_sl_min_price:g} breakeven={be} half_exited={hte}"
@@ -389,7 +391,7 @@ def _load_sl_tp_tracker_from_file_on_startup() -> None:
 
 def _clear_sl_tp_tracker_on_file_and_globals() -> None:
     """Reset persisted SL/TP after position is flat (size 0)."""
-    global _last_sl_price, _last_tp_price, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _last_active_sl_price
+    global _last_sl_price, _last_tp_price, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _last_active_sl_price, _exchange_sl_price
     _last_sl_price = None
     _last_tp_price = None
     _entry_time = 0.0
@@ -398,6 +400,7 @@ def _clear_sl_tp_tracker_on_file_and_globals() -> None:
     _breakeven_triggered = False
     _half_target_exited = False
     _last_active_sl_price = None
+    _exchange_sl_price = 0.0
     try:
         data = _read_live_state_json_safe()
         data["last_sl_price"] = 0.0
@@ -792,6 +795,7 @@ def _compute_active_sl_price(mid_price: float) -> float | None:
 def handle_orderbook_message(message: dict) -> None:
     """Update global L1 orderbook from public orderbook.1 stream (snapshot-only for depth 1)."""
     global best_bid, best_ask, bid_qty, ask_qty, _sl_persist_ts, _last_ws_msg_ts
+    global _exchange_sl_price, _last_active_sl_price, _last_tp_price, _last_position_side
     _last_ws_msg_ts = time.time()
     data = message.get("data") or {}
     bids = data.get("b") or []
@@ -808,6 +812,53 @@ def handle_orderbook_message(message: dict) -> None:
     if bb > 0 and ba > 0:
         mid = (bb + ba) / 2.0
         _trigger_local_sl_tp_if_needed(mid)
+        act_sl = _last_active_sl_price
+        if (
+            USE_DELTA
+            and act_sl is not None
+            and act_sl > 0
+            and _exchange_sl_price > 0
+            and _last_tp_price is not None
+            and _last_position_side in ("Buy", "Sell")
+        ):
+            tol = 0.0005
+            side_l = str(_last_position_side).strip().lower()
+            should_tighten = (
+                (side_l == "buy" and float(act_sl) > float(_exchange_sl_price) * (1.0 + tol))
+                or (side_l == "sell" and float(act_sl) < float(_exchange_sl_price) * (1.0 - tol))
+            )
+            # Push only tighter SL to exchange backup stop.
+            if should_tighten:
+
+                def _sync_exchange_sl(new_sl: float, tp: float, sd: str) -> None:
+                    try:
+                        global _exchange_sl_price
+                        ok = _set_position_sl_tp_sync(
+                            HTTP_CLIENT,
+                            SYMBOL,
+                            "linear",
+                            str(new_sl),
+                            str(tp),
+                            entry_side=sd,
+                        )
+                        if ok:
+                            _exchange_sl_price = float(new_sl)
+                        else:
+                            logging.error(
+                                "[Delta SL Sync] Failed to update exchange SL to %.6f (tp=%.6f side=%s)",
+                                new_sl,
+                                float(tp),
+                                sd,
+                            )
+                    except Exception:
+                        logging.error("[Delta SL Sync] Exception while syncing exchange SL", exc_info=True)
+
+                if _loop is not None:
+                    _loop.call_soon_threadsafe(
+                        lambda sl=float(act_sl), tp=float(_last_tp_price), sd=str(_last_position_side): _loop.run_in_executor(
+                            None, _sync_exchange_sl, sl, tp, sd
+                        )
+                    )
         global _sl_persist_ts
         now = time.time()
         if now - _sl_persist_ts >= 2.0:
@@ -1448,7 +1499,7 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
     SHORT: base = best bid → SL = base + range×SL_MULT, TP = base − range×TP_MULT.
     """
     global _last_position_side, _last_signal_candle, _last_sl_price, _last_tp_price, _last_position_was_reverse
-    global _position_entry_price, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _last_active_sl_price
+    global _position_entry_price, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _last_active_sl_price, _exchange_sl_price
     if get_open_position():
         print("Position already open, skipping new signal")
         return
@@ -1606,6 +1657,8 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
         _breakeven_triggered = False
         _half_target_exited = False
         _last_active_sl_price = sl_wide
+        if ok_rev:
+            _exchange_sl_price = float(_sl_max_price)
         _sync_position_risk_to_state()
         _flush_live_state_file_with_tracker()
         if not ok_rev:
@@ -1632,32 +1685,34 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
     )
     if ok:
         print("Calculated SL (wide→tight):", sl_str, "| TP:", tp_str)
-        _last_position_side = side
-        _last_signal_candle = {"high": high, "low": low, "close": close}
-        _sl_max_price = sl_wide
-        _sl_min_price = sl_tight
-        _last_sl_price = sl_wide
-        _last_tp_price = tp
-        _last_position_was_reverse = False
-        _position_entry_price = current_price
-        _entry_time = time.time()
-        _breakeven_triggered = False
-        _half_target_exited = False
-        _last_active_sl_price = sl_wide
-        _sync_position_risk_to_state()
-        _flush_live_state_file_with_tracker()
-        _append_trade_journal_entry(
-            side=side,
-            is_reverse=is_reverse,
-            signal_candle=signal_candle,
-            candle_range=float(range_),
-            sl_max=float(sl_wide),
-            sl_min=float(sl_tight),
-            tp=float(tp),
-            set_trading_stop_ok=bool(ok),
-        )
     else:
-        print("Warning: set_trading_stop failed for SL/TP")
+        print("Warning: set_trading_stop failed for SL/TP; local SL/TP tracker will still protect.")
+    _last_position_side = side
+    _last_signal_candle = {"high": high, "low": low, "close": close}
+    _sl_max_price = sl_wide
+    _sl_min_price = sl_tight
+    _last_sl_price = sl_wide
+    _last_tp_price = tp
+    _last_position_was_reverse = False
+    _position_entry_price = current_price
+    _entry_time = time.time()
+    _breakeven_triggered = False
+    _half_target_exited = False
+    _last_active_sl_price = sl_wide
+    if ok:
+        _exchange_sl_price = float(_sl_max_price)
+    _sync_position_risk_to_state()
+    _flush_live_state_file_with_tracker()
+    _append_trade_journal_entry(
+        side=side,
+        is_reverse=is_reverse,
+        signal_candle=signal_candle,
+        candle_range=float(range_),
+        sl_max=float(sl_wide),
+        sl_min=float(sl_tight),
+        tp=float(tp),
+        set_trading_stop_ok=bool(ok),
+    )
 
 
 def has_valid_entry_signal_now(df: pd.DataFrame) -> tuple[str | None, pd.Series | None]:
@@ -2108,7 +2163,7 @@ async def main_async() -> None:
     global ws_kline, ws_orderbook, ws_private, ws_trade, _loop, _signal_queue, LAST_SIGNAL_CANDLE_START
     global _position_size, _position_entry_price, _monitor_had_position
     global _last_position_side, _last_tp_price, _sl_max_price, _sl_min_price, _last_sl_price, _last_active_sl_price
-    global _entry_time, _breakeven_triggered, _half_target_exited
+    global _entry_time, _breakeven_triggered, _half_target_exited, _exchange_sl_price
     global _qty_step, _min_order_qty, _instrument_min_notional
     if USE_DELTA:
         api_key = DELTA_API_KEY or ""
@@ -2149,6 +2204,7 @@ async def main_async() -> None:
                 _position_entry_price = float(open_pos.get("entry_price") or 0.0)
             _monitor_had_position = True
             _last_position_side = open_pos.get("side") or _last_position_side
+            _exchange_sl_price = float(_last_active_sl_price or _sl_max_price or 0.0)
             _sync_position_risk_to_state()
             _flush_live_state_file_with_tracker()
         else:
@@ -2209,6 +2265,7 @@ async def main_async() -> None:
             _entry_time = time.time()
             _breakeven_triggered = False
             _half_target_exited = False
+            _exchange_sl_price = float(failsafe_sl)
             _sync_position_risk_to_state()
             _flush_live_state_file_with_tracker()
             if not ok:
