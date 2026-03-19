@@ -49,7 +49,7 @@
           <div class="table-responsive d-none" id="delta-wrap">
             <table class="table table-sm table-darkish table-bordered w-100">
               <thead>
-                <tr>
+                <tr class="text-light">
                   <th>Token</th>
                   <th>Side</th>
                   <th>Entry Time (IST)</th>
@@ -72,7 +72,7 @@
           <div class="table-responsive d-none" id="bybit-wrap">
             <table class="table table-sm table-darkish table-bordered w-100">
               <thead>
-                <tr>
+                <tr class="text-light">
                   <th>Token</th>
                   <th>Side</th>
                   <th>Entry Time (IST)</th>
@@ -122,17 +122,17 @@
         var side = (row.side || '').toUpperCase();
         var sideClass = side === 'BUY' ? 'text-success' : 'text-danger';
         return '<tr>' +
-          '<td class="fw-medium">' + (row.symbol || '–') + '</td>' +
-          '<td class="' + sideClass + '">' + (row.side || '–') + '</td>' +
-          '<td class="text-slate-300">' + toIST(row.createdTime) + '</td>' +
-          '<td class="text-slate-300">' + toIST(row.updatedTime) + '</td>' +
-          '<td>' + (row.avgEntryPrice || '–') + '</td>' +
-          '<td>' + (row.avgExitPrice || '–') + '</td>' +
-          '<td>' + (row.leverage || '–') + '</td>' +
-          '<td>' + (row.marginUsed !== undefined && row.marginUsed !== '' ? formatNum(row.marginUsed) : '–') + '</td>' +
+          '<td class="text-white fw-medium">' + (row.symbol || '–') + '</td>' +
+          '<td class="' + sideClass + ' fw-medium">' + (row.side || '–') + '</td>' +
+          '<td class="text-white">' + toIST(row.createdTime) + '</td>' +
+          '<td class="text-white">' + toIST(row.updatedTime) + '</td>' +
+          '<td class="text-white">' + (row.avgEntryPrice || '–') + '</td>' +
+          '<td class="text-white">' + (row.avgExitPrice || '–') + '</td>' +
+          '<td class="text-white">' + (row.leverage || '–') + '</td>' +
+          '<td class="text-white">' + (row.marginUsed !== undefined && row.marginUsed !== '' ? formatNum(row.marginUsed) : '–') + '</td>' +
           '<td class="' + pnlClass + ' fw-medium">' + formatNum(row.closedPnl) + '</td>' +
-          '<td>' + formatNum(row.fees) + '</td>' +
-          '<td class="text-slate-400">' + (row.exitReason || '–') + '</td>' +
+          '<td class="text-white">' + formatNum(row.fees) + '</td>' +
+          '<td class="text-white">' + (row.exitReason || '–') + '</td>' +
           '</tr>';
       }
 
@@ -158,8 +158,8 @@
               if (ex === 'Delta India') deltaHtml += tr;
               else bybitHtml += tr;
             });
-            tbodyDelta.innerHTML = deltaHtml || '<tr><td colspan="11" class="text-slate-500">No Delta India closed trades logged yet.</td></tr>';
-            tbodyBybit.innerHTML = bybitHtml || '<tr><td colspan="11" class="text-slate-500">No Bybit closed trades (or running on Delta-only mode).</td></tr>';
+            tbodyDelta.innerHTML = deltaHtml || '<tr><td colspan="11" class="text-light">No Delta India closed trades logged yet.</td></tr>';
+            tbodyBybit.innerHTML = bybitHtml || '<tr><td colspan="11" class="text-light">No Bybit closed trades (or running on Delta-only mode).</td></tr>';
             deltaWrap.classList.remove('d-none');
             bybitWrap.classList.remove('d-none');
           })

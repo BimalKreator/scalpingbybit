@@ -256,6 +256,8 @@ _local_close_reason: str = ""  # "", "SL", "TP", "PARTIAL"
 _sl_persist_ts: float = 0.0
 # True while _place_order_async is executing entry + initial SL (blocks SL supervisor hijack).
 _is_setting_initial_sl: bool = False
+# Wall-clock when the latest entry fill was confirmed (auto or manual); used to grace supervisor initial attach.
+_last_entry_time: float = 0.0
 
 
 @asynccontextmanager
@@ -1555,7 +1557,7 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
     """
     global _last_position_side, _last_signal_candle, _last_sl_price, _last_tp_price, _last_position_was_reverse
     global _position_entry_price, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _half_target_reached, _last_active_sl_price, _exchange_sl_price, _local_close_reason
-    global _is_setting_initial_sl
+    global _is_setting_initial_sl, _last_entry_time
     if get_open_position():
         print("Position already open, skipping new signal")
         return
@@ -1674,6 +1676,7 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
             logging.critical("CRITICAL: Entry fill confirmation timeout. Aborting exchange SL/TP placement.")
             _set_health_error("Entry fill confirmation timeout")
             return
+        _last_entry_time = time.time()
 
         if is_reverse:
             b_bid2, b_ask2, _, _ = _get_orderbook_l1()
@@ -1879,6 +1882,7 @@ def register_manual_trade(
     """Register manual trade; optional sl_max/sl_min for dynamic SL (else single sl_price)."""
     global _last_position_side, _last_sl_price, _last_tp_price, _last_position_was_reverse, _last_signal_candle, _manual_reversal_allowed, _position_entry_price
     global _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _half_target_reached, _last_active_sl_price, _local_close_reason
+    global _last_entry_time
     _last_position_side = side
     ep = float(entry_price)
     if sl_max_price is not None and sl_min_price is not None:
@@ -1892,6 +1896,7 @@ def register_manual_trade(
     _manual_reversal_allowed = allow_reversal
     _position_entry_price = ep
     _entry_time = time.time()
+    _last_entry_time = time.time()
     _breakeven_triggered = False
     _half_target_exited = False
     _half_target_reached = False
@@ -2403,6 +2408,9 @@ async def _sl_supervisor_loop() -> None:
                 continue
 
             if _exchange_sl_price <= 0:
+                if float(_last_active_sl_price or 0) > 0:
+                    if time.time() - _last_entry_time < 5.0:
+                        continue
                 if float(_last_active_sl_price or 0) <= 0:
                     continue
                 # Initial attach failed earlier; keep retrying while position is open.

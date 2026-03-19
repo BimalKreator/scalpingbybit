@@ -1,0 +1,16 @@
+[
+  {
+    "exchange": "Delta India",
+    "symbol": "BTCUSDT",
+    "side": "SELL",
+    "createdTime": "1773958665677",
+    "updatedTime": "1773958669373",
+    "avgEntryPrice": "70331.5",
+    "avgExitPrice": "70337",
+    "leverage": "5",
+    "marginUsed": 14.0663,
+    "closedPnl": "-0.0055",
+    "fees": 0,
+    "exitReason": "\u2014"
+  }
+]
