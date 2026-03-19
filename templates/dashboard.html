@@ -92,6 +92,12 @@
       box-shadow: 0 2px 8px rgba(0,0,0,0.4);
       transition: left 0.35s ease;
     }
+    .badge-blink {
+      animation: badgeBlink 1s steps(2, start) infinite;
+    }
+    @keyframes badgeBlink {
+      to { opacity: 0.45; }
+    }
   </style>
 </head>
 <body class="min-h-screen bg-slate-950 text-slate-100 antialiased">
@@ -160,6 +166,13 @@
           </div>
           <div id="activePositionCard" class="hidden rounded-xl border border-amber-900/50 bg-slate-900/70 p-4 space-y-3">
             <p class="text-xs font-semibold text-amber-400 uppercase tracking-wide">Active Position</p>
+            <div id="exchangeSlHealthWrap" class="hidden rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-2">
+              <div class="flex items-center justify-between gap-2">
+                <span id="exchangeSlHealthBadge" class="inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold border-slate-600 bg-slate-700 text-slate-200">Exchange SL: N/A</span>
+                <span id="exchangeSlHealthMeta" class="text-[11px] text-slate-400">Last synced: --</span>
+              </div>
+              <p id="exchangeSlHealthError" class="mt-1 text-[11px] text-red-300 hidden"></p>
+            </div>
             <div class="flex flex-wrap gap-x-5 gap-y-1 text-sm text-slate-300">
               <span>SL <strong id="riskSlPriceDisplay" class="text-red-300">–</strong></span>
               <span>TP <strong id="riskTpPriceDisplay" class="text-emerald-300">–</strong></span>
@@ -788,10 +801,53 @@
     (function healthPoll() {
       var lastAlertedMessage = '';
       var banner = document.getElementById('health-banner');
+      var slWrap = document.getElementById('exchangeSlHealthWrap');
+      var slBadge = document.getElementById('exchangeSlHealthBadge');
+      var slMeta = document.getElementById('exchangeSlHealthMeta');
+      var slErr = document.getElementById('exchangeSlHealthError');
+
+      function updateExchangeSlHealth(h) {
+        if (!slWrap || !slBadge || !slMeta || !slErr) return;
+        var card = document.getElementById('activePositionCard');
+        if (!card || card.classList.contains('hidden')) {
+          slWrap.classList.add('hidden');
+          return;
+        }
+        slWrap.classList.remove('hidden');
+        var status = (h && h.status) ? String(h.status) : 'inactive';
+        var ts = Number(h && h.last_update_ts ? h.last_update_ts : 0);
+        var err = (h && h.last_error) ? String(h.last_error) : '';
+        var age = '--';
+        if (!isNaN(ts) && ts > 0) {
+          age = Math.max(0, Math.floor(Date.now() / 1000 - ts)) + 's ago';
+        }
+        slMeta.textContent = 'Last synced: ' + age;
+        slBadge.classList.remove('border-emerald-600', 'bg-emerald-900/50', 'text-emerald-300', 'badge-blink');
+        slBadge.classList.remove('border-red-600', 'bg-red-900/40', 'text-red-300');
+        slBadge.classList.remove('border-slate-600', 'bg-slate-700', 'text-slate-200');
+        if (status === 'ok') {
+          slBadge.textContent = 'Exchange SL: Secured';
+          slBadge.classList.add('border-emerald-600', 'bg-emerald-900/50', 'text-emerald-300');
+          slErr.classList.add('hidden');
+          slErr.textContent = '';
+        } else if (status === 'error') {
+          slBadge.textContent = 'Exchange SL: FAILED';
+          slBadge.classList.add('border-red-600', 'bg-red-900/40', 'text-red-300', 'badge-blink');
+          slErr.textContent = err || 'Unknown exchange SL error';
+          slErr.classList.remove('hidden');
+        } else {
+          slBadge.textContent = 'Exchange SL: N/A';
+          slBadge.classList.add('border-slate-600', 'bg-slate-700', 'text-slate-200');
+          slErr.classList.add('hidden');
+          slErr.textContent = '';
+        }
+      }
+
       setInterval(function () {
         fetch('/api/health')
           .then(function (res) { return res.ok ? res.json() : Promise.reject(new Error('Health check failed')); })
           .then(function (data) {
+            updateExchangeSlHealth(data && data.exchange_sl_health ? data.exchange_sl_health : null);
             if (data && data.status === 'ok') {
               banner.style.display = 'none';
               banner.textContent = '';
@@ -807,6 +863,7 @@
             }
           })
           .catch(function () {
+            updateExchangeSlHealth({ status: 'error', last_update_ts: Date.now() / 1000, last_error: 'Health API fetch failed' });
             banner.textContent = 'Connection lost – cannot reach server';
             banner.style.display = 'block';
             if (lastAlertedMessage !== 'Connection lost') {

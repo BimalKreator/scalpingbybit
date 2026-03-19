@@ -49,6 +49,11 @@ SYSTEM_HEALTH = {
     "message": "Bot is running smoothly",
     "last_heartbeat": time.time(),
 }
+EXCHANGE_SL_HEALTH = {
+    "status": "inactive",
+    "last_update_ts": 0.0,
+    "last_error": "",
+}
 
 
 def get_env_path() -> Path:
@@ -669,7 +674,10 @@ async def api_bot_status():
 @app.get("/api/health")
 async def api_health():
     """Return system health for dashboard heartbeat / warning banner."""
-    return dict(SYSTEM_HEALTH)
+    return {
+        **dict(SYSTEM_HEALTH),
+        "exchange_sl_health": dict(EXCHANGE_SL_HEALTH),
+    }
 
 
 class AutotradeToggleBody(BaseModel):

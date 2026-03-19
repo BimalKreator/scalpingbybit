@@ -456,6 +456,9 @@ async def execute_chunk_order_ws(
         "side": d_side,
         "order_type": "market_order",
     }
+    if not is_entry:
+        # Exit safety: never allow close flow to expand/flip position.
+        body["reduce_only"] = True
     resp = await loop.run_in_executor(
         None,
         lambda: _delta_request("POST", "/v2/orders", api_key, api_secret, json_body=body),
