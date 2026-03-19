@@ -542,6 +542,43 @@ def _verify_open_stop_order(api_key: str, api_secret: str, symbol: str) -> bool:
     return False
 
 
+def _cancel_open_stop_orders_for_product(api_key: str, api_secret: str, product_id: int) -> None:
+    """
+    Remove existing SL/TP / bracket child orders so a new bracket or tighten can post
+    without bracket_order_exists conflicts.
+    """
+    if not api_key or not api_secret or product_id <= 0:
+        return
+    q = f"?product_id={int(product_id)}&state=open"
+    resp = _delta_request("GET", "/v2/orders", api_key, api_secret, query_str=q)
+    if not isinstance(resp, dict) or not resp.get("success"):
+        return
+    raw = resp.get("result")
+    orders: list[Any] = []
+    if isinstance(raw, list):
+        orders = raw
+    elif isinstance(raw, dict):
+        orders = raw.get("orders") or raw.get("live_orders") or []
+    if not isinstance(orders, list):
+        return
+    for o in orders:
+        if not isinstance(o, dict):
+            continue
+        oid = o.get("id")
+        if oid is None:
+            continue
+        st = str(o.get("stop_order_type") or "").lower()
+        if st not in ("stop_loss_order", "take_profit_order") and not o.get("bracket_order_id"):
+            continue
+        try:
+            del_body = {"id": int(oid), "product_id": int(product_id)}
+        except (TypeError, ValueError):
+            continue
+        dr = _delta_request("DELETE", "/v2/orders", api_key, api_secret, json_body=del_body)
+        if not isinstance(dr, dict) or not dr.get("success"):
+            print(f"[Delta] Cancel stop order {oid} response: {dr}")
+
+
 def _set_position_sl_tp_sync(
     http_client: Any,
     symbol: str,
@@ -565,6 +602,10 @@ def _set_position_sl_tp_sync(
     if exact_size <= 0:
         print("[Delta] Refusing SL/TP placement: exact open size is 0 after retries.")
         return False
+    try:
+        _cancel_open_stop_orders_for_product(api_key, api_secret, int(_DELTA_PRODUCT_ID))
+    except Exception as e:
+        print(f"[Delta] Warning: Could not clear old stops: {e}")
     tick = get_delta_tick_size()
     try:
         sl_fmt = _delta_tick_price_str(float(stop_loss), tick)
@@ -582,10 +623,14 @@ def _set_position_sl_tp_sync(
             # stop_price acts as the trigger for a market_order.
             "order_type": "market_order",
             "stop_price": sl_fmt,
+            "stop_order_type": "stop_loss_order",
+            "bracket_stop_trigger_method": "last_traded_price",
         },
         "take_profit_order": {
             "order_type": "market_order",
             "stop_price": tp_fmt,
+            "stop_order_type": "take_profit_order",
+            "bracket_stop_trigger_method": "last_traded_price",
         },
         "bracket_stop_trigger_method": "last_traded_price",
     }
@@ -611,6 +656,8 @@ def _set_position_sl_tp_sync(
                 "side": close_side,
                 "order_type": "market_order",
                 "stop_price": sl_fmt,
+                "stop_order_type": "stop_loss_order",
+                "bracket_stop_trigger_method": "last_traded_price",
                 "reduce_only": True,
                 "close_on_trigger": True,
             },
@@ -624,6 +671,8 @@ def _set_position_sl_tp_sync(
                 "side": close_side,
                 "order_type": "market_order",
                 "stop_price": tp_fmt,
+                "stop_order_type": "take_profit_order",
+                "bracket_stop_trigger_method": "last_traded_price",
                 "reduce_only": True,
                 "close_on_trigger": True,
             },

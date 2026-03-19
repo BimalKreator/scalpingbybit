@@ -1920,24 +1920,27 @@ def register_manual_trade(
 def _was_closed_by_sl(current_price: float) -> bool:
     """
     True if the close should be treated as stop-loss for reversal logic.
-    Uses local exit reason when set; otherwise infers exchange-executed SL from last mark vs SL.
+    Local exits use _local_close_reason; exchange-native exits use loss vs entry (no SL-price proximity).
     """
-    global _local_close_reason, _last_active_sl_price, _last_position_side
+    global _local_close_reason, _last_position_side, _position_entry_price
 
     if _local_close_reason == "SL":
         return True
     if _local_close_reason in ("TP", "PARTIAL"):
         return False
 
-    if _local_close_reason == "" and _last_active_sl_price is not None:
+    if _local_close_reason == "":
         try:
-            if not current_price or float(current_price) <= 0:
+            if _position_entry_price is None:
                 return False
-            sl_val = float(_last_active_sl_price)
             cp = float(current_price)
-            if _last_position_side == "Buy" and cp <= sl_val:
+            entry = float(_position_entry_price)
+            if cp <= 0 or entry <= 0:
+                return False
+            # Exchange closed in a loss or at breakeven → treat as SL / protective exit (not a winning TP).
+            if _last_position_side == "Buy" and cp <= entry:
                 return True
-            if _last_position_side == "Sell" and cp >= sl_val:
+            if _last_position_side == "Sell" and cp >= entry:
                 return True
         except (TypeError, ValueError):
             pass
@@ -2092,8 +2095,10 @@ def handle_position_message(message: dict) -> None:
         has_now = size_for_symbol > 0
         _position_size = size_for_symbol
         if size_for_symbol <= 0:
-            _position_entry_price = None
             _is_closing_position = False
+            # Defer clearing entry until after on_position_closed / _was_closed_by_sl (needs entry vs exit).
+            if not (had_before and size_for_symbol == 0):
+                _position_entry_price = None
         elif entry_from_ws is not None:
             _position_entry_price = entry_from_ws
         if had_before != has_now:
@@ -2110,6 +2115,7 @@ def handle_position_message(message: dict) -> None:
                 exit_price=mid,
             )
             _clear_sl_tp_tracker_on_file_and_globals()
+            _position_entry_price = None
         elif size_for_symbol > 0:
             _monitor_had_position = True
         elif (
