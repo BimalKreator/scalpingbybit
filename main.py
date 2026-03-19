@@ -251,6 +251,8 @@ _last_active_sl_price: float | None = None
 _exchange_sl_price: float = 0.0
 _local_close_reason: str = ""  # "", "SL", "TP", "PARTIAL"
 _sl_persist_ts: float = 0.0
+# True while _place_order_async is executing entry + initial SL (blocks SL supervisor hijack).
+_is_setting_initial_sl: bool = False
 
 # Real-time position state from private WebSocket (linear, our SYMBOL only)
 _position_size: float = 0.0
@@ -1535,6 +1537,7 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
     """
     global _last_position_side, _last_signal_candle, _last_sl_price, _last_tp_price, _last_position_was_reverse
     global _position_entry_price, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _half_target_reached, _last_active_sl_price, _exchange_sl_price, _local_close_reason
+    global _is_setting_initial_sl
     if get_open_position():
         print("Position already open, skipping new signal")
         return
@@ -1631,102 +1634,164 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
         except Exception:
             pass
 
-    loop = asyncio.get_running_loop()
-    await execute_chunk_order_ws(
-        side,
-        total_qty,
-        SYMBOL,
-        _qty_step,
-        _min_order_qty,
-        _get_orderbook_l1,
-        loop,
-        ws_trade,
-        _pending_fills,
-        _pending_fills_lock,
-        HTTP_CLIENT,
-        is_entry=True,
-    )
-    fill_ok = await _wait_for_entry_fill_confirmation(10, 0.5)
-    if not fill_ok:
-        logging.critical("CRITICAL: Entry fill confirmation timeout. Aborting exchange SL/TP placement.")
-        _set_health_error("Entry fill confirmation timeout")
-        return
+    try:
+        _is_setting_initial_sl = True
+        loop = asyncio.get_running_loop()
+        await execute_chunk_order_ws(
+            side,
+            total_qty,
+            SYMBOL,
+            _qty_step,
+            _min_order_qty,
+            _get_orderbook_l1,
+            loop,
+            ws_trade,
+            _pending_fills,
+            _pending_fills_lock,
+            HTTP_CLIENT,
+            is_entry=True,
+        )
+        fill_ok = await _wait_for_entry_fill_confirmation(10, 0.5)
+        if not fill_ok:
+            logging.critical("CRITICAL: Entry fill confirmation timeout. Aborting exchange SL/TP placement.")
+            _set_health_error("Entry fill confirmation timeout")
+            return
 
-    if is_reverse:
-        b_bid2, b_ask2, _, _ = _get_orderbook_l1()
-        if side == "Buy":
-            if not b_ask2 or b_ask2 <= 0:
-                print("No best ask after reversal fill; cannot init dynamic SL.")
-                return
-            ent = float(b_ask2)
-            sl_wide = ent - (range_ * sl_mx)
-            sl_tight = ent - (range_ * sl_mn)
-            tp = ent + (range_ * tp_m)
-        else:
-            if not b_bid2 or b_bid2 <= 0:
-                print("No best bid after reversal fill; cannot init dynamic SL.")
-                return
-            ent = float(b_bid2)
-            sl_wide = ent + (range_ * sl_mx)
-            sl_tight = ent + (range_ * sl_mn)
-            tp = ent - (range_ * tp_m)
-        sl_str = f"{sl_wide:.2f}"
-        tp_str = f"{tp:.2f}"
-        ok_sync_rev = await loop.run_in_executor(
+        if is_reverse:
+            b_bid2, b_ask2, _, _ = _get_orderbook_l1()
+            if side == "Buy":
+                if not b_ask2 or b_ask2 <= 0:
+                    print("No best ask after reversal fill; cannot init dynamic SL.")
+                    return
+                ent = float(b_ask2)
+                sl_wide = ent - (range_ * sl_mx)
+                sl_tight = ent - (range_ * sl_mn)
+                tp = ent + (range_ * tp_m)
+            else:
+                if not b_bid2 or b_bid2 <= 0:
+                    print("No best bid after reversal fill; cannot init dynamic SL.")
+                    return
+                ent = float(b_bid2)
+                sl_wide = ent + (range_ * sl_mx)
+                sl_tight = ent + (range_ * sl_mn)
+                tp = ent - (range_ * tp_m)
+            sl_str = f"{sl_wide:.2f}"
+            tp_str = f"{tp:.2f}"
+            ok_sync_rev = await loop.run_in_executor(
+                None,
+                lambda s=side: _set_position_sl_tp_sync(
+                    HTTP_CLIENT, SYMBOL, "linear", sl_str, tp_str, entry_side=s
+                ),
+            )
+            verified_rev = True
+            if ok_sync_rev:
+                verified_rev = await _confirm_exchange_sl_verified_after_sync()
+            ok_rev = ok_sync_rev and verified_rev
+            if ok_sync_rev and not verified_rev:
+                logging.error(
+                    "[Reversal] set_trading_stop API OK but open stop verification failed "
+                    "(sl=%s tp=%s side=%s)",
+                    sl_str,
+                    tp_str,
+                    side,
+                )
+                _set_health_error("Reversal exchange SL unverified: no open stop on book")
+            if ok_rev:
+                _set_exchange_sl_health("ok", "")
+            else:
+                _set_exchange_sl_health(
+                    "error",
+                    f"Initial reversal exchange SL/TP placement failed (sl={sl_str}, tp={tp_str}, side={side})",
+                )
+            print(
+                "[Reversal] Dynamic SL max/min from signal_range:",
+                sl_str,
+                f"/ {sl_tight:.2f}",
+                "| TP:",
+                tp_str,
+            )
+            _last_position_side = side
+            _last_signal_candle = {"high": high, "low": low, "close": close}
+            _sl_max_price = sl_wide
+            _sl_min_price = sl_tight
+            _last_sl_price = sl_wide
+            _last_tp_price = tp
+            _last_position_was_reverse = True
+            _position_entry_price = ent
+            _entry_time = time.time()
+            _breakeven_triggered = False
+            _half_target_exited = False
+            _half_target_reached = False
+            _local_close_reason = ""
+            _last_active_sl_price = sl_wide
+            if ok_rev:
+                _exchange_sl_price = float(_sl_max_price)
+            _sync_position_risk_to_state()
+            _flush_live_state_file_with_tracker()
+            if not ok_rev:
+                print(
+                    "Warning: set_trading_stop failed for reversal SL/TP (local state persisted)."
+                )
+            _append_trade_journal_entry(
+                side=side,
+                is_reverse=is_reverse,
+                signal_candle=signal_candle,
+                candle_range=float(range_),
+                sl_max=float(sl_wide),
+                sl_min=float(sl_tight),
+                tp=float(tp),
+                set_trading_stop_ok=bool(ok_rev),
+            )
+            return
+
+        ok_sync = await loop.run_in_executor(
             None,
             lambda s=side: _set_position_sl_tp_sync(
                 HTTP_CLIENT, SYMBOL, "linear", sl_str, tp_str, entry_side=s
             ),
         )
-        verified_rev = True
-        if ok_sync_rev:
-            verified_rev = await _confirm_exchange_sl_verified_after_sync()
-        ok_rev = ok_sync_rev and verified_rev
-        if ok_sync_rev and not verified_rev:
+        verified = True
+        if ok_sync:
+            verified = await _confirm_exchange_sl_verified_after_sync()
+        ok = ok_sync and verified
+        if ok_sync and not verified:
             logging.error(
-                "[Reversal] set_trading_stop API OK but open stop verification failed "
+                "[Entry] set_trading_stop API OK but open stop verification failed "
                 "(sl=%s tp=%s side=%s)",
                 sl_str,
                 tp_str,
                 side,
             )
-            _set_health_error("Reversal exchange SL unverified: no open stop on book")
-        if ok_rev:
+            _set_health_error("Initial exchange SL unverified: no open stop on book")
+        if ok:
             _set_exchange_sl_health("ok", "")
         else:
             _set_exchange_sl_health(
                 "error",
-                f"Initial reversal exchange SL/TP placement failed (sl={sl_str}, tp={tp_str}, side={side})",
+                f"Initial exchange SL/TP placement failed (sl={sl_str}, tp={tp_str}, side={side})",
             )
-        print(
-            "[Reversal] Dynamic SL max/min from signal_range:",
-            sl_str,
-            f"/ {sl_tight:.2f}",
-            "| TP:",
-            tp_str,
-        )
+        if ok:
+            print("Calculated SL (wide→tight):", sl_str, "| TP:", tp_str)
+        else:
+            print("Warning: set_trading_stop failed for SL/TP; local SL/TP tracker will still protect.")
         _last_position_side = side
         _last_signal_candle = {"high": high, "low": low, "close": close}
         _sl_max_price = sl_wide
         _sl_min_price = sl_tight
         _last_sl_price = sl_wide
         _last_tp_price = tp
-        _last_position_was_reverse = True
-        _position_entry_price = ent
+        _last_position_was_reverse = False
+        _position_entry_price = current_price
         _entry_time = time.time()
         _breakeven_triggered = False
         _half_target_exited = False
         _half_target_reached = False
         _local_close_reason = ""
         _last_active_sl_price = sl_wide
-        if ok_rev:
+        if ok:
             _exchange_sl_price = float(_sl_max_price)
         _sync_position_risk_to_state()
         _flush_live_state_file_with_tracker()
-        if not ok_rev:
-            print(
-                "Warning: set_trading_stop failed for reversal SL/TP (local state persisted)."
-            )
         _append_trade_journal_entry(
             side=side,
             is_reverse=is_reverse,
@@ -1735,68 +1800,10 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
             sl_max=float(sl_wide),
             sl_min=float(sl_tight),
             tp=float(tp),
-            set_trading_stop_ok=bool(ok_rev),
+            set_trading_stop_ok=bool(ok),
         )
-        return
-
-    ok_sync = await loop.run_in_executor(
-        None,
-        lambda s=side: _set_position_sl_tp_sync(
-            HTTP_CLIENT, SYMBOL, "linear", sl_str, tp_str, entry_side=s
-        ),
-    )
-    verified = True
-    if ok_sync:
-        verified = await _confirm_exchange_sl_verified_after_sync()
-    ok = ok_sync and verified
-    if ok_sync and not verified:
-        logging.error(
-            "[Entry] set_trading_stop API OK but open stop verification failed "
-            "(sl=%s tp=%s side=%s)",
-            sl_str,
-            tp_str,
-            side,
-        )
-        _set_health_error("Initial exchange SL unverified: no open stop on book")
-    if ok:
-        _set_exchange_sl_health("ok", "")
-    else:
-        _set_exchange_sl_health(
-            "error",
-            f"Initial exchange SL/TP placement failed (sl={sl_str}, tp={tp_str}, side={side})",
-        )
-    if ok:
-        print("Calculated SL (wide→tight):", sl_str, "| TP:", tp_str)
-    else:
-        print("Warning: set_trading_stop failed for SL/TP; local SL/TP tracker will still protect.")
-    _last_position_side = side
-    _last_signal_candle = {"high": high, "low": low, "close": close}
-    _sl_max_price = sl_wide
-    _sl_min_price = sl_tight
-    _last_sl_price = sl_wide
-    _last_tp_price = tp
-    _last_position_was_reverse = False
-    _position_entry_price = current_price
-    _entry_time = time.time()
-    _breakeven_triggered = False
-    _half_target_exited = False
-    _half_target_reached = False
-    _local_close_reason = ""
-    _last_active_sl_price = sl_wide
-    if ok:
-        _exchange_sl_price = float(_sl_max_price)
-    _sync_position_risk_to_state()
-    _flush_live_state_file_with_tracker()
-    _append_trade_journal_entry(
-        side=side,
-        is_reverse=is_reverse,
-        signal_candle=signal_candle,
-        candle_range=float(range_),
-        sl_max=float(sl_wide),
-        sl_min=float(sl_tight),
-        tp=float(tp),
-        set_trading_stop_ok=bool(ok),
-    )
+    finally:
+        _is_setting_initial_sl = False
 
 
 def has_valid_entry_signal_now(df: pd.DataFrame) -> tuple[str | None, pd.Series | None]:
@@ -2241,6 +2248,8 @@ async def _sl_supervisor_loop() -> None:
     while True:
         try:
             await asyncio.sleep(2)
+            if _is_setting_initial_sl:
+                continue
             if not USE_DELTA:
                 continue
             if not get_open_position():
@@ -2260,6 +2269,8 @@ async def _sl_supervisor_loop() -> None:
                 continue
 
             if _exchange_sl_price <= 0:
+                if float(_last_active_sl_price or 0) <= 0:
+                    continue
                 # Initial attach failed earlier; keep retrying while position is open.
                 ok_sync = await asyncio.get_running_loop().run_in_executor(
                     None,
