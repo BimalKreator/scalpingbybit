@@ -824,6 +824,65 @@ def _breakeven_buffer_decimal() -> float:
     return max(0.0, p) / 100.0
 
 
+def _set_position_sl_tp_sync_logged(
+    *,
+    sl_str: str,
+    tp_str: str,
+    entry_side: str,
+    context: str,
+) -> tuple[bool, str]:
+    """
+    Wrap `_set_position_sl_tp_sync` with structured logging. Delta prints detailed API bodies to stdout;
+    this records success/failure in logs for breakeven / dynamic updates.
+    """
+    try:
+        ok = _set_position_sl_tp_sync(
+            HTTP_CLIENT,
+            SYMBOL,
+            "linear",
+            sl_str,
+            tp_str,
+            entry_side=entry_side,
+        )
+        if ok:
+            logging.info(
+                "[%s] Exchange SL/TP amend OK symbol=%s side=%s SL=%s TP=%s",
+                context,
+                SYMBOL,
+                entry_side,
+                sl_str,
+                tp_str,
+            )
+            return True, "success"
+        detail = (
+            "returned False — see server logs for [Delta] bracket / [EXCHANGE ERROR] lines with API response"
+            if USE_DELTA
+            else "Bybit set_trading_stop did not return retCode==0 (check API response in logs)"
+        )
+        logging.error(
+            "[%s] Exchange SL/TP amend FAILED symbol=%s side=%s SL=%s TP=%s (%s)",
+            context,
+            SYMBOL,
+            entry_side,
+            sl_str,
+            tp_str,
+            detail,
+        )
+        return False, detail
+    except Exception as e:
+        logging.error(
+            "[%s] Exchange SL/TP amend EXCEPTION symbol=%s side=%s SL=%s TP=%s: %s",
+            context,
+            SYMBOL,
+            entry_side,
+            sl_str,
+            tp_str,
+            e,
+            exc_info=True,
+        )
+        return False, repr(e)
+
+
 async def _async_push_exchange_sl_tp_from_globals() -> None:
     """Push current `_last_active_sl_price` + `_last_tp_price` to the exchange (e.g. after breakeven)."""
     global _exchange_sl_price
@@ -845,15 +904,12 @@ async def _async_push_exchange_sl_tp_from_globals() -> None:
         return
     sl_str = f"{slv_f:.2f}"
     tp_str = f"{tpf_f:.2f}"
-    ok = await asyncio.to_thread(
-        lambda: _set_position_sl_tp_sync(
-            HTTP_CLIENT,
-            SYMBOL,
-            "linear",
-            sl_str,
-            tp_str,
-            entry_side=ps,
-        )
+    ok, detail = await asyncio.to_thread(
+        _set_position_sl_tp_sync_logged,
+        sl_str=sl_str,
+        tp_str=tp_str,
+        entry_side=ps,
+        context="breakeven_resync",
     )
     if ok:
         _exchange_sl_price = slv_f
@@ -861,33 +917,63 @@ async def _async_push_exchange_sl_tp_from_globals() -> None:
             verified = await _confirm_exchange_sl_verified_after_sync()
             if not verified:
                 logging.warning(
-                    "Breakeven SL sync: API OK but open stop verification failed (sl=%s tp=%s)",
+                    "[breakeven_resync] Delta: set_trading_stop OK but open stop verification failed "
+                    "(sl=%s tp=%s) — check Delta REST / product state",
                     sl_str,
                     tp_str,
                 )
+                _set_exchange_sl_health(
+                    "error",
+                    "Breakeven SL set but exchange verification failed (see logs)",
+                )
+                return
         _set_exchange_sl_health("ok", "")
-        logging.info("Half-target breakeven: exchange SL/TP amended (SL=%s TP=%s)", sl_str, tp_str)
+        logging.info(
+            "[breakeven_resync] Exchange SL/TP amend completed detail=%s SL=%s TP=%s",
+            detail,
+            sl_str,
+            tp_str,
+        )
     else:
-        logging.warning("Breakeven: exchange SL/TP amend failed (SL=%s TP=%s)", sl_str, tp_str)
-        _set_exchange_sl_health("error", "Breakeven SL amend failed")
+        logging.error(
+            "[breakeven_resync] Exchange amend did not succeed detail=%s SL=%s TP=%s",
+            detail,
+            sl_str,
+            tp_str,
+        )
+        _set_exchange_sl_health("error", f"Breakeven SL amend failed: {detail}")
 
 
 def _schedule_exchange_sl_tp_resync_from_globals() -> None:
     """Thread-safe: schedule exchange amend from sync code (e.g. orderbook callback)."""
     global _loop
     if _loop is None:
+        logging.warning(
+            "[Breakeven] Cannot schedule exchange SL/TP resync: asyncio loop not bound (_loop is None)"
+        )
         return
 
     def _sched() -> None:
         try:
             _ = asyncio.create_task(_async_push_exchange_sl_tp_from_globals())
         except Exception as e:
-            logging.warning("Could not schedule exchange SL/TP resync: %s", e)
+            logging.error(
+                "[Breakeven] asyncio.create_task(_async_push_exchange_sl_tp_from_globals) failed: %s",
+                e,
+                exc_info=True,
+            )
 
     try:
         _loop.call_soon_threadsafe(_sched)
+        logging.info(
+            "[Breakeven] Scheduled async exchange SL/TP resync (call_soon_threadsafe ok)"
+        )
     except Exception as e:
-        logging.warning("call_soon_threadsafe exchange resync failed: %s", e)
+        logging.error(
+            "[Breakeven] call_soon_threadsafe failed — exchange will NOT be amended: %s",
+            e,
+            exc_info=True,
+        )
 
 
 async def apply_dynamic_env_updates() -> None:
@@ -1005,6 +1091,16 @@ def _compute_active_sl_price(mid_price: float) -> float | None:
     if total_dist > 1e-12 and current_dist >= (total_dist * 0.45):
         if not _half_target_reached:
             _half_target_reached = True
+            logging.info(
+                "[Breakeven] Half-target path (45%%) reached mid=%.8g entry=%.8g tp=%.8g "
+                "current_dist=%.8g total_dist=%.8g trailing_enabled=%s",
+                mid_price,
+                ent_f,
+                tpf_f,
+                current_dist,
+                total_dist,
+                _trailing_sl_enabled(),
+            )
         if _trailing_sl_enabled() and not _breakeven_triggered:
             _breakeven_triggered = True
             buf = _breakeven_buffer_decimal()
@@ -1013,8 +1109,7 @@ def _compute_active_sl_price(mid_price: float) -> float | None:
             else:
                 _last_active_sl_price = ent_f * (1.0 - buf)
             logging.info(
-                "Half-target (45%%) — breakeven SL locked at %s (exchange sync scheduled)",
-                _last_active_sl_price,
+                f"[Breakeven] Half-target (45%) crossed! Local SL moving to: {_last_active_sl_price}"
             )
             if not prev_be:
                 _schedule_exchange_sl_tp_resync_from_globals()
@@ -2086,6 +2181,7 @@ def register_manual_trade(
         _last_signal_candle = {"high": float(entry_price) + fake_range, "low": float(entry_price), "close": float(entry_price)}
     _sync_position_risk_to_state()
     _flush_live_state_file_with_tracker()
+    _set_exchange_sl_health("ok", "")
 
 
 def _was_closed_by_sl(current_price: float) -> bool:
@@ -2179,17 +2275,38 @@ def _append_delta_closed_trade_to_file(
         }
         with _closed_trades_file_lock:
             existing: list = []
-            if CLOSED_TRADES_JSON_PATH.is_file():
-                try:
-                    with open(CLOSED_TRADES_JSON_PATH, encoding="utf-8") as f:
-                        raw = _json.load(f)
-                    if isinstance(raw, list):
-                        existing = raw
-                except Exception:
-                    existing = []
+            try:
+                if CLOSED_TRADES_JSON_PATH.is_file():
+                    raw_txt = CLOSED_TRADES_JSON_PATH.read_text(encoding="utf-8").strip()
+                    if raw_txt:
+                        try:
+                            raw = _json.loads(raw_txt)
+                        except _json.JSONDecodeError as je:
+                            logging.warning(
+                                "[Delta] closed_trades.json is not valid JSON; resetting list. %s",
+                                je,
+                            )
+                            raw = None
+                        if isinstance(raw, list):
+                            existing = raw
+                        elif raw is not None:
+                            logging.warning(
+                                "[Delta] closed_trades.json root is not a list (got %s); resetting",
+                                type(raw).__name__,
+                            )
+            except OSError as ose:
+                logging.warning("[Delta] Could not read closed_trades.json: %s", ose)
+                existing = []
+            except Exception as ex:
+                logging.warning("[Delta] Unexpected error reading closed_trades.json: %s", ex, exc_info=True)
+                existing = []
             existing.append(row)
-            with open(CLOSED_TRADES_JSON_PATH, "w", encoding="utf-8") as f:
-                _json.dump(existing, f, indent=2)
+            existing = existing[-100:]
+            try:
+                with open(CLOSED_TRADES_JSON_PATH, "w", encoding="utf-8") as f:
+                    _json.dump(existing, f, indent=2)
+            except OSError as ose:
+                logging.error("[Delta] Could not write closed_trades.json: %s", ose, exc_info=True)
     except Exception as e:
         logging.warning("Could not append closed trade file: %s", e, exc_info=True)
 

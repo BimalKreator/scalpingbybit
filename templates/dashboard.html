@@ -102,6 +102,7 @@
 </head>
 <body class="min-h-screen bg-slate-950 text-slate-100 antialiased">
   <div id="health-banner" style="display: none; position: fixed; top: 0; left: 0; right: 0; width: 100%; background: #dc2626; color: white; text-align: center; padding: 10px 16px; z-index: 9999; font-weight: bold; box-shadow: 0 2px 8px rgba(0,0,0,0.3);"></div>
+  <div id="app-toast" role="status" aria-live="polite" class="hidden fixed bottom-4 right-4 z-[10000] max-w-md rounded-xl border-2 px-4 py-3 text-sm font-medium shadow-lg pointer-events-none"></div>
   <div class="max-w-6xl mx-auto px-4 py-6 pb-8 safe-bottom">
     <!-- Header: nav visible at top -->
     <header class="flex items-center justify-between mb-6 flex-wrap gap-2 border-b border-slate-800 pb-4">
@@ -458,6 +459,24 @@
   </div>
 
   <script>
+    function showAppToast(message, isError) {
+      if (isError) console.error(message);
+      else console.info(message);
+      var el = document.getElementById('app-toast');
+      if (!el) return;
+      el.textContent = message;
+      el.classList.remove('hidden', 'border-emerald-600', 'bg-emerald-950', 'text-emerald-100', 'border-red-600', 'bg-red-950', 'text-red-100');
+      el.classList.add('border-2');
+      if (isError) {
+        el.classList.add('border-red-600', 'bg-red-950', 'text-red-100');
+      } else {
+        el.classList.add('border-emerald-600', 'bg-emerald-950', 'text-emerald-100');
+      }
+      el.classList.remove('hidden');
+      clearTimeout(window.__appToastTimer);
+      window.__appToastTimer = setTimeout(function () { el.classList.add('hidden'); }, 4500);
+    }
+
     const botToggle = document.getElementById('botToggle');
     const envForm = document.getElementById('envForm');
     const exchangeForm = document.getElementById('exchangeForm');
@@ -693,15 +712,15 @@
         .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
         .then(function (r) {
           if (r.ok && r.data && r.data.ok) {
-            alert('Position closed successfully.');
+            showAppToast('Position closed successfully.', false);
             pollPositions();
             pollAccount();
           } else {
-            alert('Close failed: ' + ((r.data && (r.data.detail || r.data.message)) || 'Unknown error'));
+            showAppToast('Close failed: ' + ((r.data && (r.data.detail || r.data.message)) || 'Unknown error'), true);
           }
         })
         .catch(function (e) {
-          alert('Close failed: ' + e.message);
+          showAppToast('Close failed: ' + e.message, true);
         })
         .finally(function () { btn.disabled = false; });
     }
@@ -713,7 +732,7 @@
       const usd = parseFloat(manualAmount.value);
       const lev = parseFloat(manualLeverage.value) || 5;
       const allowReversal = manualAllowReversal.checked;
-      if (isNaN(usd) || usd <= 0) { alert('Enter a valid trade amount (USD).'); return; }
+      if (isNaN(usd) || usd <= 0) { showAppToast('Enter a valid trade amount (USD).', true); return; }
       btnLong.disabled = true;
       fetch('/api/trade/manual', {
         method: 'POST',
@@ -723,15 +742,15 @@
         .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
         .then(function (r) {
           if (r.ok && r.data.ok) {
-            alert('LONG order executed.');
+            showAppToast('LONG order executed.', false);
             pollPositions();
             pollAccount();
           } else {
-            alert('Trade failed: ' + (r.data.detail || r.data.message || 'Unknown error'));
+            showAppToast('Trade failed: ' + (r.data.detail || r.data.message || 'Unknown error'), true);
           }
         })
         .catch(function (e) {
-          alert('Trade failed: ' + e.message);
+          showAppToast('Trade failed: ' + e.message, true);
         })
         .finally(function () { btnLong.disabled = false; });
     });
@@ -741,7 +760,7 @@
       const usd = parseFloat(manualAmount.value);
       const lev = parseFloat(manualLeverage.value) || 5;
       const allowReversal = manualAllowReversal.checked;
-      if (isNaN(usd) || usd <= 0) { alert('Enter a valid trade amount (USD).'); return; }
+      if (isNaN(usd) || usd <= 0) { showAppToast('Enter a valid trade amount (USD).', true); return; }
       btnShort.disabled = true;
       fetch('/api/trade/manual', {
         method: 'POST',
@@ -751,15 +770,15 @@
         .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
         .then(function (r) {
           if (r.ok && r.data.ok) {
-            alert('SHORT order executed.');
+            showAppToast('SHORT order executed.', false);
             pollPositions();
             pollAccount();
           } else {
-            alert('Trade failed: ' + (r.data.detail || r.data.message || 'Unknown error'));
+            showAppToast('Trade failed: ' + (r.data.detail || r.data.message || 'Unknown error'), true);
           }
         })
         .catch(function (e) {
-          alert('Trade failed: ' + e.message);
+          showAppToast('Trade failed: ' + e.message, true);
         })
         .finally(function () { btnShort.disabled = false; });
     });
@@ -768,7 +787,7 @@
       const symbol = (manualSymbol.value || 'BTCUSDT').trim().toUpperCase();
       const usd = parseFloat(manualAmount.value);
       const lev = parseFloat(manualLeverage.value) || 5;
-      if (isNaN(usd) || usd <= 0) { alert('Enter a valid trade amount (USD) in Manual Trade panel.'); return; }
+      if (isNaN(usd) || usd <= 0) { showAppToast('Enter a valid trade amount (USD) in Manual Trade panel.', true); return; }
       const btn = side === 'Buy' ? btnMockLong : btnMockShort;
       btn.disabled = true;
       fetch('/api/trade/mock_signal', {
@@ -779,15 +798,15 @@
         .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
         .then(function (r) {
           if (r.ok && r.data && r.data.ok) {
-            alert('Mock signal executed. Check terminal for logs.');
+            showAppToast('Mock signal executed. Check terminal for logs.', false);
             pollPositions();
             pollAccount();
           } else {
-            alert('Mock signal failed: ' + ((r.data && (r.data.detail || r.data.message)) || 'Unknown error'));
+            showAppToast('Mock signal failed: ' + ((r.data && (r.data.detail || r.data.message)) || 'Unknown error'), true);
           }
         })
         .catch(function (e) {
-          alert('Mock signal failed: ' + e.message);
+          showAppToast('Mock signal failed: ' + e.message, true);
         })
         .finally(function () { btn.disabled = false; });
     }
@@ -872,7 +891,7 @@
             banner.style.display = 'block';
             if (msg !== lastAlertedMessage) {
               lastAlertedMessage = msg;
-              alert('System health: ' + msg);
+              console.error('[Health] System health:', msg);
             }
           })
           .catch(function () {
@@ -881,7 +900,7 @@
             banner.style.display = 'block';
             if (lastAlertedMessage !== 'Connection lost') {
               lastAlertedMessage = 'Connection lost';
-              alert('Connection lost – cannot reach server. Check if the bot is running.');
+              console.error('[Health] Connection lost – cannot reach server. Check if the bot is running.');
             }
           });
       }, 3000);
@@ -922,7 +941,8 @@
         autotradeToggle.querySelector('span').classList.toggle('translate-x-1', !on);
         updateAccountStatusBadges(botToggle.getAttribute('aria-checked') === 'true', on);
       } catch (e) {
-        alert('Failed to update Auto Trade: ' + e.message);
+        console.error('Failed to update Auto Trade:', e);
+        showAppToast('Failed to update Auto Trade: ' + e.message, true);
       }
     });
 
@@ -935,12 +955,13 @@
         if (data.ok) {
           var sel = document.getElementById('exchange_id');
           if (sel) updateExchangeBadge(sel.value);
-          alert('Exchange settings saved');
+          showAppToast('Exchange settings saved', false);
         } else {
-          alert('Save failed');
+          showAppToast('Save failed', true);
         }
       } catch (err) {
-        alert('Save failed: ' + err.message);
+        console.error('Exchange save failed:', err);
+        showAppToast('Save failed: ' + err.message, true);
       }
     });
 
