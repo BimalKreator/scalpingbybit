@@ -332,6 +332,11 @@
               class="rounded border-slate-600 bg-slate-800 text-emerald-500 focus:ring-emerald-500" />
             <label for="trailing_sl_enabled" class="text-xs font-medium text-slate-400">Half-target breakeven trailing (move SL to entry after 50% to TP)</label>
           </div>
+          <div class="flex items-center gap-2 mb-3">
+            <input type="checkbox" id="partial_tp_enabled" name="partial_tp_enabled_cb" {% if (partial_tp_enabled|string|lower) not in ['false', '0', 'no', 'off'] %}checked{% endif %}
+              class="rounded border-slate-600 bg-slate-800 text-emerald-500 focus:ring-emerald-500" />
+            <label for="partial_tp_enabled" class="text-xs font-medium text-slate-400">Partial take profit (close 50% at half-target when breakeven triggers)</label>
+          </div>
           <div>
             <label for="breakeven_buffer_pct" class="block text-xs font-medium text-slate-400 mb-1">Breakeven fee buffer %</label>
             <input type="number" id="breakeven_buffer_pct" name="breakeven_buffer_pct" step="0.01" min="0" value="{{ breakeven_buffer_pct }}"
@@ -874,6 +879,8 @@
       const fd = new FormData(envForm);
       var tr = document.getElementById('trailing_sl_enabled');
       fd.set('trailing_sl_enabled', tr && tr.checked ? 'true' : 'false');
+      var pt = document.getElementById('partial_tp_enabled');
+      fd.set('partial_tp_enabled', pt && pt.checked ? 'true' : 'false');
       const res = await fetch('/api/env', { method: 'POST', body: fd });
       const data = await res.json();
       if (data.ok) {

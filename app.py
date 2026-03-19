@@ -346,6 +346,7 @@ async def dashboard_page():
         sl_decay_seconds=vars.get("SL_DECAY_SECONDS", "10"),
         sl_delay_ms=vars.get("SL_DELAY_MS", "0"),
         trailing_sl_enabled=vars.get("TRAILING_SL_ENABLED", "true"),
+        partial_tp_enabled=vars.get("PARTIAL_TP_ENABLED", "true"),
         tp_multiplier=vars.get("TP_MULTIPLIER", "2.0"),
         breakeven_buffer_pct=vars.get("BREAKEVEN_BUFFER_PCT", "0.05"),
         min_profit_pct=vars.get("MIN_PROFIT_PCT", "0.5"),
@@ -376,6 +377,7 @@ async def api_update_env(
     sl_decay_seconds: str = Form(None),
     sl_delay_ms: str = Form(None),
     trailing_sl_enabled: str = Form(None),
+    partial_tp_enabled: str = Form(None),
     tp_multiplier: str = Form(None),
     breakeven_buffer_pct: str = Form(None),
     min_profit_pct: str = Form(None),
@@ -433,6 +435,10 @@ async def api_update_env(
     if trailing_sl_enabled is not None:
         updates["TRAILING_SL_ENABLED"] = (
             "true" if str(trailing_sl_enabled).strip().lower() in ("1", "true", "on", "yes") else "false"
+        )
+    if partial_tp_enabled is not None:
+        updates["PARTIAL_TP_ENABLED"] = (
+            "true" if str(partial_tp_enabled).strip().lower() in ("1", "true", "on", "yes") else "false"
         )
     if tp_multiplier is not None:
         updates["TP_MULTIPLIER"] = tp_multiplier
