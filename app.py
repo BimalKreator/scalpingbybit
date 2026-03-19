@@ -38,7 +38,7 @@ from delta_client import (
     normalize_delta_contract_size,
     normalize_delta_symbol,
 )
-from main import _initial_sl_setting_guard
+from main import _initial_sl_setting_guard, apply_dynamic_env_updates
 
 # Env file: prefer .env, fallback to "env"
 ENV_PATH = Path(__file__).resolve().parent / ".env"
@@ -462,6 +462,10 @@ async def api_update_env(
         write_env_vars(updates)
         print(f"[env] Saved keys: {list(updates.keys())}")
     load_dotenv(get_env_path())
+    try:
+        asyncio.create_task(apply_dynamic_env_updates())
+    except Exception as e:
+        print(f"[env] apply_dynamic_env_updates schedule failed: {e}")
     return {"ok": True, "updated": list(updates.keys())}
 
 

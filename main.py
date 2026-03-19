@@ -258,6 +258,8 @@ _sl_persist_ts: float = 0.0
 _is_setting_initial_sl: bool = False
 # Wall-clock when the latest entry fill was confirmed (auto or manual); used to grace supervisor initial attach.
 _last_entry_time: float = 0.0
+# 1× risk distance in price (signal range); SL/TP distances = base × multipliers from .env.
+_base_risk_dist: float = 0.0
 
 
 @asynccontextmanager
@@ -371,6 +373,7 @@ def _merge_sl_tp_tracker_into_dict(d: dict) -> None:
         d["sl_breakeven_triggered"] = bool(_breakeven_triggered)
         d["sl_half_target_exited"] = bool(_half_target_exited)
         d["sl_half_target_reached"] = bool(_half_target_reached)
+        d["base_risk_dist"] = float(_base_risk_dist)
     else:
         d["last_sl_price"] = 0.0
         d["last_tp_price"] = 0.0
@@ -381,6 +384,7 @@ def _merge_sl_tp_tracker_into_dict(d: dict) -> None:
         d["sl_breakeven_triggered"] = False
         d["sl_half_target_exited"] = False
         d["sl_half_target_reached"] = False
+        d["base_risk_dist"] = 0.0
 
 
 def _flush_live_state_file_with_tracker() -> None:
@@ -397,7 +401,7 @@ def _flush_live_state_file_with_tracker() -> None:
 
 def _load_sl_tp_tracker_from_file_on_startup() -> None:
     """Restore SL/TP tracker + dynamic SL state before WS."""
-    global _last_sl_price, _last_tp_price, _last_position_side, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _half_target_reached, _last_active_sl_price, _exchange_sl_price
+    global _last_sl_price, _last_tp_price, _last_position_side, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _half_target_reached, _last_active_sl_price, _exchange_sl_price, _base_risk_dist
     try:
         data = _read_live_state_json_safe()
         tp = data.get("last_tp_price")
@@ -429,6 +433,10 @@ def _load_sl_tp_tracker_from_file_on_startup() -> None:
                 _half_target_reached = htr
                 _last_active_sl_price = sl_disk if sl_disk > 0 else _sl_max_price
                 _exchange_sl_price = _last_active_sl_price
+                try:
+                    _base_risk_dist = max(0.0, float(data.get("base_risk_dist") or 0.0))
+                except (TypeError, ValueError):
+                    _base_risk_dist = 0.0
                 print(
                     f"[bot] Restored SL tracker: TP={tpf:g} side={_last_position_side} "
                     f"sl_max={_sl_max_price:g} sl_min={_sl_min_price:g} breakeven={be} half_exited={hte}"
@@ -439,7 +447,7 @@ def _load_sl_tp_tracker_from_file_on_startup() -> None:
 
 def _clear_sl_tp_tracker_on_file_and_globals() -> None:
     """Reset persisted SL/TP after position is flat (size 0)."""
-    global _last_sl_price, _last_tp_price, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _half_target_reached, _last_active_sl_price, _exchange_sl_price, _local_close_reason
+    global _last_sl_price, _last_tp_price, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _half_target_reached, _last_active_sl_price, _exchange_sl_price, _local_close_reason, _base_risk_dist
     _last_sl_price = None
     _last_tp_price = None
     _entry_time = 0.0
@@ -451,6 +459,7 @@ def _clear_sl_tp_tracker_on_file_and_globals() -> None:
     _last_active_sl_price = None
     _exchange_sl_price = 0.0
     _local_close_reason = ""
+    _base_risk_dist = 0.0
     _set_exchange_sl_health("inactive", "")
     try:
         data = _read_live_state_json_safe()
@@ -463,6 +472,7 @@ def _clear_sl_tp_tracker_on_file_and_globals() -> None:
         data["sl_breakeven_triggered"] = False
         data["sl_half_target_exited"] = False
         data["sl_half_target_reached"] = False
+        data["base_risk_dist"] = 0.0
         with open(_LIVE_STATE_PATH, "w", encoding="utf-8") as f:
             _json.dump(data, f, indent=2)
     except Exception as e:
@@ -814,10 +824,158 @@ def _breakeven_buffer_decimal() -> float:
     return max(0.0, p) / 100.0
 
 
+async def _async_push_exchange_sl_tp_from_globals() -> None:
+    """Push current `_last_active_sl_price` + `_last_tp_price` to the exchange (e.g. after breakeven)."""
+    global _exchange_sl_price
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
+    ps = (_last_position_side or "Buy").strip()
+    if ps not in ("Buy", "Sell"):
+        return
+    tpf = _last_tp_price
+    slv = _last_active_sl_price
+    if tpf is None or slv is None:
+        return
+    try:
+        tpf_f = float(tpf)
+        slv_f = float(slv)
+    except (TypeError, ValueError):
+        return
+    if tpf_f <= 0 or slv_f <= 0:
+        return
+    sl_str = f"{slv_f:.2f}"
+    tp_str = f"{tpf_f:.2f}"
+    ok = await asyncio.to_thread(
+        lambda: _set_position_sl_tp_sync(
+            HTTP_CLIENT,
+            SYMBOL,
+            "linear",
+            sl_str,
+            tp_str,
+            entry_side=ps,
+        )
+    )
+    if ok:
+        _exchange_sl_price = slv_f
+        if USE_DELTA:
+            verified = await _confirm_exchange_sl_verified_after_sync()
+            if not verified:
+                logging.warning(
+                    "Breakeven SL sync: API OK but open stop verification failed (sl=%s tp=%s)",
+                    sl_str,
+                    tp_str,
+                )
+        _set_exchange_sl_health("ok", "")
+        logging.info("Half-target breakeven: exchange SL/TP amended (SL=%s TP=%s)", sl_str, tp_str)
+    else:
+        logging.warning("Breakeven: exchange SL/TP amend failed (SL=%s TP=%s)", sl_str, tp_str)
+        _set_exchange_sl_health("error", "Breakeven SL amend failed")
+
+
+def _schedule_exchange_sl_tp_resync_from_globals() -> None:
+    """Thread-safe: schedule exchange amend from sync code (e.g. orderbook callback)."""
+    global _loop
+    if _loop is None:
+        return
+
+    def _sched() -> None:
+        try:
+            _ = asyncio.create_task(_async_push_exchange_sl_tp_from_globals())
+        except Exception as e:
+            logging.warning("Could not schedule exchange SL/TP resync: %s", e)
+
+    try:
+        _loop.call_soon_threadsafe(_sched)
+    except Exception as e:
+        logging.warning("call_soon_threadsafe exchange resync failed: %s", e)
+
+
+async def apply_dynamic_env_updates() -> None:
+    """
+    After dashboard .env save: recompute SL max/min, TP, and active SL from `_base_risk_dist`
+    and new multipliers, then amend protective orders on the exchange.
+    """
+    global _last_tp_price, _last_sl_price, _last_active_sl_price
+    global _sl_max_price, _sl_min_price, _exchange_sl_price
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
+    br = float(_base_risk_dist)
+    if not get_open_position() or br <= 0:
+        return
+    with _position_lock:
+        entry = _position_entry_price
+        side = _last_position_side
+    if entry is None:
+        return
+    try:
+        entry_f = float(entry)
+    except (TypeError, ValueError):
+        return
+    if entry_f <= 0:
+        return
+    mx, mn = _sl_multipliers_from_env()
+    try:
+        tp_m = float(os.getenv("TP_MULTIPLIER", str(TP_MULTIPLIER)))
+    except (TypeError, ValueError):
+        tp_m = TP_MULTIPLIER
+    ps = (side or "Buy").strip()
+    sll = ps.lower()
+    if sll == "buy":
+        _sl_max_price = entry_f - br * mx
+        _sl_min_price = entry_f - br * mn
+        _last_sl_price = _sl_max_price
+        _last_tp_price = entry_f + br * tp_m
+    elif sll == "sell":
+        _sl_max_price = entry_f + br * mx
+        _sl_min_price = entry_f + br * mn
+        _last_sl_price = _sl_max_price
+        _last_tp_price = entry_f - br * tp_m
+    else:
+        return
+    if not _breakeven_triggered:
+        _last_active_sl_price = _last_sl_price
+    logging.info(
+        "Live trade params updated from .env. SL wide=%s SL min=%s TP=%s (base_risk_dist=%s)",
+        _sl_max_price,
+        _sl_min_price,
+        _last_tp_price,
+        br,
+    )
+    sl_str = f"{float(_last_active_sl_price):.2f}"
+    tp_str = f"{float(_last_tp_price):.2f}"
+    ok = await asyncio.to_thread(
+        lambda: _set_position_sl_tp_sync(
+            HTTP_CLIENT,
+            SYMBOL,
+            "linear",
+            sl_str,
+            tp_str,
+            entry_side=ps,
+        )
+    )
+    if ok:
+        _exchange_sl_price = float(_last_active_sl_price or 0)
+        if USE_DELTA:
+            verified = await _confirm_exchange_sl_verified_after_sync()
+            if not verified:
+                logging.warning(
+                    "Dynamic env update: SL/TP set but open stop verification failed (sl=%s tp=%s)",
+                    sl_str,
+                    tp_str,
+                )
+        _set_exchange_sl_health("ok", "")
+    else:
+        logging.error("Dynamic env update: exchange SL/TP amend failed (sl=%s tp=%s)", sl_str, tp_str)
+        _set_exchange_sl_health("error", "Dynamic env SL/TP amend failed")
+    _sync_position_risk_to_state()
+    _flush_live_state_file_with_tracker()
+
+
 def _compute_active_sl_price(mid_price: float) -> float | None:
     """
     Time-based SL: max distance until decay, then min distance.
-    If trailing on and mid crosses half-way to TP (favorable), lock SL at breakeven (entry).
+    At ~45% of the path entry→TP, mark half-target; if trailing on, lock SL at breakeven (+buffer)
+    and force-exchange amend.
     """
     global _breakeven_triggered, _half_target_reached, _last_active_sl_price
     if mid_price <= 0:
@@ -839,25 +997,34 @@ def _compute_active_sl_price(mid_price: float) -> float | None:
         smax = smin = float(_last_sl_price)
     if smin <= 0 and smax > 0:
         smin = smax
-    # Half-target hit detection (independent from trailing SL enable flag).
-    if ps == "buy" and tpf_f > ent_f:
-        half_tp = ent_f + (tpf_f - ent_f) / 2.0
-        if mid_price >= half_tp:
+
+    prev_be = _breakeven_triggered
+    total_dist = abs(tpf_f - ent_f)
+    current_dist = abs(mid_price - ent_f)
+    # Half-target / breakeven: trigger at 45% of entry→TP distance (spread/fees headroom).
+    if total_dist > 1e-12 and current_dist >= (total_dist * 0.45):
+        if not _half_target_reached:
             _half_target_reached = True
-            if _trailing_sl_enabled():
-                _breakeven_triggered = True
-    elif ps == "sell" and tpf_f < ent_f:
-        half_tp = ent_f - (ent_f - tpf_f) / 2.0
-        if mid_price <= half_tp:
-            _half_target_reached = True
-            if _trailing_sl_enabled():
-                _breakeven_triggered = True
+        if _trailing_sl_enabled() and not _breakeven_triggered:
+            _breakeven_triggered = True
+            buf = _breakeven_buffer_decimal()
+            if ps == "buy":
+                _last_active_sl_price = ent_f * (1.0 + buf)
+            else:
+                _last_active_sl_price = ent_f * (1.0 - buf)
+            logging.info(
+                "Half-target (45%%) — breakeven SL locked at %s (exchange sync scheduled)",
+                _last_active_sl_price,
+            )
+            if not prev_be:
+                _schedule_exchange_sl_tp_resync_from_globals()
+
     if _breakeven_triggered:
-        buf = _breakeven_buffer_decimal()
-        if ps == "buy":
-            act = ent_f * (1.0 + buf)
+        if _last_active_sl_price is not None and float(_last_active_sl_price) > 0:
+            act = float(_last_active_sl_price)
         else:
-            act = ent_f * (1.0 - buf)
+            buf = _breakeven_buffer_decimal()
+            act = ent_f * (1.0 + buf) if ps == "buy" else ent_f * (1.0 - buf)
     elif _entry_time <= 0 or (time.time() - _entry_time) >= _sl_decay_seconds():
         act = smin if smin > 0 else smax
     else:
@@ -1557,7 +1724,7 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
     """
     global _last_position_side, _last_signal_candle, _last_sl_price, _last_tp_price, _last_position_was_reverse
     global _position_entry_price, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _half_target_reached, _last_active_sl_price, _exchange_sl_price, _local_close_reason
-    global _is_setting_initial_sl, _last_entry_time
+    global _is_setting_initial_sl, _last_entry_time, _base_risk_dist
     if get_open_position():
         print("Position already open, skipping new signal")
         return
@@ -1745,6 +1912,7 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
             _half_target_reached = False
             _local_close_reason = ""
             _last_active_sl_price = sl_wide
+            _base_risk_dist = abs(float(ent) - float(sl_wide)) / max(float(sl_mx), 1e-12)
             if ok_rev:
                 _exchange_sl_price = float(_sl_max_price)
             _sync_position_risk_to_state()
@@ -1809,6 +1977,7 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
         _half_target_reached = False
         _local_close_reason = ""
         _last_active_sl_price = sl_wide
+        _base_risk_dist = abs(float(current_price) - float(sl_wide)) / max(float(sl_mx), 1e-12)
         if ok:
             _exchange_sl_price = float(_sl_max_price)
         _sync_position_risk_to_state()
@@ -1882,7 +2051,7 @@ def register_manual_trade(
     """Register manual trade; optional sl_max/sl_min for dynamic SL (else single sl_price)."""
     global _last_position_side, _last_sl_price, _last_tp_price, _last_position_was_reverse, _last_signal_candle, _manual_reversal_allowed, _position_entry_price
     global _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _half_target_reached, _last_active_sl_price, _local_close_reason
-    global _last_entry_time
+    global _last_entry_time, _base_risk_dist
     _last_position_side = side
     ep = float(entry_price)
     if sl_max_price is not None and sl_min_price is not None:
@@ -1902,6 +2071,8 @@ def register_manual_trade(
     _half_target_reached = False
     _local_close_reason = ""
     _last_active_sl_price = _sl_max_price
+    smx_reg, _ = _sl_multipliers_from_env()
+    _base_risk_dist = abs(ep - float(_sl_max_price)) / max(float(smx_reg), 1e-12)
     if signal_high is not None and signal_low is not None and float(signal_high) >= float(signal_low):
         _last_signal_candle = {
             "high": float(signal_high),
