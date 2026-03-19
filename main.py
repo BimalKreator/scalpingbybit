@@ -755,17 +755,27 @@ def is_safe_mode_active() -> bool:
 
 
 async def _confirm_exchange_sl_verified_after_sync() -> bool:
-    """After _set_position_sl_tp_sync returns True, confirm a protective SL exists (Delta REST)."""
+    """
+    After _set_position_sl_tp_sync returns True, confirm a protective SL exists (Delta REST).
+    Polls up to 4 times with 1.5s between attempts (read DB eventual consistency).
+    """
     if not USE_DELTA:
         return True
-    return await asyncio.get_running_loop().run_in_executor(
-        None,
-        lambda: _verify_open_stop_order(
-            DELTA_API_KEY or "",
-            DELTA_API_SECRET or "",
-            SYMBOL,
-        ),
-    )
+    loop = asyncio.get_running_loop()
+    for attempt in range(4):
+        ok = await loop.run_in_executor(
+            None,
+            lambda: _verify_open_stop_order(
+                DELTA_API_KEY or "",
+                DELTA_API_SECRET or "",
+                SYMBOL,
+            ),
+        )
+        if ok:
+            return True
+        if attempt < 3:
+            await asyncio.sleep(1.5)
+    return False
 
 
 def _get_orderbook_l1() -> tuple[float, float, float, float]:
@@ -1513,9 +1523,7 @@ async def execute_strategy_signal(
     )
     verified = True
     if ok_sync and USE_DELTA:
-        verified = bool(
-            _verify_open_stop_order(DELTA_API_KEY or "", DELTA_API_SECRET or "", SYMBOL)
-        )
+        verified = await _confirm_exchange_sl_verified_after_sync()
     ok = ok_sync and verified
     if ok_sync and not verified:
         print("[Mock Signal] SL/TP API OK but open stop verification failed on exchange.")
@@ -2489,12 +2497,7 @@ async def main_async() -> None:
                         entry_side=side,
                     )
                     if ok and USE_DELTA:
-                        ok = await asyncio.to_thread(
-                            _verify_open_stop_order,
-                            DELTA_API_KEY or "",
-                            DELTA_API_SECRET or "",
-                            SYMBOL,
-                        )
+                        ok = await _confirm_exchange_sl_verified_after_sync()
                         if not ok:
                             logging.error(
                                 "Emergency failsafe: SL/TP API OK but open stop verification failed "
