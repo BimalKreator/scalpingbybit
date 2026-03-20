@@ -138,7 +138,18 @@
 
       function fetchClosedTrades() {
         fetch('/api/closed_trades')
-          .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, data: data }; }); })
+          .then(function (res) {
+            return res.text().then(function (text) {
+              var data;
+              try {
+                data = JSON.parse(text);
+              } catch (parseErr) {
+                console.error('[closed_trades] JSON parse failed:', parseErr, 'status=', res.status, 'body_snippet=', (text || '').slice(0, 800));
+                throw parseErr;
+              }
+              return { ok: res.ok, data: data };
+            });
+          })
           .then(function (r) {
             deltaLoading.classList.add('d-none');
             bybitLoading.classList.add('d-none');
@@ -164,6 +175,7 @@
             bybitWrap.classList.remove('d-none');
           })
           .catch(function (e) {
+            console.error('[closed_trades] fetch failed:', e);
             deltaLoading.classList.add('d-none');
             bybitLoading.classList.add('d-none');
             var msg = '<tr><td colspan="11" class="text-danger">' + (e.message || 'Failed to load') + '</td></tr>';

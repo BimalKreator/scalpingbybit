@@ -1,25 +1,25 @@
 {
   "symbol": "BTCUSDT",
-  "price": 69815.5,
+  "price": 70052.5,
   "indicators": {
-    "RSI": 48.97,
-    "RSI_SMA": 41.58,
-    "volume_signal_vs_prev": false,
-    "body_size": 18.5,
-    "open": 69797.0,
-    "close": 69815.5,
-    "volume": 747.0,
+    "RSI": 58.52,
+    "RSI_SMA": 64.04,
+    "volume_signal_vs_prev": true,
+    "body_size": 12.5,
+    "open": 70065.0,
+    "close": 70052.5,
+    "volume": 586.0,
     "Expected_Profit_Pct": 0.05
   },
   "conditions": {
     "long": [
       {
         "name": "Signal Candle Bearish (open > close)",
-        "met": false
+        "met": true
       },
       {
         "name": "Previous Candle Bearish",
-        "met": true
+        "met": false
       },
       {
         "name": "Both Bearish",
@@ -27,7 +27,7 @@
       },
       {
         "name": "Volume: signal < previous",
-        "met": false
+        "met": true
       },
       {
         "name": "RSI < 40.0",
@@ -41,11 +41,11 @@
     "short": [
       {
         "name": "Signal Candle Bullish (close > open)",
-        "met": true
+        "met": false
       },
       {
         "name": "Previous Candle Bullish",
-        "met": false
+        "met": true
       },
       {
         "name": "Both Bullish",
@@ -53,7 +53,7 @@
       },
       {
         "name": "Volume: signal < previous",
-        "met": false
+        "met": true
       },
       {
         "name": "RSI > 60.0",
@@ -66,7 +66,7 @@
     ]
   },
   "status": "Waiting",
-  "last_signal_candle_start": 1773964260000,
+  "last_signal_candle_start": 1773964980000,
   "position_risk": {
     "open": false
   },

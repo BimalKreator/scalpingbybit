@@ -82,5 +82,47 @@
     "closedPnl": "0.152",
     "fees": 0,
     "exitReason": "Take Profit"
+  },
+  {
+    "exchange": "Delta India",
+    "symbol": "BTCUSDT",
+    "side": "BUY",
+    "createdTime": "1773964507817",
+    "updatedTime": "1773964722734",
+    "avgEntryPrice": "69908",
+    "avgExitPrice": "69877.5",
+    "leverage": "5",
+    "marginUsed": 13.9816,
+    "closedPnl": "-0.0305",
+    "fees": 0,
+    "exitReason": "Stop Loss"
+  },
+  {
+    "exchange": "Delta India",
+    "symbol": "BTCUSDT",
+    "side": "SELL",
+    "createdTime": "1773964732684",
+    "updatedTime": "1773964918434",
+    "avgEntryPrice": "69885.5",
+    "avgExitPrice": "69915.5",
+    "leverage": "5",
+    "marginUsed": 27.9542,
+    "closedPnl": "-0.06",
+    "fees": 0,
+    "exitReason": "Stop Loss"
+  },
+  {
+    "exchange": "Delta India",
+    "symbol": "BTCUSDT",
+    "side": "BUY",
+    "createdTime": "1773965159732",
+    "updatedTime": "1773965340355",
+    "avgEntryPrice": "69867.5",
+    "avgExitPrice": "69989.5",
+    "leverage": "5",
+    "marginUsed": 13.9735,
+    "closedPnl": "0.122",
+    "fees": 0,
+    "exitReason": "Partial"
   }
 ]

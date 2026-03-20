@@ -38,7 +38,12 @@ from delta_client import (
     normalize_delta_contract_size,
     normalize_delta_symbol,
 )
-from main import _initial_sl_setting_guard, apply_dynamic_env_updates
+from main import (
+    CLOSED_TRADES_JSON_PATH,
+    _cancel_protective_orders_after_flat_sync,
+    _initial_sl_setting_guard,
+    apply_dynamic_env_updates,
+)
 
 # Env file: prefer .env, fallback to "env"
 ENV_PATH = Path(__file__).resolve().parent / ".env"
@@ -590,21 +595,23 @@ async def api_positions():
         return JSONResponse(status_code=502, content={"error": str(e)})
 
 
-_CLOSED_TRADES_JSON_PATH = Path(__file__).resolve().parent / "logs" / "closed_trades.json"
-
-
 @app.get("/api/closed_trades")
 async def api_closed_trades():
     """Bot-logged Delta closes (JSON) + Bybit closed PnL API when not on Delta India."""
     merged: list = []
+    # Same path as main.CLOSED_TRADES_JSON_PATH (logs/closed_trades.json under project root)
     try:
-        if _CLOSED_TRADES_JSON_PATH.is_file():
-            with open(_CLOSED_TRADES_JSON_PATH, encoding="utf-8") as f:
+        if CLOSED_TRADES_JSON_PATH.is_file():
+            with open(CLOSED_TRADES_JSON_PATH, encoding="utf-8") as f:
                 raw = json.load(f)
             if isinstance(raw, list):
                 merged.extend(raw)
     except Exception as e:
-        logging.warning("[api/closed_trades] Could not read closed_trades.json: %s", e)
+        logging.warning(
+            "[api/closed_trades] Could not read %s: %s",
+            CLOSED_TRADES_JSON_PATH,
+            e,
+        )
 
     if _app_exchange_id() == "delta_india":
         return merged
@@ -986,6 +993,10 @@ async def api_trade_close(body: CloseTradeBody):
                 err = (resp or {}).get("error", {}) if isinstance(resp, dict) else {}
                 detail = err.get("message") if isinstance(err, dict) else str(resp)
                 raise HTTPException(status_code=400, detail=detail or "Delta close failed")
+            try:
+                await asyncio.to_thread(_cancel_protective_orders_after_flat_sync, body.symbol)
+            except Exception as ex:
+                logging.warning("[api/trade/close] Delta orphan cancel after manual close: %s", ex)
             return {"ok": True, "message": "Position closed (Delta)"}
 
         client = _get_http_client()
@@ -1004,6 +1015,10 @@ async def api_trade_close(body: CloseTradeBody):
         success, err = await asyncio.to_thread(execute_chunk_order_rest, body.symbol, close_side, size)
         if not success:
             raise HTTPException(status_code=400, detail=err or "Close failed")
+        try:
+            await asyncio.to_thread(_cancel_protective_orders_after_flat_sync, body.symbol)
+        except Exception as ex:
+            logging.warning("[api/trade/close] Bybit orphan cancel after manual close: %s", ex)
         return {"ok": True, "message": "Position closed"}
     except HTTPException:
         raise

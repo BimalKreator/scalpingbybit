@@ -2305,10 +2305,61 @@ def _append_delta_closed_trade_to_file(
             try:
                 with open(CLOSED_TRADES_JSON_PATH, "w", encoding="utf-8") as f:
                     _json.dump(existing, f, indent=2)
+                logging.info(
+                    "[closed_trades] Appended row to %s (symbol=%s exitReason=%s pnl=%s)",
+                    CLOSED_TRADES_JSON_PATH.resolve(),
+                    SYMBOL,
+                    exit_reason,
+                    row.get("closedPnl"),
+                )
             except OSError as ose:
                 logging.error("[Delta] Could not write closed_trades.json: %s", ose, exc_info=True)
     except Exception as e:
         logging.warning("Could not append closed trade file: %s", e, exc_info=True)
+
+
+def _cancel_protective_orders_after_flat_sync(symbol: str | None = None) -> None:
+    """
+    When position size is 0, cancel leftover SL/TP bracket or conditional orders on the exchange.
+    Delta: DELETE open stop/TP orders for the product. Bybit: clear position TP/SL on the symbol.
+    """
+    sym = (symbol or SYMBOL or "").strip()
+    if not sym:
+        return
+    if USE_DELTA:
+        try:
+            from delta_client import cancel_open_stop_orders_for_symbol
+
+            cancel_open_stop_orders_for_symbol(sym)
+            logging.info(
+                "[Exit] Cancelled open Delta stop/TP orders for symbol=%s (orphan cleanup)",
+                sym,
+            )
+        except Exception as e:
+            logging.warning(
+                "[Exit] Delta cancel orphan stops failed: %s",
+                e,
+                exc_info=True,
+            )
+    else:
+        try:
+            HTTP_CLIENT.set_trading_stop(
+                category="linear",
+                symbol=sym,
+                positionIdx=0,
+                stopLoss="",
+                takeProfit="",
+            )
+            logging.info(
+                "[Exit] Cleared Bybit position SL/TP on flat for symbol=%s",
+                sym,
+            )
+        except Exception as e:
+            logging.warning(
+                "[Exit] Bybit clear trading_stop on flat failed: %s",
+                e,
+                exc_info=True,
+            )
 
 
 def on_position_closed(current_price: float) -> None:
@@ -2396,6 +2447,7 @@ def handle_position_message(message: dict) -> None:
                 bb, ba = best_bid, best_ask
             mid = (bb + ba) / 2.0 if bb > 0 and ba > 0 else 0.0
             _monitor_had_position = False
+            _cancel_protective_orders_after_flat_sync(SYMBOL)
             on_position_closed(mid)
             _append_delta_closed_trade_to_file(
                 snap_entry=snap_entry_at_close,

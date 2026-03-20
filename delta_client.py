@@ -579,6 +579,26 @@ def _cancel_open_stop_orders_for_product(api_key: str, api_secret: str, product_
             print(f"[Delta] Cancel stop order {oid} response: {dr}")
 
 
+def cancel_open_stop_orders_for_symbol(symbol: str) -> None:
+    """
+    Cancel open stop_loss / take_profit / bracket-linked orders for the configured product.
+    Call after the position is flat to remove orphaned protective orders.
+    `symbol` is reserved for future multi-product routing; routing uses TRADING_SYMBOL / product_id from env.
+    """
+    _ = symbol
+    api_key = os.getenv("DELTA_API_KEY") or ""
+    api_secret = os.getenv("DELTA_API_SECRET") or ""
+    if not api_key or not api_secret:
+        return
+    try:
+        pid = int(get_delta_product_id())
+    except (TypeError, ValueError):
+        return
+    if pid <= 0:
+        return
+    _cancel_open_stop_orders_for_product(api_key, api_secret, pid)
+
+
 def _set_position_sl_tp_sync(
     http_client: Any,
     symbol: str,
