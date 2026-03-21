@@ -2422,6 +2422,50 @@ def _candle_to_ohlc(signal_candle: pd.Series | dict) -> tuple[float, float, floa
     )
 
 
+def _virtual_synthetic_mid_from_candle(close: float, high: float, low: float) -> float:
+    """
+    Paper mode: when public orderbook.1 has not populated yet (bid/ask still 0), use candle or
+    last kline close so entries can still fill. Live strategies only need klines; without this,
+    _place_order_async aborts while the Live Monitor can show green checklists.
+    """
+    if close > 0:
+        return float(close)
+    if high > 0 and low > 0:
+        return float(high + low) / 2.0
+    try:
+        if KLINES:
+            c = float(KLINES[-1].get("close") or 0.0)
+            if c > 0:
+                return c
+    except Exception:
+        pass
+    return 0.0
+
+
+def _apply_virtual_orderbook_fallback(
+    b_bid: float, b_ask: float, *, close: float, high: float, low: float
+) -> tuple[float, float]:
+    """If either side of L1 is missing in paper mode, patch from candle/klines."""
+    if not _virtual_trading_enabled():
+        return b_bid, b_ask
+    vmid = _virtual_synthetic_mid_from_candle(close, high, low)
+    if vmid <= 0:
+        return b_bid, b_ask
+    patched = False
+    if b_bid <= 0:
+        b_bid = vmid
+        patched = True
+    if b_ask <= 0:
+        b_ask = vmid
+        patched = True
+    if patched:
+        logging.info(
+            "[VIRTUAL] Paper entry: using synthetic mid %.6f for missing L1 (bid/ask from orderbook were 0)",
+            vmid,
+        )
+    return b_bid, b_ask
+
+
 def _place_order_via_ws(side: str, sl_str: str, tp_str: str, qty_str: str) -> bool:
     """Send market order via WebSocket Trade API. Returns True if request accepted (retCode 0)."""
     global ws_trade
@@ -2680,6 +2724,9 @@ async def _place_order_async(
             print(f"[BALANCE ERROR] Failed to fetch wallet balance: {e}. Skipping trade.")
             return
     b_bid, b_ask, _, _ = _get_orderbook_l1()
+    b_bid, b_ask = _apply_virtual_orderbook_fallback(
+        b_bid, b_ask, close=close, high=high, low=low
+    )
     sl_mx, sl_mn = _sl_multipliers_for_position()
     tp_m = _tp_multiplier_for_order(meta)
     use_fixed = bool(meta and meta.get("use_fixed_sl_tp") and not is_reverse)
@@ -2775,6 +2822,9 @@ async def _place_order_async(
             _last_entry_time = time.time()
             if is_reverse:
                 b_bid2, b_ask2, _, _ = _get_orderbook_l1()
+                b_bid2, b_ask2 = _apply_virtual_orderbook_fallback(
+                    b_bid2, b_ask2, close=close, high=high, low=low
+                )
                 if side == "Buy":
                     if not b_ask2 or b_ask2 <= 0:
                         print("[VIRTUAL] No best ask after reversal; abort paper fill.")
