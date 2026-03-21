@@ -1,0 +1,49 @@
+[
+  {
+    "id": "inst_default_wmr",
+    "strategy_type": "weak_momentum_reversal",
+    "name": "Weak Momentum 1m",
+    "enabled": true,
+    "symbol": "BTCUSDT",
+    "timeframe": "1m",
+    "params": {},
+    "state": {
+      "in_position": false,
+      "cooldown_until_bar": 0,
+      "bar_seq": 24,
+      "last_evaluated_start": 1774113000000,
+      "last_signal_start": null
+    }
+  },
+  {
+    "id": "inst_1774111627580_0eb580",
+    "strategy_type": "ema_trap",
+    "name": "EMA Trap 3m",
+    "enabled": true,
+    "symbol": "BTCUSDT",
+    "timeframe": "3m",
+    "params": {
+      "emaLength": 30,
+      "rsiLength": 14,
+      "rsiOversold": 40,
+      "rsiOverbought": 60,
+      "slMultiplier": 0.5,
+      "tpMultiplier": 1.5,
+      "minProfitPerc": 0.08,
+      "rangeLength": 14,
+      "rangeMultiplier": 1,
+      "enableReverse": false,
+      "cooldownCandles": 0,
+      "trendFilter": false,
+      "maxCandleAtrMult": 3,
+      "minVolatilityAtrMult": 0.15
+    },
+    "state": {
+      "in_position": false,
+      "cooldown_until_bar": 0,
+      "bar_seq": 0,
+      "last_evaluated_start": null,
+      "last_signal_start": null
+    }
+  }
+]

@@ -278,6 +278,74 @@ KLINES: list = []
 _instances_runtime_lock = threading.Lock()
 _STRATEGY_INSTANCES_CACHE: list[dict] = []
 _active_order_instance_id: str | None = None
+# Snapshot of active position's instance params for SL decay / breakeven / partial TP (None → use .env)
+_active_instance_monitor_params: dict | None = None
+_active_trade_strategy_name: str | None = None
+
+
+def _monitor_snapshot_from_params(p: dict) -> dict:
+    """Build internal monitor dict from instance params (camelCase) with .env fallbacks."""
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
+    emx, emn = _sl_multipliers_from_env()
+
+    def _num(camel: str, env_key: str, default: float) -> float:
+        if camel in p and p[camel] is not None and str(p[camel]).strip() != "":
+            try:
+                return float(p[camel])
+            except (TypeError, ValueError):
+                pass
+        try:
+            return float(os.getenv(env_key, str(default)))
+        except (TypeError, ValueError):
+            return float(default)
+
+    def _bool(camel: str, env_key: str, default_true: bool) -> bool:
+        if camel in p and p[camel] is not None:
+            v = p[camel]
+            if isinstance(v, bool):
+                return v
+            s = str(v).strip().lower()
+            if s in ("1", "true", "yes", "on"):
+                return True
+            if s in ("0", "false", "no", "off"):
+                return False
+        ev = (os.getenv(env_key) or "").strip().lower()
+        if ev in ("0", "false", "no", "off"):
+            return False
+        if ev in ("1", "true", "yes", "on"):
+            return True
+        return default_true
+
+    return {
+        "sl_mx": max(_num("slMultiplierMax", "SL_MULTIPLIER_MAX", emx), 1e-12),
+        "sl_mn": max(_num("slMultiplierMin", "SL_MULTIPLIER_MIN", emn), 1e-12),
+        "sl_decay_seconds": max(0.0, _num("slDecaySeconds", "SL_DECAY_SECONDS", 10.0)),
+        "partial_tp_enabled": _bool("partialTpEnabled", "PARTIAL_TP_ENABLED", True),
+        "trailing_sl_enabled": _bool("trailingSlEnabled", "TRAILING_SL_ENABLED", True),
+        "breakeven_buffer_pct": max(0.0, _num("breakevenBufferPct", "BREAKEVEN_BUFFER_PCT", 0.05)),
+        "trade_capital_usd": max(1e-12, _num("tradeCapitalUsd", "TRADE_AMOUNT_USD", 100.0)),
+        "leverage": max(1.0, _num("leverage", "LEVERAGE", 5.0)),
+    }
+
+
+def load_active_instance_execution(instance_id: str | None, *, strategy_name: str | None = None) -> None:
+    """Attach instance execution/monitoring rules to the open position (or clear for naked trades)."""
+    global _active_order_instance_id, _active_instance_monitor_params, _active_trade_strategy_name
+    if not instance_id:
+        _active_order_instance_id = None
+        _active_instance_monitor_params = None
+        _active_trade_strategy_name = strategy_name or "Manual / Unknown"
+        return
+    inst = instance_storage.get_instance_by_id(str(instance_id).strip())
+    if not inst:
+        _active_order_instance_id = str(instance_id).strip()
+        _active_instance_monitor_params = None
+        _active_trade_strategy_name = strategy_name or str(instance_id)
+        return
+    _active_order_instance_id = str(inst.get("id") or instance_id).strip()
+    _active_instance_monitor_params = _monitor_snapshot_from_params(dict(inst.get("params") or {}))
+    _active_trade_strategy_name = strategy_name or str(inst.get("name") or _active_order_instance_id)
 
 
 def reload_strategy_instances_cache() -> list[dict]:
@@ -573,6 +641,7 @@ def _append_virtual_closed_trade_row(
     side: str,
     pnl: float,
     exit_reason: str,
+    strategy_name: str | None = None,
 ) -> None:
     try:
         VIRTUAL_CLOSED_TRADES_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -592,6 +661,7 @@ def _append_virtual_closed_trade_row(
             "closedPnl": str(round(float(pnl), 6)),
             "fees": 0,
             "exitReason": exit_reason,
+            "strategy_name": (strategy_name or "Manual / Unknown").strip(),
         }
         with _closed_trades_file_lock:
             existing: list = []
@@ -661,6 +731,7 @@ def _finalize_virtual_position_close(exit_price: float, exit_reason: str) -> Non
         return
     pnl = _virtual_linear_pnl_usd(entry, float(exit_price), snap_sz, ps)
     update_virtual_wallet(pnl)
+    strat_snap = (_active_trade_strategy_name or "Manual / Unknown").strip()
     _append_virtual_closed_trade_row(
         entry_price=entry,
         exit_price=float(exit_price),
@@ -668,6 +739,7 @@ def _finalize_virtual_position_close(exit_price: float, exit_reason: str) -> Non
         side=ps,
         pnl=pnl,
         exit_reason=exit_reason,
+        strategy_name=strat_snap,
     )
     _monitor_had_position = False
     ep = float(exit_price)
@@ -1383,8 +1455,18 @@ def _get_orderbook_l1() -> tuple[float, float, float, float]:
         return (best_bid, best_ask, bid_qty, ask_qty)
 
 
+def _sl_multipliers_for_position() -> tuple[float, float]:
+    m = _active_instance_monitor_params
+    if m:
+        return float(m["sl_mx"]), float(m["sl_mn"])
+    return _sl_multipliers_from_env()
+
+
 def _partial_tp_enabled() -> bool:
     """Scale out 50% at half-target (with breakeven trailing). Default on."""
+    m = _active_instance_monitor_params
+    if m is not None:
+        return bool(m.get("partial_tp_enabled"))
     load_dotenv(override=True)
     load_dotenv("env", override=True)
     v = (os.getenv("PARTIAL_TP_ENABLED") or "true").strip().lower()
@@ -1392,6 +1474,9 @@ def _partial_tp_enabled() -> bool:
 
 
 def _trailing_sl_enabled() -> bool:
+    m = _active_instance_monitor_params
+    if m is not None:
+        return bool(m.get("trailing_sl_enabled"))
     load_dotenv(override=True)
     load_dotenv("env", override=True)
     v = (os.getenv("TRAILING_SL_ENABLED") or "true").strip().lower()
@@ -1399,6 +1484,9 @@ def _trailing_sl_enabled() -> bool:
 
 
 def _sl_decay_seconds() -> float:
+    m = _active_instance_monitor_params
+    if m is not None:
+        return max(0.0, float(m.get("sl_decay_seconds") or 0.0))
     try:
         return max(0.0, float(os.getenv("SL_DECAY_SECONDS", "10")))
     except (TypeError, ValueError):
@@ -1417,6 +1505,10 @@ def _sl_delay_ms() -> int:
 
 def _breakeven_buffer_decimal() -> float:
     """BREAKEVEN_BUFFER_PCT is percent points (e.g. 0.05 → 0.0005 as decimal)."""
+    m = _active_instance_monitor_params
+    if m is not None:
+        p = float(m.get("breakeven_buffer_pct") or 0.05)
+        return max(0.0, p) / 100.0
     load_dotenv(override=True)
     load_dotenv("env", override=True)
     try:
@@ -1424,6 +1516,47 @@ def _breakeven_buffer_decimal() -> float:
     except (TypeError, ValueError):
         p = 0.05
     return max(0.0, p) / 100.0
+
+
+def _trade_amount_and_leverage_for_order(meta: dict | None) -> tuple[float, float]:
+    """Position sizing: instance meta → monitor snapshot → .env."""
+    if meta and meta.get("instance_id"):
+        inst = instance_storage.get_instance_by_id(str(meta["instance_id"]))
+        if inst:
+            snap = _monitor_snapshot_from_params(dict(inst.get("params") or {}))
+            return float(snap["trade_capital_usd"]), float(snap["leverage"])
+    m = _active_instance_monitor_params
+    if m is not None:
+        return float(m["trade_capital_usd"]), float(m["leverage"])
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
+    try:
+        ta_ = float(os.getenv("TRADE_AMOUNT_USD", "100"))
+    except (TypeError, ValueError):
+        ta_ = 100.0
+    try:
+        lv = float(os.getenv("LEVERAGE", "5"))
+    except (TypeError, ValueError):
+        lv = 5.0
+    return max(1e-12, ta_), max(1.0, lv)
+
+
+def _tp_multiplier_for_order(meta: dict | None) -> float:
+    if meta and meta.get("instance_id"):
+        inst = instance_storage.get_instance_by_id(str(meta["instance_id"]))
+        if inst:
+            p = inst.get("params") or {}
+            if p.get("tpMultiplier") is not None and str(p.get("tpMultiplier")).strip() != "":
+                try:
+                    return float(p["tpMultiplier"])
+                except (TypeError, ValueError):
+                    pass
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
+    try:
+        return float(os.getenv("TP_MULTIPLIER", str(TP_MULTIPLIER)) or TP_MULTIPLIER)
+    except (TypeError, ValueError):
+        return float(TP_MULTIPLIER)
 
 
 def _set_position_sl_tp_sync_logged(
@@ -2514,12 +2647,15 @@ async def _place_order_async(
     if not is_reverse and not _is_autotrade_enabled():
         print("Auto Trade is OFF (read from .env); skipping queued entry.")
         return
+    if meta and meta.get("instance_id"):
+        load_active_instance_execution(str(meta["instance_id"]))
+    elif not is_reverse:
+        load_active_instance_execution(None)
     high, low, close = _candle_to_ohlc(signal_candle)
     range_ = max(high - low, 1e-12)
     load_dotenv(override=True)
     load_dotenv("env", override=True)
-    trade_amount_usd = float(os.getenv("TRADE_AMOUNT_USD", "100"))
-    leverage = float(os.getenv("LEVERAGE", "5"))
+    trade_amount_usd, leverage = _trade_amount_and_leverage_for_order(meta)
     if _virtual_trading_enabled():
         vw = get_virtual_wallet()
         if float(vw.get("balance", 0)) < float(trade_amount_usd):
@@ -2543,8 +2679,8 @@ async def _place_order_async(
             print(f"[BALANCE ERROR] Failed to fetch wallet balance: {e}. Skipping trade.")
             return
     b_bid, b_ask, _, _ = _get_orderbook_l1()
-    sl_mx, sl_mn = _sl_multipliers_from_env()
-    tp_m = float(os.getenv("TP_MULTIPLIER", str(TP_MULTIPLIER)) or TP_MULTIPLIER)
+    sl_mx, sl_mn = _sl_multipliers_for_position()
+    tp_m = _tp_multiplier_for_order(meta)
     use_fixed = bool(meta and meta.get("use_fixed_sl_tp") and not is_reverse)
 
     if is_reverse:
@@ -2679,11 +2815,9 @@ async def _place_order_async(
             _exchange_sl_price = float(sl_wide)
             _set_exchange_sl_health("ok", "")
             if meta and meta.get("instance_id"):
-                _active_order_instance_id = str(meta["instance_id"])
-                instance_storage.merge_instance_state(_active_order_instance_id, {"in_position": True})
-                _patch_instance_state_cache(_active_order_instance_id, {"in_position": True})
-            elif not is_reverse:
-                _active_order_instance_id = None
+                iid = str(meta["instance_id"])
+                instance_storage.merge_instance_state(iid, {"in_position": True})
+                _patch_instance_state_cache(iid, {"in_position": True})
             _sync_position_risk_to_state()
             _flush_live_state_file_with_tracker()
             _append_trade_journal_entry(
@@ -2798,9 +2932,9 @@ async def _place_order_async(
             if ok_rev:
                 _exchange_sl_price = float(_sl_max_price)
             if meta and meta.get("instance_id"):
-                _active_order_instance_id = str(meta["instance_id"])
-                instance_storage.merge_instance_state(_active_order_instance_id, {"in_position": True})
-                _patch_instance_state_cache(_active_order_instance_id, {"in_position": True})
+                iid = str(meta["instance_id"])
+                instance_storage.merge_instance_state(iid, {"in_position": True})
+                _patch_instance_state_cache(iid, {"in_position": True})
             _sync_position_risk_to_state()
             _flush_live_state_file_with_tracker()
             if not ok_rev:
@@ -2867,11 +3001,9 @@ async def _place_order_async(
         if ok:
             _exchange_sl_price = float(_sl_max_price)
         if meta and meta.get("instance_id"):
-            _active_order_instance_id = str(meta["instance_id"])
-            instance_storage.merge_instance_state(_active_order_instance_id, {"in_position": True})
-            _patch_instance_state_cache(_active_order_instance_id, {"in_position": True})
-        else:
-            _active_order_instance_id = None
+            iid = str(meta["instance_id"])
+            instance_storage.merge_instance_state(iid, {"in_position": True})
+            _patch_instance_state_cache(iid, {"in_position": True})
         _sync_position_risk_to_state()
         _flush_live_state_file_with_tracker()
         _append_trade_journal_entry(
@@ -2952,8 +3084,9 @@ def evaluate_weak_momentum_instance(klines: pd.DataFrame, params: dict | None) -
     rsi_os = float(
         p["rsiOversold"] if "rsiOversold" in p and p["rsiOversold"] is not None else RSI_OVERSOLD
     )
+    _wm_tp_default = 2.0
     tp_mult = float(
-        p["tpMultiplier"] if "tpMultiplier" in p and p["tpMultiplier"] is not None else os.getenv("TP_MULTIPLIER", "2.0")
+        p["tpMultiplier"] if "tpMultiplier" in p and p["tpMultiplier"] is not None else _wm_tp_default
     )
     min_profit_pct = float(
         p["minProfitPerc"] if "minProfitPerc" in p and p["minProfitPerc"] is not None else MIN_PROFIT_PCT
@@ -3033,15 +3166,19 @@ def register_manual_trade(
     sl_max_price: float | None = None,
     sl_min_price: float | None = None,
     filled_position_size: float | None = None,
+    instance_id: str | None = None,
 ) -> None:
     """Register manual trade; optional sl_max/sl_min for dynamic SL (else single sl_price).
 
     When paper trading, pass filled_position_size so local position size matches the simulated fill.
+    When instance_id is set, load that instance's monitoring rules (decay, breakeven, partial TP, etc.).
     """
     global _last_position_side, _last_sl_price, _last_tp_price, _last_position_was_reverse, _last_signal_candle, _manual_reversal_allowed, _position_entry_price
     global _position_size, _monitor_had_position
     global _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _half_target_reached, _last_active_sl_price, _local_close_reason
     global _last_entry_time, _base_risk_dist
+    iid = str(instance_id).strip() if instance_id else None
+    load_active_instance_execution(iid)
     _last_position_side = side
     ep = float(entry_price)
     if sl_max_price is not None and sl_min_price is not None:
@@ -3061,7 +3198,7 @@ def register_manual_trade(
     _half_target_reached = False
     _local_close_reason = ""
     _last_active_sl_price = _sl_max_price
-    smx_reg, _ = _sl_multipliers_from_env()
+    smx_reg, _ = _sl_multipliers_for_position()
     _base_risk_dist = abs(ep - float(_sl_max_price)) / max(float(smx_reg), 1e-12)
     if signal_high is not None and signal_low is not None and float(signal_high) >= float(signal_low):
         _last_signal_candle = {
@@ -3070,7 +3207,7 @@ def register_manual_trade(
             "close": float(entry_price),
         }
     else:
-        smx, smn = _sl_multipliers_from_env()
+        smx, smn = _sl_multipliers_for_position()
         sl_dist = abs(ep - float(sl_price))
         fake_range = sl_dist / smx if smx > 1e-12 else sl_dist
         _last_signal_candle = {"high": float(entry_price) + fake_range, "low": float(entry_price), "close": float(entry_price)}
@@ -3126,6 +3263,7 @@ def _append_delta_closed_trade_to_file(
     snap_entry: float | None,
     snap_size: float,
     exit_price: float,
+    strategy_name: str | None = None,
 ) -> None:
     """Append one closed trade row for Delta India (shown on Closed Trades page)."""
     if not USE_DELTA:
@@ -3178,6 +3316,7 @@ def _append_delta_closed_trade_to_file(
             "closedPnl": str(round(closed_pnl, 6)),
             "fees": 0,
             "exitReason": exit_reason,
+            "strategy_name": (strategy_name or "Manual / Unknown").strip(),
         }
         with _closed_trades_file_lock:
             existing: list = []
@@ -3370,12 +3509,14 @@ def handle_position_message(message: dict) -> None:
             sl_hit = _was_closed_by_sl(mid)
             _monitor_had_position = False
             _cancel_protective_orders_after_flat_sync(SYMBOL)
+            strat_snap = (_active_trade_strategy_name or "Manual / Unknown").strip()
             on_position_closed(mid)
             _clear_active_instance_on_flat(sl_loss=sl_hit)
             _append_delta_closed_trade_to_file(
                 snap_entry=snap_entry_at_close,
                 snap_size=snap_size_at_close,
                 exit_price=mid,
+                strategy_name=strat_snap,
             )
             _clear_sl_tp_tracker_on_file_and_globals()
             _position_entry_price = None
@@ -3412,7 +3553,7 @@ def _closed_kline_dataframe(buf: list) -> pd.DataFrame:
 
 def _clear_active_instance_on_flat(*, sl_loss: bool) -> None:
     """When flat, release instance lock + optional cooldown after SL."""
-    global _active_order_instance_id
+    global _active_order_instance_id, _active_instance_monitor_params, _active_trade_strategy_name
     iid = _active_order_instance_id
     if not iid:
         return
@@ -3427,6 +3568,8 @@ def _clear_active_instance_on_flat(*, sl_loss: bool) -> None:
     instance_storage.merge_instance_state(iid, patch)
     _patch_instance_state_cache(iid, patch)
     _active_order_instance_id = None
+    _active_instance_monitor_params = None
+    _active_trade_strategy_name = None
 
 
 def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> None:

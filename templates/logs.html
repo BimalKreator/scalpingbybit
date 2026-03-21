@@ -55,6 +55,7 @@
                 <tr class="text-light">
                   <th>Token</th>
                   <th>Side</th>
+                  <th>Strategy</th>
                   <th>Entry Time (IST)</th>
                   <th>Exit Time (IST)</th>
                   <th>Entry</th>
@@ -78,6 +79,7 @@
                 <tr class="text-light">
                   <th>Token</th>
                   <th>Side</th>
+                  <th>Strategy</th>
                   <th>Entry Time (IST)</th>
                   <th>Exit Time (IST)</th>
                   <th>Entry</th>
@@ -101,6 +103,7 @@
                 <tr class="text-light">
                   <th>Token</th>
                   <th>Side</th>
+                  <th>Strategy</th>
                   <th>Entry Time (IST)</th>
                   <th>Exit Time (IST)</th>
                   <th>Entry</th>
@@ -150,9 +153,11 @@
         var pnlClass = pnl >= 0 ? 'text-success' : 'text-danger';
         var side = (row.side || '').toUpperCase();
         var sideClass = side === 'BUY' ? 'text-success' : 'text-danger';
+        var strat = (row.strategy_name != null && row.strategy_name !== '') ? row.strategy_name : 'Manual / Unknown';
         return '<tr>' +
           '<td class="text-white fw-medium">' + (row.symbol || '–') + '</td>' +
           '<td class="' + sideClass + ' fw-medium">' + (row.side || '–') + '</td>' +
+          '<td class="text-slate-300 small">' + strat + '</td>' +
           '<td class="text-white">' + toIST(row.createdTime) + '</td>' +
           '<td class="text-white">' + toIST(row.updatedTime) + '</td>' +
           '<td class="text-white">' + (row.avgEntryPrice || '–') + '</td>' +
@@ -183,7 +188,7 @@
             deltaLoading.classList.add('d-none');
             bybitLoading.classList.add('d-none');
             if (!r.ok || (r.data && r.data.error)) {
-              tbodyDelta.innerHTML = '<tr><td colspan="11" class="text-danger">Error loading closed trades.</td></tr>';
+              tbodyDelta.innerHTML = '<tr><td colspan="12" class="text-danger">Error loading closed trades.</td></tr>';
               tbodyBybit.innerHTML = tbodyDelta.innerHTML;
               deltaWrap.classList.remove('d-none');
               bybitWrap.classList.remove('d-none');
@@ -199,8 +204,8 @@
               if (ex === 'Delta India') deltaHtml += tr;
               else bybitHtml += tr;
             });
-            tbodyDelta.innerHTML = deltaHtml || '<tr><td colspan="11" class="text-light">No Delta India closed trades logged yet.</td></tr>';
-            tbodyBybit.innerHTML = bybitHtml || '<tr><td colspan="11" class="text-light">No Bybit closed trades (or running on Delta-only mode).</td></tr>';
+            tbodyDelta.innerHTML = deltaHtml || '<tr><td colspan="12" class="text-light">No Delta India closed trades logged yet.</td></tr>';
+            tbodyBybit.innerHTML = bybitHtml || '<tr><td colspan="12" class="text-light">No Bybit closed trades (or running on Delta-only mode).</td></tr>';
             deltaWrap.classList.remove('d-none');
             bybitWrap.classList.remove('d-none');
           })
@@ -208,7 +213,7 @@
             console.error('[closed_trades] fetch failed:', e);
             deltaLoading.classList.add('d-none');
             bybitLoading.classList.add('d-none');
-            var msg = '<tr><td colspan="11" class="text-danger">' + (e.message || 'Failed to load') + '</td></tr>';
+            var msg = '<tr><td colspan="12" class="text-danger">' + (e.message || 'Failed to load') + '</td></tr>';
             tbodyDelta.innerHTML = msg;
             tbodyBybit.innerHTML = msg;
             deltaWrap.classList.remove('d-none');
@@ -220,7 +225,7 @@
           .then(function (r) {
             virtualLoading.classList.add('d-none');
             if (!r.ok || (r.data && r.data.detail)) {
-              tbodyVirtual.innerHTML = '<tr><td colspan="11" class="text-danger">Error loading virtual trades.</td></tr>';
+              tbodyVirtual.innerHTML = '<tr><td colspan="12" class="text-danger">Error loading virtual trades.</td></tr>';
               virtualWrap.classList.remove('d-none');
               return;
             }
@@ -229,13 +234,13 @@
             vlist.forEach(function (row) {
               vhtml += buildRowHtml(row);
             });
-            tbodyVirtual.innerHTML = vhtml || '<tr><td colspan="11" class="text-light">No paper trades yet. Enable Virtual Mode and trade from the dashboard.</td></tr>';
+            tbodyVirtual.innerHTML = vhtml || '<tr><td colspan="12" class="text-light">No paper trades yet. Enable Virtual Mode and trade from the dashboard.</td></tr>';
             virtualWrap.classList.remove('d-none');
           })
           .catch(function (e) {
             console.error('[virtual_closed_trades]', e);
             virtualLoading.classList.add('d-none');
-            tbodyVirtual.innerHTML = '<tr><td colspan="11" class="text-danger">' + (e.message || 'Failed to load') + '</td></tr>';
+            tbodyVirtual.innerHTML = '<tr><td colspan="12" class="text-danger">' + (e.message || 'Failed to load') + '</td></tr>';
             virtualWrap.classList.remove('d-none');
           });
       }

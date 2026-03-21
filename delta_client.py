@@ -330,15 +330,21 @@ def fetch_incremental_klines_delta(
         return []
 
 
-def fetch_signal_candle_high_low_delta(symbol: str) -> tuple[float, float]:
-    """High/low of the last fully closed 1m candle (Signal_Range = high - low)."""
+def fetch_signal_candle_high_low_delta(symbol: str, resolution: str = "1m") -> tuple[float, float]:
+    """High/low of the last fully closed candle for `resolution` (Signal_Range = high − low)."""
     dsym = normalize_delta_symbol(symbol)
+    res = (resolution or "1m").strip().lower() or "1m"
+    bar_sec = 60
+    if res.endswith("m") and res[:-1].isdigit():
+        bar_sec = max(60, int(res[:-1]) * 60)
+    elif res.endswith("h") and res[:-1].isdigit():
+        bar_sec = max(3600, int(res[:-1]) * 3600)
     end = int(time.time())
-    start = end - 6 * 60
+    start = end - 6 * bar_sec
     r = requests.get(
         f"{_REST_BASE_INDIA}/v2/history/candles",
         params={
-            "resolution": "1m",
+            "resolution": res,
             "symbol": dsym,
             "start": str(start),
             "end": str(end),
@@ -351,7 +357,7 @@ def fetch_signal_candle_high_low_delta(symbol: str) -> tuple[float, float]:
         raise RuntimeError(str((data.get("error") or data) or "candles request failed"))
     raw = list(data.get("result") or [])
     if len(raw) < 2:
-        raise RuntimeError("insufficient Delta 1m candles")
+        raise RuntimeError(f"insufficient Delta candles (resolution={res})")
     raw.sort(key=lambda c: int(c.get("time") or 0))
     c = raw[-2]
     hi = float(c.get("high") or 0)

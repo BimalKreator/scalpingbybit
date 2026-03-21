@@ -17,8 +17,26 @@ ROOT = Path(__file__).resolve().parent
 INSTANCES_PATH = ROOT / "logs" / "strategy_instances.json"
 _lock = threading.Lock()
 
-# Default Weak Momentum params (optional overrides; empty = use .env in main)
-WEAK_MOMENTUM_DEFAULT_PARAMS: dict = {}
+# Per-instance execution + risk (replaces former global Strategy Parameters for automation)
+EXECUTION_DEFAULT_PARAMS: dict[str, float | bool] = {
+    "tradeCapitalUsd": 100.0,
+    "leverage": 5.0,
+    "slMultiplierMax": 3.0,
+    "slMultiplierMin": 0.5,
+    "slDecaySeconds": 10.0,
+    "trailingSlEnabled": True,
+    "partialTpEnabled": True,
+    "breakevenBufferPct": 0.05,
+}
+
+WEAK_MOMENTUM_DEFAULT_PARAMS: dict = {
+    **EXECUTION_DEFAULT_PARAMS,
+    "rsiLength": 14,
+    "rsiOversold": 40,
+    "rsiOverbought": 60,
+    "tpMultiplier": 2.0,
+    "minProfitPerc": 0.5,
+}
 
 ALLOWED_MINUTES = frozenset({1, 3, 5, 15, 30, 60, 120, 240})
 
@@ -108,6 +126,18 @@ def default_params_for_type(strategy_type: str) -> dict:
     if strategy_type == "ema_trap":
         return dict(EMA_TRAP_DEFAULTS)
     return dict(WEAK_MOMENTUM_DEFAULT_PARAMS)
+
+
+def get_instance_by_id(instance_id: str) -> dict | None:
+    """Return a copy of the instance row or None."""
+    iid = (instance_id or "").strip()
+    if not iid:
+        return None
+    with _lock:
+        for row in load_instances_raw():
+            if row.get("id") == iid:
+                return dict(row)
+    return None
 
 
 def create_instance(strategy_type: str, symbol: str | None = None) -> dict:

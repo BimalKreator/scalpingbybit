@@ -109,14 +109,47 @@ def _sl_tp_params_from_env_file() -> tuple[float, float, float]:
     return max(smx, 1e-12), max(smn, 1e-12), tpm
 
 
-def _bybit_kline_last_closed_high_low(symbol: str) -> tuple[float, float]:
+def _sl_tp_triple_from_instance_params(params: dict | None) -> tuple[float, float, float]:
+    """Range-style SL max/min + TP multipliers from instance params (fallback: .env)."""
+    smx_e, smn_e, tpm_e = _sl_tp_params_from_env_file()
+    p = params or {}
+
+    def _f(key: str, default: float) -> float:
+        if key not in p or p[key] is None or str(p[key]).strip() == "":
+            return default
+        try:
+            return float(p[key])
+        except (TypeError, ValueError):
+            return default
+
+    smx = _f("slMultiplierMax", smx_e)
+    smn = _f("slMultiplierMin", smn_e)
+    tpm = _f("tpMultiplier", tpm_e)
+    return max(smx, 1e-12), max(smn, 1e-12), tpm
+
+
+def _delta_resolution_for_minutes(minutes: int) -> str:
+    m = max(1, int(minutes))
+    if m in instance_storage.ALLOWED_MINUTES and m >= 60 and m % 60 == 0:
+        h = m // 60
+        if h == 1:
+            return "1h"
+        if h == 2:
+            return "2h"
+        if h == 4:
+            return "4h"
+    return f"{m}m"
+
+
+def _bybit_kline_last_closed_high_low(symbol: str, interval_minutes: int = 1) -> tuple[float, float]:
     c = _get_http_client()
-    r = c.get_kline(category="linear", symbol=symbol, interval="1", limit=5)
+    iv = str(max(1, min(240, int(interval_minutes))))
+    r = c.get_kline(category="linear", symbol=symbol, interval=iv, limit=5)
     if r.get("retCode") != 0:
         raise RuntimeError(r.get("retMsg") or "get_kline failed")
     lst = (r.get("result") or {}).get("list") or []
     if len(lst) < 2:
-        raise RuntimeError("Not enough 1m klines (need last closed candle)")
+        raise RuntimeError(f"Not enough {iv}m klines (need last closed candle)")
 
     def _one(raw):
         if isinstance(raw, dict):
@@ -370,20 +403,9 @@ async def dashboard_page():
         trading_symbol=vars.get("TRADING_SYMBOL", vars.get("SYMBOL", "BTCUSDT")),
         trade_amount_usd=vars.get("TRADE_AMOUNT_USD", vars.get("TRADE_QTY", "100")),
         leverage=vars.get("LEVERAGE", "5"),
-        rsi_length=vars.get("RSI_LENGTH", "14"),
         historical_klines=vars.get("HISTORICAL_KLINES", "1000"),
-        rsi_sma_length=vars.get("RSI_SMA_LENGTH", "14"),
-        rsi_overbought=vars.get("RSI_OVERBOUGHT", "60"),
-        rsi_oversold=vars.get("RSI_OVERSOLD", "40"),
-        sl_multiplier_max=vars.get("SL_MULTIPLIER_MAX", vars.get("SL_MULTIPLIER", "3.0")),
-        sl_multiplier_min=vars.get("SL_MULTIPLIER_MIN", "0.5"),
-        sl_decay_seconds=vars.get("SL_DECAY_SECONDS", "10"),
         sl_delay_ms=vars.get("SL_DELAY_MS", "0"),
-        trailing_sl_enabled=vars.get("TRAILING_SL_ENABLED", "true"),
-        partial_tp_enabled=vars.get("PARTIAL_TP_ENABLED", "true"),
-        tp_multiplier=vars.get("TP_MULTIPLIER", "2.0"),
-        breakeven_buffer_pct=vars.get("BREAKEVEN_BUFFER_PCT", "0.05"),
-        min_profit_pct=vars.get("MIN_PROFIT_PCT", "0.5"),
+        rsi_sma_length=vars.get("RSI_SMA_LENGTH", "14"),
         initial_capital=vars.get("INITIAL_CAPITAL", "0.0"),
         bot_running=BOT_RUNNING,
         autotrade_enabled=_autotrade_enabled_from_env(),
@@ -402,23 +424,13 @@ async def api_update_env(
     trading_symbol: str = Form(None),
     trade_amount_usd: str = Form(None),
     leverage: str = Form(None),
-    rsi_length: str = Form(None),
     historical_klines: str = Form(None),
-    rsi_sma_length: str = Form(None),
-    rsi_overbought: str = Form(None),
-    rsi_oversold: str = Form(None),
-    sl_multiplier_max: str = Form(None),
-    sl_multiplier_min: str = Form(None),
-    sl_decay_seconds: str = Form(None),
     sl_delay_ms: str = Form(None),
-    trailing_sl_enabled: str = Form(None),
-    partial_tp_enabled: str = Form(None),
-    tp_multiplier: str = Form(None),
-    breakeven_buffer_pct: str = Form(None),
-    min_profit_pct: str = Form(None),
+    rsi_sma_length: str = Form(None),
     initial_capital: str = Form(None),
 ):
-    print("[env] POST /api/env: updating .env with form values")
+    """Persist exchange credentials + global bot settings only. Strategy rules live in Strategy Hub."""
+    print("[env] POST /api/env: updating .env (global + exchange)")
     updates = {}
     if exchange_id is not None:
         ex = (exchange_id or "bybit").strip().lower()
@@ -437,8 +449,6 @@ async def api_update_env(
         updates["TRADE_AMOUNT_USD"] = trade_amount_usd
     if leverage is not None:
         updates["LEVERAGE"] = leverage
-    if rsi_length is not None:
-        updates["RSI_LENGTH"] = rsi_length
     if historical_klines is not None:
         try:
             hk = int(str(historical_klines).strip())
@@ -451,40 +461,12 @@ async def api_update_env(
             updates["RSI_SMA_LENGTH"] = str(min(rs, 100))
         except (TypeError, ValueError):
             updates["RSI_SMA_LENGTH"] = "14"
-    if rsi_overbought is not None:
-        updates["RSI_OVERBOUGHT"] = rsi_overbought
-    if rsi_oversold is not None:
-        updates["RSI_OVERSOLD"] = rsi_oversold
-    if sl_multiplier_max is not None:
-        updates["SL_MULTIPLIER_MAX"] = sl_multiplier_max.strip()
-    if sl_multiplier_min is not None:
-        updates["SL_MULTIPLIER_MIN"] = sl_multiplier_min.strip()
-    if sl_decay_seconds is not None:
-        updates["SL_DECAY_SECONDS"] = sl_decay_seconds.strip()
     if sl_delay_ms is not None:
         try:
             d = int(str(sl_delay_ms).strip())
             updates["SL_DELAY_MS"] = str(max(0, min(120_000, d)))
         except (TypeError, ValueError):
             updates["SL_DELAY_MS"] = "0"
-    if trailing_sl_enabled is not None:
-        updates["TRAILING_SL_ENABLED"] = (
-            "true" if str(trailing_sl_enabled).strip().lower() in ("1", "true", "on", "yes") else "false"
-        )
-    if partial_tp_enabled is not None:
-        updates["PARTIAL_TP_ENABLED"] = (
-            "true" if str(partial_tp_enabled).strip().lower() in ("1", "true", "on", "yes") else "false"
-        )
-    if tp_multiplier is not None:
-        updates["TP_MULTIPLIER"] = tp_multiplier
-    if breakeven_buffer_pct is not None:
-        try:
-            b = float(str(breakeven_buffer_pct).strip())
-            updates["BREAKEVEN_BUFFER_PCT"] = str(max(0.0, b))
-        except (TypeError, ValueError):
-            updates["BREAKEVEN_BUFFER_PCT"] = "0.05"
-    if min_profit_pct is not None:
-        updates["MIN_PROFIT_PCT"] = min_profit_pct
     if initial_capital is not None:
         updates["INITIAL_CAPITAL"] = (initial_capital or "0.0").strip()
     if updates:
@@ -787,6 +769,7 @@ async def api_closed_trades():
                 "closedPnl": r.get("closedPnl", "0"),
                 "fees": round(fees, 6),
                 "exitReason": _map_exit_reason(r),
+                "strategy_name": "Manual / Unknown",
             })
         return _closed_trades_sorted_oldest_first(merged)
     except Exception as e:
@@ -985,21 +968,24 @@ class ManualTradeBody(BaseModel):
     allow_reversal: bool = False
     signal_candle_high: float | None = None
     signal_candle_low: float | None = None
+    instance_id: str | None = None
 
 
-async def _resolve_manual_signal_candle(body: ManualTradeBody) -> tuple[float, float]:
+async def _resolve_manual_signal_candle(body: ManualTradeBody, inst: dict | None) -> tuple[float, float]:
     if body.signal_candle_high is not None and body.signal_candle_low is not None:
         hi, lo = float(body.signal_candle_high), float(body.signal_candle_low)
         if hi < lo or lo <= 0:
             raise HTTPException(400, detail="signal_candle_high must be >= signal_candle_low (positive)")
         return hi, lo
+    tfm = instance_storage.timeframe_to_minutes(str((inst or {}).get("timeframe") or "1m"))
     if _app_exchange_id() == "delta_india":
+        res = _delta_resolution_for_minutes(tfm)
         try:
-            return await asyncio.to_thread(fetch_signal_candle_high_low_delta, body.symbol)
+            return await asyncio.to_thread(fetch_signal_candle_high_low_delta, body.symbol, res)
         except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Delta 1m candle: {e}") from e
+            raise HTTPException(status_code=502, detail=f"Delta candle ({res}): {e}") from e
     try:
-        return await asyncio.to_thread(_bybit_kline_last_closed_high_low, body.symbol)
+        return await asyncio.to_thread(_bybit_kline_last_closed_high_low, body.symbol, tfm)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
 
@@ -1011,15 +997,42 @@ class CloseTradeBody(BaseModel):
 
 @app.post("/api/trade/manual")
 async def api_trade_manual(body: ManualTradeBody):
-    """Manual trade: SL/TP from Signal_Range (last closed 1m H−L or optional high/low) × env multipliers, anchored to best bid/ask after fill."""
+    """Manual trade: SL/TP from last closed bar (instance timeframe when linked) × instance or .env multipliers."""
     if body.side not in ("Buy", "Sell"):
         raise HTTPException(status_code=400, detail="side must be Buy or Sell")
-    if body.usd_amount <= 0:
-        raise HTTPException(status_code=400, detail="usd_amount must be positive")
-    lev = max(1.0, min(100.0, float(body.leverage))) if body.leverage else 5.0
-    sig_hi, sig_lo = await _resolve_manual_signal_candle(body)
+    inst: dict | None = None
+    iid_arg: str | None = None
+    if body.instance_id and str(body.instance_id).strip():
+        iid_arg = str(body.instance_id).strip()
+        inst = instance_storage.get_instance_by_id(iid_arg)
+        if not inst:
+            raise HTTPException(status_code=400, detail="Unknown instance_id")
+        if not bool(inst.get("enabled", True)):
+            raise HTTPException(
+                status_code=400,
+                detail="Strategy instance is stopped (enable it in Strategy Hub)",
+            )
+    p = dict((inst or {}).get("params") or {})
+    if inst:
+        try:
+            trade_usd = float(p.get("tradeCapitalUsd") if p.get("tradeCapitalUsd") is not None else body.usd_amount)
+        except (TypeError, ValueError):
+            trade_usd = float(body.usd_amount)
+        try:
+            lev = max(1.0, min(100.0, float(p.get("leverage") if p.get("leverage") is not None else body.leverage or 5)))
+        except (TypeError, ValueError):
+            lev = max(1.0, min(100.0, float(body.leverage or 5)))
+        sl_mx, sl_mn, tp_m = _sl_tp_triple_from_instance_params(p)
+    else:
+        if body.usd_amount <= 0:
+            raise HTTPException(status_code=400, detail="usd_amount must be positive")
+        trade_usd = float(body.usd_amount)
+        lev = max(1.0, min(100.0, float(body.leverage))) if body.leverage else 5.0
+        sl_mx, sl_mn, tp_m = _sl_tp_params_from_env_file()
+    if trade_usd <= 0:
+        raise HTTPException(status_code=400, detail="trade capital (USD) must be positive")
+    sig_hi, sig_lo = await _resolve_manual_signal_candle(body, inst)
     sig_range = max(sig_hi - sig_lo, 1e-12)
-    sl_mx, sl_mn, tp_m = _sl_tp_params_from_env_file()
     try:
         async with _initial_sl_setting_guard():
             if _virtual_trading_from_env():
@@ -1031,7 +1044,7 @@ async def api_trade_manual(body: ManualTradeBody):
                         detail=f"Paper trading uses configured bot symbol {BOT_SYMBOL}",
                     )
                 vw = await asyncio.to_thread(get_virtual_wallet)
-                if float(vw.get("balance", 0)) < float(body.usd_amount):
+                if float(vw.get("balance", 0)) < float(trade_usd):
                     raise HTTPException(status_code=400, detail="Insufficient virtual balance")
                 bb, ba, mid, _ = await asyncio.to_thread(_get_orderbook_l1)
                 if body.side == "Buy":
@@ -1072,7 +1085,7 @@ async def api_trade_manual(body: ManualTradeBody):
                     qty_step = float(qty_step)
                     min_order_qty = float(min_order_qty)
                     cv_f = float(get_delta_contract_value())
-                    raw_qty = (body.usd_amount * lev) / (cv_f * base)
+                    raw_qty = (trade_usd * lev) / (cv_f * base)
                     total_qty = max(
                         min_order_qty, float(math.floor(raw_qty / qty_step) * qty_step)
                     )
@@ -1085,7 +1098,7 @@ async def api_trade_manual(body: ManualTradeBody):
                         )
                     except Exception as e:
                         raise HTTPException(status_code=502, detail=str(e))
-                    raw_qty = (body.usd_amount * lev) / base
+                    raw_qty = (trade_usd * lev) / base
                     total_qty = math.floor(raw_qty / qty_step) * qty_step
                 if total_qty < min_order_qty:
                     raise HTTPException(
@@ -1104,6 +1117,7 @@ async def api_trade_manual(body: ManualTradeBody):
                     sl_max_price=float(sl_wide),
                     sl_min_price=float(sl_tight),
                     filled_position_size=float(total_qty),
+                    instance_id=iid_arg,
                 )
                 return {"ok": True, "message": "Paper manual trade registered (no exchange orders)"}
 
@@ -1134,7 +1148,7 @@ async def api_trade_manual(body: ManualTradeBody):
                 price = float(ask if body.side == "Buy" else bid)
                 if price <= 0:
                     price = mid
-                raw_qty = (body.usd_amount * lev) / (cv_f * price)
+                raw_qty = (trade_usd * lev) / (cv_f * price)
                 total_qty = max(
                     min_order_qty, float(math.floor(raw_qty / qty_step) * qty_step)
                 )
@@ -1201,6 +1215,7 @@ async def api_trade_manual(body: ManualTradeBody):
                     signal_low=sig_lo,
                     sl_max_price=sl_wide,
                     sl_min_price=sl_tight,
+                    instance_id=iid_arg,
                 )
                 return {"ok": True, "message": "Trade executed (Delta)"}
 
@@ -1228,7 +1243,7 @@ async def api_trade_manual(body: ManualTradeBody):
                 raise HTTPException(status_code=502, detail="No L1 price")
             if price <= 0:
                 raise HTTPException(status_code=502, detail="Invalid price")
-            total_qty = (body.usd_amount * lev) / price
+            total_qty = (trade_usd * lev) / price
             try:
                 qty_step, min_order_qty = _get_instrument_lot(body.symbol)
             except Exception as e:
@@ -1279,6 +1294,7 @@ async def api_trade_manual(body: ManualTradeBody):
                 signal_low=sig_lo,
                 sl_max_price=sl_wide,
                 sl_min_price=sl_tight,
+                instance_id=iid_arg,
             )
             return {"ok": True, "message": "Trade executed"}
     except HTTPException:

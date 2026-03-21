@@ -32,6 +32,14 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "trendFilter": False,
     "maxCandleAtrMult": 3.0,
     "minVolatilityAtrMult": 0.15,
+    "tradeCapitalUsd": 100.0,
+    "leverage": 5.0,
+    "slMultiplierMax": 3.0,
+    "slMultiplierMin": 0.5,
+    "slDecaySeconds": 10.0,
+    "trailingSlEnabled": True,
+    "partialTpEnabled": True,
+    "breakevenBufferPct": 0.05,
 }
 
 
