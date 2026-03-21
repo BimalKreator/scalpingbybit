@@ -40,9 +40,19 @@ from delta_client import (
 )
 from main import (
     CLOSED_TRADES_JSON_PATH,
+    VIRTUAL_CLOSED_TRADES_JSON_PATH,
+    SYMBOL as BOT_SYMBOL,
+    USE_DELTA as BOT_USE_DELTA,
     _cancel_protective_orders_after_flat_sync,
+    _get_orderbook_l1,
     _initial_sl_setting_guard,
     apply_dynamic_env_updates,
+    execute_strategy_signal,
+    get_paper_position_rows_for_ui,
+    get_virtual_wallet,
+    register_manual_trade,
+    set_virtual_balance,
+    virtual_market_close_sync,
 )
 
 # Env file: prefer .env, fallback to "env"
@@ -170,6 +180,12 @@ def _app_exchange_id() -> str:
     load_dotenv(str(get_env_path()))
     ex = (os.getenv("EXCHANGE_ID") or "bybit").strip().lower()
     return ex if ex in ("bybit", "delta_india") else "bybit"
+
+
+def _virtual_trading_from_env() -> bool:
+    load_dotenv(str(get_env_path()))
+    v = (os.getenv("VIRTUAL_TRADING_MODE") or "false").strip().lower()
+    return v in ("1", "true", "yes", "on")
 
 
 def _delta_keys() -> tuple[str, str]:
@@ -364,6 +380,7 @@ async def dashboard_page():
         initial_capital=vars.get("INITIAL_CAPITAL", "0.0"),
         bot_running=BOT_RUNNING,
         autotrade_enabled=_autotrade_enabled_from_env(),
+        virtual_trading_enabled=_virtual_trading_from_env(),
     )
     return HTMLResponse(html)
 
@@ -481,6 +498,16 @@ async def api_account():
         initial_capital = float(read_env_vars().get("INITIAL_CAPITAL", "0.0") or "0.0")
     except (TypeError, ValueError):
         initial_capital = 0.0
+    if _virtual_trading_from_env():
+        w = await asyncio.to_thread(get_virtual_wallet)
+        bal = float(w.get("balance", 0.0))
+        tp = float(w.get("total_pnl", 0.0))
+        return {
+            "availableBalance": round(bal, 2),
+            "overallProfit": round(tp, 2),
+            "virtualMode": True,
+            "initialCapital": round(initial_capital, 2),
+        }
     if _app_exchange_id() == "delta_india":
         k, s = _delta_keys()
         # Avoid spamming PM2 logs during dashboard polling.
@@ -513,6 +540,7 @@ async def api_account():
             return {
                 "availableBalance": round(total_available, 2),
                 "overallProfit": round(overall_profit, 2),
+                "virtualMode": False,
             }
         except Exception as e:
             print(f"[api/account] Delta exception: {e}")
@@ -528,7 +556,11 @@ async def api_account():
             return JSONResponse(status_code=502, content={"error": msg})
         lst = (resp.get("result") or {}).get("list") or []
         if not lst:
-            return {"availableBalance": 0.0, "overallProfit": round(-initial_capital, 2)}
+            return {
+                "availableBalance": 0.0,
+                "overallProfit": round(-initial_capital, 2),
+                "virtualMode": False,
+            }
         acc = lst[0]
         total_equity = float(acc.get("totalEquity") or 0)
         total_available = float(acc.get("totalAvailableBalance") or 0)
@@ -536,6 +568,7 @@ async def api_account():
         return {
             "availableBalance": round(total_available, 2),
             "overallProfit": round(overall_profit, 2),
+            "virtualMode": False,
         }
     except Exception as e:
         print(f"[api/account] Exception: {e}")
@@ -543,9 +576,83 @@ async def api_account():
         return JSONResponse(status_code=502, content={"error": str(e)})
 
 
+@app.get("/api/virtual/wallet")
+async def api_virtual_wallet():
+    """Paper wallet balance + cumulative PnL."""
+    w = await asyncio.to_thread(get_virtual_wallet)
+    return {
+        "virtualMode": _virtual_trading_from_env(),
+        "balance": float(w.get("balance", 0.0)),
+        "total_pnl": float(w.get("total_pnl", 0.0)),
+    }
+
+
+class VirtualToggleBody(BaseModel):
+    enabled: bool
+
+
+@app.post("/api/virtual/toggle")
+async def api_virtual_toggle(body: VirtualToggleBody):
+    write_env_vars({"VIRTUAL_TRADING_MODE": "true" if body.enabled else "false"})
+    load_dotenv(str(get_env_path()))
+    try:
+        asyncio.create_task(apply_dynamic_env_updates())
+    except Exception as e:
+        print(f"[virtual/toggle] apply_dynamic_env_updates: {e}")
+    return {"ok": True, "virtual_trading_mode": body.enabled}
+
+
+class VirtualBalanceBody(BaseModel):
+    """action: set absolute balance, or add (can be negative to reduce)."""
+
+    action: str  # "set" | "add"
+    amount: float
+
+
+@app.post("/api/virtual/balance")
+async def api_virtual_balance(body: VirtualBalanceBody):
+    if not _virtual_trading_from_env():
+        raise HTTPException(status_code=400, detail="Enable Virtual Mode first")
+    act = (body.action or "").strip().lower()
+    if act not in ("set", "add"):
+        raise HTTPException(status_code=400, detail='action must be "set" or "add"')
+    w = await asyncio.to_thread(get_virtual_wallet)
+    cur = float(w.get("balance", 0.0))
+    if act == "set":
+        new_bal = max(0.0, float(body.amount))
+    else:
+        new_bal = max(0.0, cur + float(body.amount))
+    out = await asyncio.to_thread(set_virtual_balance, new_bal)
+    return {
+        "ok": True,
+        "balance": float(out.get("balance", 0.0)),
+        "total_pnl": float(out.get("total_pnl", 0.0)),
+    }
+
+
+@app.get("/api/virtual_closed_trades")
+async def api_virtual_closed_trades():
+    """Paper-mode closed trades (same row shape as /api/closed_trades Delta rows)."""
+    path = VIRTUAL_CLOSED_TRADES_JSON_PATH
+    if not path.is_file():
+        return []
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+        if not raw:
+            return []
+        data = json.loads(raw)
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        logging.warning("[api/virtual_closed_trades] %s", e)
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
 @app.get("/api/positions")
 async def api_positions():
     """Fetch open positions; shape matches dashboard (symbol, side, entryPrice, size, …)."""
+    if _virtual_trading_from_env():
+        rows = await asyncio.to_thread(get_paper_position_rows_for_ui, BOT_SYMBOL)
+        return rows
     if _app_exchange_id() == "delta_india":
         k, s = _delta_keys()
         if not k or not s:
@@ -595,6 +702,34 @@ async def api_positions():
         return JSONResponse(status_code=502, content={"error": str(e)})
 
 
+def _closed_trade_ts_ms(row: dict) -> float:
+    """Sort key: prefer createdTime, then updatedTime (exchange ms strings)."""
+    if not isinstance(row, dict):
+        return 0.0
+    for k in ("createdTime", "updatedTime"):
+        v = row.get(k)
+        if v is None or str(v).strip() == "":
+            continue
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def _closed_trades_sorted_oldest_first(rows: list) -> list:
+    """
+    Oldest closure first (ascending time). UI can .reverse() so newest trades appear at top.
+    """
+    if not isinstance(rows, list) or len(rows) <= 1:
+        return rows
+    return sorted(
+        rows,
+        key=lambda r: _closed_trade_ts_ms(r) if isinstance(r, dict) else 0.0,
+        reverse=False,
+    )
+
+
 @app.get("/api/closed_trades")
 async def api_closed_trades():
     """Bot-logged Delta closes (JSON) + Bybit closed PnL API when not on Delta India."""
@@ -614,7 +749,7 @@ async def api_closed_trades():
         )
 
     if _app_exchange_id() == "delta_india":
-        return merged
+        return _closed_trades_sorted_oldest_first(merged)
 
     try:
         client = _get_http_client()
@@ -646,7 +781,7 @@ async def api_closed_trades():
                 "fees": round(fees, 6),
                 "exitReason": _map_exit_reason(r),
             })
-        return merged
+        return _closed_trades_sorted_oldest_first(merged)
     except Exception as e:
         print(f"[api/closed_trades] Exception: {e}")
         return JSONResponse(status_code=502, content={"error": str(e)})
@@ -766,6 +901,91 @@ async def api_trade_manual(body: ManualTradeBody):
     sl_mx, sl_mn, tp_m = _sl_tp_params_from_env_file()
     try:
         async with _initial_sl_setting_guard():
+            if _virtual_trading_from_env():
+                sym_u = (body.symbol or "").strip().upper()
+                bot_u = (BOT_SYMBOL or "").strip().upper()
+                if sym_u != bot_u:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Paper trading uses configured bot symbol {BOT_SYMBOL}",
+                    )
+                vw = await asyncio.to_thread(get_virtual_wallet)
+                if float(vw.get("balance", 0)) < float(body.usd_amount):
+                    raise HTTPException(status_code=400, detail="Insufficient virtual balance")
+                bb, ba, mid, _ = await asyncio.to_thread(_get_orderbook_l1)
+                if body.side == "Buy":
+                    base = float(ba) if ba and float(ba) > 0 else float(mid or 0)
+                else:
+                    base = float(bb) if bb and float(bb) > 0 else float(mid or 0)
+                if base <= 0:
+                    raise HTTPException(
+                        status_code=502,
+                        detail="No bid/ask from bot orderbook — start the bot for live prices",
+                    )
+                if body.side == "Buy":
+                    sl_wide = base - sig_range * sl_mx
+                    sl_tight = base - sig_range * sl_mn
+                    tp = base + sig_range * tp_m
+                    sl = sl_wide
+                else:
+                    sl_wide = base + sig_range * sl_mx
+                    sl_tight = base + sig_range * sl_mn
+                    tp = base - sig_range * tp_m
+                    sl = sl_wide
+                if BOT_USE_DELTA:
+                    tick_f = float(get_delta_tick_size())
+                    sl_wide = _delta_round_price(sl_wide, tick_f)
+                    sl_tight = _delta_round_price(sl_tight, tick_f)
+                    tp = _delta_round_price(tp, tick_f)
+                    sl = sl_wide
+                    ok_inst, qty_step, min_order_qty, _mnv = await asyncio.to_thread(
+                        fetch_instrument_info_delta, body.symbol
+                    )
+                    if (
+                        not ok_inst
+                        or qty_step is None
+                        or min_order_qty is None
+                        or float(qty_step) <= 0
+                    ):
+                        raise HTTPException(status_code=502, detail="Delta product not found for symbol")
+                    qty_step = float(qty_step)
+                    min_order_qty = float(min_order_qty)
+                    cv_f = float(get_delta_contract_value())
+                    raw_qty = (body.usd_amount * lev) / (cv_f * base)
+                    total_qty = max(
+                        min_order_qty, float(math.floor(raw_qty / qty_step) * qty_step)
+                    )
+                    if abs(qty_step - 1.0) < 1e-12:
+                        total_qty = float(int(total_qty))
+                else:
+                    try:
+                        qty_step, min_order_qty = await asyncio.to_thread(
+                            _get_instrument_lot, body.symbol
+                        )
+                    except Exception as e:
+                        raise HTTPException(status_code=502, detail=str(e))
+                    raw_qty = (body.usd_amount * lev) / base
+                    total_qty = math.floor(raw_qty / qty_step) * qty_step
+                if total_qty < min_order_qty:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Order size below minimum; increase USD amount or leverage.",
+                    )
+                await asyncio.to_thread(
+                    register_manual_trade,
+                    body.side,
+                    base,
+                    float(sl),
+                    float(tp),
+                    body.allow_reversal,
+                    signal_high=sig_hi,
+                    signal_low=sig_lo,
+                    sl_max_price=float(sl_wide),
+                    sl_min_price=float(sl_tight),
+                    filled_position_size=float(total_qty),
+                )
+                return {"ok": True, "message": "Paper manual trade registered (no exchange orders)"}
+
             if _app_exchange_id() == "delta_india":
                 k, sec = _delta_keys()
                 if not k or not sec:
@@ -850,8 +1070,6 @@ async def api_trade_manual(body: ManualTradeBody):
                         None, body.symbol, "linear", sl_str, tp_str, entry_side=body.side
                     )
                 )
-                from main import register_manual_trade
-
                 register_manual_trade(
                     body.side,
                     base,
@@ -930,8 +1148,6 @@ async def api_trade_manual(body: ManualTradeBody):
             sl_str = f"{sl:.2f}"
             tp_str = f"{tp:.2f}"
             await asyncio.to_thread(lambda: _set_trading_stop_sync(client, body.symbol, sl_str, tp_str))
-            from main import register_manual_trade
-
             register_manual_trade(
                 body.side,
                 base,
@@ -956,6 +1172,28 @@ async def api_trade_close(body: CloseTradeBody):
     if body.side not in ("Buy", "Sell"):
         raise HTTPException(status_code=400, detail="side must be Buy or Sell")
     try:
+        if _virtual_trading_from_env():
+            sym_u = (body.symbol or "").strip().upper()
+            if sym_u != (BOT_SYMBOL or "").strip().upper():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Paper mode: use configured symbol {BOT_SYMBOL}",
+                )
+            bb, ba, mid, _ = await asyncio.to_thread(_get_orderbook_l1)
+            exit_p = (bb + ba) / 2.0 if bb > 0 and ba > 0 else float(mid or 0)
+            if exit_p <= 0:
+                raise HTTPException(
+                    status_code=502,
+                    detail="No mid price — start the bot for orderbook data",
+                )
+            r = await asyncio.to_thread(virtual_market_close_sync, float(exit_p))
+            if not r.get("ok"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=str(r.get("error", "Paper close failed")),
+                )
+            return {"ok": True, "message": "Paper position closed"}
+
         if _app_exchange_id() == "delta_india":
             k, sec = _delta_keys()
             if not k or not sec:
@@ -1040,6 +1278,27 @@ async def api_trade_mock_signal(body: MockSignalBody):
         raise HTTPException(status_code=400, detail="side must be Buy or Sell")
     if body.usd_amount <= 0:
         raise HTTPException(status_code=400, detail="usd_amount must be positive")
+    if _virtual_trading_from_env():
+        sym_u = (body.symbol or "").strip().upper()
+        if sym_u != (BOT_SYMBOL or "").strip().upper():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Paper mock: symbol must be {BOT_SYMBOL}",
+            )
+        bb, ba, mid, _ = await asyncio.to_thread(_get_orderbook_l1)
+        if body.side == "Buy":
+            cp = float(ba) if ba and float(ba) > 0 else float(mid or 0)
+        else:
+            cp = float(bb) if bb and float(bb) > 0 else float(mid or 0)
+        if cp <= 0:
+            raise HTTPException(
+                status_code=502,
+                detail="No L1 price — start the bot for websocket orderbook",
+            )
+        lev = max(1.0, min(100.0, float(body.leverage))) if body.leverage else 5.0
+        await execute_strategy_signal(body.symbol, body.side, cp, body.usd_amount, lev)
+        return {"ok": True, "message": "Mock signal executed (paper)"}
+
     try:
         load_dotenv(str(get_env_path()))
         sl_m, tp_m = _sl_tp_multipliers_from_env_file()

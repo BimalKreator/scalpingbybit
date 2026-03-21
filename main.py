@@ -52,7 +52,7 @@ def _append_trade_journal_entry(*, side: str, is_reverse: bool, signal_candle: d
         side_name = "Long" if str(side).strip().lower() == "buy" else "Short"
         rsi = signal_candle.get("RSI")
         vol = signal_candle.get("volume")
-        vol_dec = signal_candle.get("volume_decreasing")
+        vol_inc = signal_candle.get("volume_increasing")
         entry_ts = _to_float_or_none(signal_candle.get("start"))
         candle_start_iso = datetime.fromtimestamp(entry_ts / 1000.0).isoformat() if entry_ts else None
 
@@ -73,7 +73,7 @@ def _append_trade_journal_entry(*, side: str, is_reverse: bool, signal_candle: d
                 "start_iso": candle_start_iso,
                 "RSI": _to_float_or_none(rsi),
                 "Volume": _to_float_or_none(vol),
-                "Volume_Decreasing": bool(vol_dec) if vol_dec is not None else None,
+                "Volume_Increasing": bool(vol_inc) if vol_inc is not None else None,
                 "Candle_Range": float(candle_range),
             },
         }
@@ -332,6 +332,237 @@ live_strategy_state = {
     "position_risk": {"open": False},
 }
 
+# --- Paper / virtual trading (no exchange orders; local wallet + positions) ---
+VIRTUAL_WALLET_PATH = _Path(__file__).resolve().parent / "virtual_wallet.json"
+VIRTUAL_CLOSED_TRADES_JSON_PATH = _Path(__file__).resolve().parent / "logs" / "virtual_closed_trades.json"
+_virtual_wallet_lock = threading.Lock()
+
+
+def _virtual_trading_enabled() -> bool:
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
+    v = (os.getenv("VIRTUAL_TRADING_MODE") or "false").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+def get_virtual_wallet() -> dict:
+    """Return {balance, total_pnl} from virtual_wallet.json (defaults from .env)."""
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
+    default_bal = 1000.0
+    try:
+        default_bal = float(os.getenv("VIRTUAL_BALANCE", "1000.0"))
+    except (TypeError, ValueError):
+        default_bal = 1000.0
+    with _virtual_wallet_lock:
+        if not VIRTUAL_WALLET_PATH.is_file():
+            data = {"balance": default_bal, "total_pnl": 0.0}
+            try:
+                VIRTUAL_WALLET_PATH.parent.mkdir(parents=True, exist_ok=True)
+                with open(VIRTUAL_WALLET_PATH, "w", encoding="utf-8") as f:
+                    _json.dump(data, f, indent=2)
+            except OSError:
+                pass
+            return dict(data)
+        try:
+            with open(VIRTUAL_WALLET_PATH, "r", encoding="utf-8") as f:
+                raw = _json.load(f)
+            if isinstance(raw, dict):
+                bal = float(raw.get("balance", default_bal))
+                pnl = float(raw.get("total_pnl", 0.0))
+                return {"balance": max(0.0, bal), "total_pnl": pnl}
+        except Exception as e:
+            logging.warning("[virtual] Could not read wallet: %s", e)
+        return {"balance": default_bal, "total_pnl": 0.0}
+
+
+def _save_virtual_wallet(data: dict) -> None:
+    with _virtual_wallet_lock:
+        try:
+            VIRTUAL_WALLET_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(VIRTUAL_WALLET_PATH, "w", encoding="utf-8") as f:
+                _json.dump(
+                    {
+                        "balance": round(float(data.get("balance", 0.0)), 8),
+                        "total_pnl": round(float(data.get("total_pnl", 0.0)), 8),
+                    },
+                    f,
+                    indent=2,
+                )
+        except OSError as e:
+            logging.error("[virtual] Could not save wallet: %s", e)
+
+
+def update_virtual_wallet(pnl_change: float) -> dict:
+    """Apply realized PnL to balance and total_pnl; return new wallet dict."""
+    w = get_virtual_wallet()
+    w["balance"] = max(0.0, float(w["balance"]) + float(pnl_change))
+    w["total_pnl"] = float(w["total_pnl"]) + float(pnl_change)
+    _save_virtual_wallet(w)
+    logging.info("[virtual] Wallet updated pnl_change=%s balance=%s total_pnl=%s", pnl_change, w["balance"], w["total_pnl"])
+    return w
+
+
+def set_virtual_balance(new_balance: float) -> dict:
+    """Set cash balance (does not reset total_pnl)."""
+    w = get_virtual_wallet()
+    w["balance"] = max(0.0, float(new_balance))
+    _save_virtual_wallet(w)
+    return w
+
+
+def _virtual_linear_pnl_usd(
+    entry: float,
+    exit_: float,
+    size: float,
+    side: str,
+) -> float:
+    """Signed USD-style PnL (same geometry as Delta closed row when USE_DELTA)."""
+    if entry <= 0 or exit_ <= 0 or size <= 0:
+        return 0.0
+    ps = (side or "").strip().lower()
+    if USE_DELTA:
+        try:
+            from delta_client import get_delta_contract_value
+
+            cv = float(get_delta_contract_value())
+        except Exception:
+            cv = 0.001
+        if ps == "buy":
+            return size * cv * (exit_ - entry)
+        return size * cv * (entry - exit_)
+    if ps == "buy":
+        return size * (exit_ - entry)
+    return size * (entry - exit_)
+
+
+def _append_virtual_closed_trade_row(
+    *,
+    entry_price: float,
+    exit_price: float,
+    qty: float,
+    side: str,
+    pnl: float,
+    exit_reason: str,
+) -> None:
+    try:
+        VIRTUAL_CLOSED_TRADES_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
+        lev = float(os.getenv("LEVERAGE", "5") or "5")
+        created_ms = int(time.time() * 1000)
+        updated_ms = created_ms
+        row = {
+            "exchange": "Virtual (Paper)",
+            "symbol": SYMBOL,
+            "side": "BUY" if str(side).strip().lower() == "buy" else "SELL",
+            "createdTime": str(created_ms),
+            "updatedTime": str(updated_ms),
+            "avgEntryPrice": f"{float(entry_price):g}" if entry_price > 0 else "",
+            "avgExitPrice": f"{float(exit_price):g}" if exit_price > 0 else "",
+            "leverage": str(int(lev)) if abs(lev - round(lev)) < 1e-9 else str(lev),
+            "marginUsed": "",
+            "closedPnl": str(round(float(pnl), 6)),
+            "fees": 0,
+            "exitReason": exit_reason,
+        }
+        with _closed_trades_file_lock:
+            existing: list = []
+            if VIRTUAL_CLOSED_TRADES_JSON_PATH.is_file():
+                try:
+                    txt = VIRTUAL_CLOSED_TRADES_JSON_PATH.read_text(encoding="utf-8").strip()
+                    if txt:
+                        raw = _json.loads(txt)
+                        if isinstance(raw, list):
+                            existing = raw
+                except Exception:
+                    existing = []
+            existing.append(row)
+            existing = existing[-200:]
+            with open(VIRTUAL_CLOSED_TRADES_JSON_PATH, "w", encoding="utf-8") as f:
+                _json.dump(existing, f, indent=2)
+    except Exception as e:
+        logging.warning("[virtual] Could not append virtual_closed_trades: %s", e, exc_info=True)
+
+
+def get_paper_position_rows_for_ui(symbol: str) -> list[dict]:
+    """Synthetic open position for dashboard when paper trading (no exchange REST)."""
+    if not _virtual_trading_enabled():
+        return []
+    sym_u = (symbol or "").strip().upper()
+    if sym_u and sym_u != (SYMBOL or "").strip().upper():
+        return []
+    with _position_lock:
+        sz = float(_position_size)
+        ep = _position_entry_price
+        ps = (_last_position_side or "").strip()
+    if sz <= 1e-18:
+        return []
+    try:
+        ent_s = f"{float(ep):g}" if ep is not None and float(ep) > 0 else ""
+    except (TypeError, ValueError):
+        ent_s = ""
+    sl = _last_sl_price
+    tp = _last_tp_price
+    return [
+        {
+            "symbol": SYMBOL,
+            "side": ps or "Buy",
+            "entryPrice": ent_s,
+            "size": str(sz),
+            "positionValue": "",
+            "liqPrice": "",
+            "stop_loss": str(sl) if sl is not None else "-",
+            "take_profit": str(tp) if tp is not None else "-",
+            "unrealisedPnl": "0",
+            "createdTime": "0",
+            "paper": True,
+        }
+    ]
+
+
+def _finalize_virtual_position_close(exit_price: float, exit_reason: str) -> None:
+    """Update wallet, log closed trade, clear trackers (paper mode)."""
+    global _monitor_had_position, _position_size, _position_entry_price, _local_close_reason
+    if "manual" in (exit_reason or "").lower():
+        _local_close_reason = "MANUAL"
+    with _position_lock:
+        snap_sz = float(_position_size)
+        entry = float(_position_entry_price or 0.0)
+        ps = (_last_position_side or "").strip()
+    if snap_sz <= 0:
+        return
+    pnl = _virtual_linear_pnl_usd(entry, float(exit_price), snap_sz, ps)
+    update_virtual_wallet(pnl)
+    _append_virtual_closed_trade_row(
+        entry_price=entry,
+        exit_price=float(exit_price),
+        qty=snap_sz,
+        side=ps,
+        pnl=pnl,
+        exit_reason=exit_reason,
+    )
+    _monitor_had_position = False
+    on_position_closed(float(exit_price))
+    _clear_sl_tp_tracker_on_file_and_globals()
+    with _position_lock:
+        _position_size = 0.0
+        _position_entry_price = None
+    _sync_position_risk_to_state()
+    try:
+        _flush_live_state_file_with_tracker()
+    except Exception:
+        pass
+
+
+def virtual_market_close_sync(exit_price: float) -> dict:
+    """API/manual: close full paper position at exit_price."""
+    if not _virtual_trading_enabled():
+        return {"ok": False, "error": "not_virtual_mode"}
+    with _position_lock:
+        if float(_position_size) <= 0:
+            return {"ok": False, "error": "no_open_position"}
+    _finalize_virtual_position_close(float(exit_price), "Manual close (paper)")
+    return {"ok": True}
+
 
 def _read_live_state_json_safe() -> dict:
     """Load .live_strategy_state.json; empty dict if missing or invalid."""
@@ -397,6 +628,43 @@ def _flush_live_state_file_with_tracker() -> None:
             _json.dump(snap, f, indent=2)
     except Exception as e:
         print(f"[sl_tp_tracker] Could not write state file: {e}")
+
+
+def _restore_paper_position_from_live_state_file() -> None:
+    """Paper mode restart: restore size/entry/side from persisted live state (no exchange poll)."""
+    global _position_size, _position_entry_price, _monitor_had_position, _last_signal_candle, _last_position_side
+    if not _virtual_trading_enabled():
+        return
+    try:
+        data = _read_live_state_json_safe()
+        pr = data.get("position_risk") or {}
+        if not isinstance(pr, dict) or not pr.get("open"):
+            return
+        sz = float(pr.get("size") or data.get("position_size") or 0)
+        ep_raw = pr.get("entry_price")
+        if ep_raw is None:
+            ep_raw = data.get("entry_price")
+        ep_f = float(ep_raw or 0)
+        side_raw = str(pr.get("side") or data.get("last_position_side") or "").strip()
+        sll = side_raw.lower()
+        if sll in ("buy", "long"):
+            side = "Buy"
+        elif sll in ("sell", "short"):
+            side = "Sell"
+        else:
+            side = "Buy"
+        if sz <= 1e-18 or ep_f <= 0:
+            return
+        with _position_lock:
+            _position_size = sz
+            _position_entry_price = ep_f
+        _monitor_had_position = True
+        _last_position_side = side
+        _last_signal_candle = {"high": ep_f, "low": ep_f, "close": ep_f}
+        _sync_position_risk_to_state()
+        print(f"[VIRTUAL] Restored paper position from disk size={sz:g} entry={ep_f:g} side={side}")
+    except Exception as e:
+        logging.warning("[VIRTUAL] Could not restore paper position from state file: %s", e)
 
 
 def _load_sl_tp_tracker_from_file_on_startup() -> None:
@@ -744,8 +1012,8 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["RSI_SMA"] = ta.sma(df["RSI"], length=RSI_SMA_LENGTH)
     df["body_size"] = (df["close"] - df["open"]).abs()
     df["momentum_decreasing"] = df["body_size"] < df["body_size"].shift(1)
-    # Volume rule: strictly volume < volume_prev (no equality)
-    df["volume_decreasing"] = df["volume"] < df["volume"].shift(1)
+    # Volume rule: strictly volume > volume_prev (no equality)
+    df["volume_increasing"] = df["volume"] > df["volume"].shift(1)
     return df
 
 
@@ -835,6 +1103,9 @@ def _set_position_sl_tp_sync_logged(
     Wrap `_set_position_sl_tp_sync` with structured logging. Delta prints detailed API bodies to stdout;
     this records success/failure in logs for breakeven / dynamic updates.
     """
+    if _virtual_trading_enabled():
+        logging.info("[%s] Skipping exchange SL/TP amend (paper mode)", context)
+        return True, "virtual_paper"
     try:
         ok = _set_position_sl_tp_sync(
             HTTP_CLIENT,
@@ -886,6 +1157,10 @@ def _set_position_sl_tp_sync_logged(
 async def _async_push_exchange_sl_tp_from_globals() -> None:
     """Push current `_last_active_sl_price` + `_last_tp_price` to the exchange (e.g. after breakeven)."""
     global _exchange_sl_price
+    if _virtual_trading_enabled():
+        _set_exchange_sl_health("ok", "")
+        logging.info("[breakeven_resync] Skipped exchange amend (paper mode)")
+        return
     load_dotenv(override=True)
     load_dotenv("env", override=True)
     ps = (_last_position_side or "Buy").strip()
@@ -1029,30 +1304,43 @@ async def apply_dynamic_env_updates() -> None:
     )
     sl_str = f"{float(_last_active_sl_price):.2f}"
     tp_str = f"{float(_last_tp_price):.2f}"
-    ok = await asyncio.to_thread(
-        lambda: _set_position_sl_tp_sync(
-            HTTP_CLIENT,
-            SYMBOL,
-            "linear",
+    if _virtual_trading_enabled():
+        _exchange_sl_price = float(_last_active_sl_price or 0)
+        _set_exchange_sl_health("ok", "")
+        logging.info(
+            "[env] Paper mode: skipped exchange SL/TP amend (sl=%s tp=%s)",
             sl_str,
             tp_str,
-            entry_side=ps,
         )
-    )
-    if ok:
-        _exchange_sl_price = float(_last_active_sl_price or 0)
-        if USE_DELTA:
-            verified = await _confirm_exchange_sl_verified_after_sync()
-            if not verified:
-                logging.warning(
-                    "Dynamic env update: SL/TP set but open stop verification failed (sl=%s tp=%s)",
-                    sl_str,
-                    tp_str,
-                )
-        _set_exchange_sl_health("ok", "")
     else:
-        logging.error("Dynamic env update: exchange SL/TP amend failed (sl=%s tp=%s)", sl_str, tp_str)
-        _set_exchange_sl_health("error", "Dynamic env SL/TP amend failed")
+        ok = await asyncio.to_thread(
+            lambda: _set_position_sl_tp_sync(
+                HTTP_CLIENT,
+                SYMBOL,
+                "linear",
+                sl_str,
+                tp_str,
+                entry_side=ps,
+            )
+        )
+        if ok:
+            _exchange_sl_price = float(_last_active_sl_price or 0)
+            if USE_DELTA:
+                verified = await _confirm_exchange_sl_verified_after_sync()
+                if not verified:
+                    logging.warning(
+                        "Dynamic env update: SL/TP set but open stop verification failed (sl=%s tp=%s)",
+                        sl_str,
+                        tp_str,
+                    )
+            _set_exchange_sl_health("ok", "")
+        else:
+            logging.error(
+                "Dynamic env update: exchange SL/TP amend failed (sl=%s tp=%s)",
+                sl_str,
+                tp_str,
+            )
+            _set_exchange_sl_health("error", "Dynamic env SL/TP amend failed")
     _sync_position_risk_to_state()
     _flush_live_state_file_with_tracker()
 
@@ -1360,6 +1648,19 @@ async def _async_local_sl_tp_close(trigger_mid: float) -> None:
                     f"[Local SL/TP] mid={trigger_mid:.4f} → closing {ps} size={sz} side={close_side} (exchange stops are backup only)"
                 )
 
+                if _virtual_trading_enabled():
+                    reason = (_local_close_reason or "TP").strip() or "TP"
+                    if reason == "PARTIAL":
+                        reason = "Partial (paper)"
+                    elif reason == "SL":
+                        reason = "Stop Loss (paper)"
+                    elif reason == "TP":
+                        reason = "Take Profit (paper)"
+                    else:
+                        reason = f"{reason} (paper)"
+                    _finalize_virtual_position_close(float(trigger_mid), reason)
+                    return
+
                 loop = asyncio.get_running_loop()
                 try:
                     await execute_chunk_order_ws(
@@ -1400,6 +1701,7 @@ async def _async_partial_tp_close(trigger_mid: float) -> None:
     At half-target (breakeven engaged): close ~50% of position, floored to qty step.
     Does not set _is_closing_position; remaining size keeps using SL/TP monitoring.
     """
+    global _position_size
     async with _exit_mutex:
         try:
             while True:
@@ -1424,6 +1726,21 @@ async def _async_partial_tp_close(trigger_mid: float) -> None:
                     f"[PARTIAL TP] mid={trigger_mid:.4f} → closing {half_size} of {sz} side={close_side} "
                     f"(scale-out at half-target)"
                 )
+                if _virtual_trading_enabled():
+                    with _position_lock:
+                        _position_size = max(0.0, float(sz) - float(half_size))
+                    _append_partial_exit_journal(
+                        trigger_mid=trigger_mid,
+                        closed_qty=float(half_size),
+                        position_size_before=float(sz),
+                    )
+                    try:
+                        _flush_live_state_file_with_tracker()
+                    except Exception:
+                        pass
+                    _sync_position_risk_to_state()
+                    return
+
                 loop = asyncio.get_running_loop()
                 try:
                     await execute_chunk_order_ws(
@@ -1691,6 +2008,10 @@ async def execute_strategy_signal(
     """
     Mock / test execution: Signal_Range from last closed 1m candle (or synthetic), SL/TP from best bid/ask.
     """
+    global _position_size, _monitor_had_position, _last_position_side, _last_signal_candle
+    global _sl_max_price, _sl_min_price, _last_sl_price, _last_tp_price, _position_entry_price
+    global _entry_time, _breakeven_triggered, _half_target_exited, _half_target_reached
+    global _last_active_sl_price, _last_position_was_reverse, _local_close_reason, _base_risk_dist, _exchange_sl_price
     if symbol != SYMBOL:
         print(f"[Mock Signal] Only configured symbol {SYMBOL} is supported; got {symbol}. Aborting.")
         return
@@ -1742,6 +2063,35 @@ async def execute_strategy_signal(
     print(f"[Mock Signal] Calculated SL: {sl_str}, TP: {tp_str}")
     print("[Mock Signal] Starting Monitoring Loop (position stream will track).")
 
+    if _virtual_trading_enabled():
+        vw = get_virtual_wallet()
+        if float(vw.get("balance", 0)) < float(usd_amount):
+            print(f"[VIRTUAL] Mock: insufficient paper balance ({vw.get('balance')}).")
+            return
+        with _position_lock:
+            _position_size = float(total_qty)
+        _monitor_had_position = True
+        _last_position_side = side
+        _last_signal_candle = {"high": high, "low": low, "close": float(base)}
+        _sl_max_price, _sl_min_price = sl_wide, sl_tight
+        _last_sl_price = sl_wide
+        _last_tp_price = tp
+        _position_entry_price = float(base)
+        _entry_time = time.time()
+        _breakeven_triggered = False
+        _half_target_exited = False
+        _half_target_reached = False
+        _local_close_reason = ""
+        _last_active_sl_price = sl_wide
+        _last_position_was_reverse = False
+        _base_risk_dist = abs(float(base) - float(sl_wide)) / max(float(sl_mx), 1e-12)
+        _exchange_sl_price = float(sl_wide)
+        _set_exchange_sl_health("ok", "")
+        _sync_position_risk_to_state()
+        _flush_live_state_file_with_tracker()
+        print("[VIRTUAL] Mock signal paper fill complete (no exchange orders).")
+        return
+
     if not USE_DELTA:
         try:
             HTTP_CLIENT.set_leverage(
@@ -1779,8 +2129,6 @@ async def execute_strategy_signal(
         _set_health_error("Mock signal: exchange SL unverified")
     if ok:
         print("[Mock Signal] SL/TP set successfully.")
-        global _position_entry_price, _last_position_side, _last_signal_candle, _last_sl_price, _last_tp_price
-        global _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _half_target_reached, _last_active_sl_price, _last_position_was_reverse, _local_close_reason
         _last_position_side = side
         _last_signal_candle = {"high": high, "low": low, "close": float(base)}
         _sl_max_price, _sl_min_price = sl_wide, sl_tight
@@ -1819,7 +2167,7 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
     """
     global _last_position_side, _last_signal_candle, _last_sl_price, _last_tp_price, _last_position_was_reverse
     global _position_entry_price, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _half_target_reached, _last_active_sl_price, _exchange_sl_price, _local_close_reason
-    global _is_setting_initial_sl, _last_entry_time, _base_risk_dist
+    global _is_setting_initial_sl, _last_entry_time, _base_risk_dist, _position_size, _monitor_had_position
     if get_open_position():
         print("Position already open, skipping new signal")
         return
@@ -1832,7 +2180,15 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
     load_dotenv("env", override=True)
     trade_amount_usd = float(os.getenv("TRADE_AMOUNT_USD", "100"))
     leverage = float(os.getenv("LEVERAGE", "5"))
-    if not USE_DELTA:
+    if _virtual_trading_enabled():
+        vw = get_virtual_wallet()
+        if float(vw.get("balance", 0)) < float(trade_amount_usd):
+            print(
+                f"[VIRTUAL] Paper balance ${float(vw.get('balance', 0)):.2f} < trade amount "
+                f"${trade_amount_usd:.2f}. Skipping trade."
+            )
+            return
+    elif not USE_DELTA:
         try:
             resp = HTTP_CLIENT.get_wallet_balance(accountType="UNIFIED")
             if resp.get("retCode") == 0:
@@ -1905,7 +2261,7 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
         print(f"Abort: total_qty {total_qty} below minOrderQty {_min_order_qty}. Increase trade amount or leverage.")
         return
 
-    if not USE_DELTA:
+    if not USE_DELTA and not _virtual_trading_enabled():
         try:
             HTTP_CLIENT.set_leverage(
                 category="linear",
@@ -1919,6 +2275,73 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
     try:
         _is_setting_initial_sl = True
         loop = asyncio.get_running_loop()
+        if _virtual_trading_enabled():
+            await asyncio.sleep(0.05)
+            _last_entry_time = time.time()
+            if is_reverse:
+                b_bid2, b_ask2, _, _ = _get_orderbook_l1()
+                if side == "Buy":
+                    if not b_ask2 or b_ask2 <= 0:
+                        print("[VIRTUAL] No best ask after reversal; abort paper fill.")
+                        return
+                    ent = float(b_ask2)
+                    sl_wide = ent - (range_ * sl_mx)
+                    sl_tight = ent - (range_ * sl_mn)
+                    tp = ent + (range_ * tp_m)
+                else:
+                    if not b_bid2 or b_bid2 <= 0:
+                        print("[VIRTUAL] No best bid after reversal; abort paper fill.")
+                        return
+                    ent = float(b_bid2)
+                    sl_wide = ent + (range_ * sl_mx)
+                    sl_tight = ent + (range_ * sl_mn)
+                    tp = ent - (range_ * tp_m)
+                ok_rev = True
+            else:
+                ent = float(base)
+                ok_rev = True
+            with _position_lock:
+                _position_size = float(total_qty)
+            _monitor_had_position = True
+            _last_position_side = side
+            _last_signal_candle = {"high": high, "low": low, "close": close}
+            _sl_max_price = sl_wide
+            _sl_min_price = sl_tight
+            _last_sl_price = sl_wide
+            _last_tp_price = tp
+            _last_position_was_reverse = bool(is_reverse)
+            _position_entry_price = ent
+            _entry_time = time.time()
+            _breakeven_triggered = False
+            _half_target_exited = False
+            _half_target_reached = False
+            _local_close_reason = ""
+            _last_active_sl_price = sl_wide
+            _base_risk_dist = abs(float(ent) - float(sl_wide)) / max(float(sl_mx), 1e-12)
+            _exchange_sl_price = float(sl_wide)
+            _set_exchange_sl_health("ok", "")
+            _sync_position_risk_to_state()
+            _flush_live_state_file_with_tracker()
+            _append_trade_journal_entry(
+                side=side,
+                is_reverse=is_reverse,
+                signal_candle=signal_candle,
+                candle_range=float(range_),
+                sl_max=float(sl_wide),
+                sl_min=float(sl_tight),
+                tp=float(tp),
+                set_trading_stop_ok=True,
+            )
+            logging.info(
+                "[VIRTUAL] Paper fill %s size=%s entry=%s SL=%s TP=%s",
+                side,
+                total_qty,
+                ent,
+                sl_wide,
+                tp,
+            )
+            return
+
         await execute_chunk_order_ws(
             side,
             total_qty,
@@ -2094,8 +2517,8 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
 def has_valid_entry_signal_now(df: pd.DataFrame) -> tuple[str | None, pd.Series | None]:
     """
     Evaluate latest CLOSED candle for valid LONG or SHORT (1m chart).
-    LONG: two bearish candles; volume(signal) < volume(previous); RSI < oversold; min-profit.
-    SHORT: two bullish candles; same volume; RSI > overbought; min-profit.
+    LONG: two bearish candles; volume(signal) > volume(previous); RSI < oversold; min-profit.
+    SHORT: two bullish candles; same volume rule; RSI > overbought; min-profit.
     """
     if len(df) < 3:
         return (None, None)
@@ -2108,7 +2531,7 @@ def has_valid_entry_signal_now(df: pd.DataFrame) -> tuple[str | None, pd.Series 
     v_prev = row_prev.get("volume")
     if pd.isna(v_sig) or pd.isna(v_prev):
         return (None, None)
-    vd = float(v_sig) < float(v_prev)
+    vd = float(v_sig) > float(v_prev)
     close, open_ = float(row["close"]), float(row["open"])
     high, low = float(row["high"]), float(row["low"])
     close_prev, open_prev = float(row_prev["close"]), float(row_prev["open"])
@@ -2142,9 +2565,14 @@ def register_manual_trade(
     signal_low: float | None = None,
     sl_max_price: float | None = None,
     sl_min_price: float | None = None,
+    filled_position_size: float | None = None,
 ) -> None:
-    """Register manual trade; optional sl_max/sl_min for dynamic SL (else single sl_price)."""
+    """Register manual trade; optional sl_max/sl_min for dynamic SL (else single sl_price).
+
+    When paper trading, pass filled_position_size so local position size matches the simulated fill.
+    """
     global _last_position_side, _last_sl_price, _last_tp_price, _last_position_was_reverse, _last_signal_candle, _manual_reversal_allowed, _position_entry_price
+    global _position_size, _monitor_had_position
     global _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _half_target_reached, _last_active_sl_price, _local_close_reason
     global _last_entry_time, _base_risk_dist
     _last_position_side = side
@@ -2182,6 +2610,15 @@ def register_manual_trade(
     _sync_position_risk_to_state()
     _flush_live_state_file_with_tracker()
     _set_exchange_sl_health("ok", "")
+    if filled_position_size is not None and _virtual_trading_enabled():
+        try:
+            fq = float(filled_position_size)
+            if fq > 0:
+                with _position_lock:
+                    _position_size = fq
+                _monitor_had_position = True
+        except (TypeError, ValueError):
+            pass
 
 
 def _was_closed_by_sl(current_price: float) -> bool:
@@ -2194,6 +2631,8 @@ def _was_closed_by_sl(current_price: float) -> bool:
     if _local_close_reason == "SL":
         return True
     if _local_close_reason in ("TP", "PARTIAL"):
+        return False
+    if (_local_close_reason or "").upper() == "MANUAL":
         return False
 
     if _local_close_reason == "":
@@ -2323,6 +2762,8 @@ def _cancel_protective_orders_after_flat_sync(symbol: str | None = None) -> None
     When position size is 0, cancel leftover SL/TP bracket or conditional orders on the exchange.
     Delta: DELETE open stop/TP orders for the product. Bybit: clear position TP/SL on the symbol.
     """
+    if _virtual_trading_enabled():
+        return
     sym = (symbol or SYMBOL or "").strip()
     if not sym:
         return
@@ -2393,6 +2834,9 @@ def on_position_closed(current_price: float) -> None:
 def handle_position_message(message: dict) -> None:
     """Handle private position stream: update _position_size and detect position closed."""
     global _position_size, _monitor_had_position, _position_entry_price, _is_closing_position
+    if _virtual_trading_enabled():
+        _sync_position_risk_to_state()
+        return
     data = message.get("data") or []
     size_for_symbol = 0.0
     entry_from_ws: float | None = None
@@ -2494,7 +2938,7 @@ def check_signals(df: pd.DataFrame) -> None:
     v_sig, v_prev = row.get("volume"), row_prev.get("volume")
     if pd.isna(v_sig) or pd.isna(v_prev):
         return
-    vd = float(v_sig) < float(v_prev)
+    vd = float(v_sig) > float(v_prev)
     close, open_ = float(row["close"]), float(row["open"])
     high, low = float(row["high"]), float(row["low"])
     close_prev, open_prev = float(row_prev["close"]), float(row_prev["open"])
@@ -2533,7 +2977,7 @@ def check_signals(df: pd.DataFrame) -> None:
     print(f"[{datetime.now().isoformat()}] Signal check for {SYMBOL}: None")
 
 
-DISPLAY_COLUMNS = ["close", "volume", "volume_decreasing", "RSI", "RSI_SMA"]
+DISPLAY_COLUMNS = ["close", "volume", "volume_increasing", "RSI", "RSI_SMA"]
 
 
 def _persist_last_signal_candle_start(candle_start: int) -> None:
@@ -2572,7 +3016,7 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
     vd = (
         not pd.isna(v_sig)
         and not pd.isna(v_prev_c)
-        and float(v_sig) < float(v_prev_c)
+        and float(v_sig) > float(v_prev_c)
     )
     body = float(row["body_size"]) if "body_size" in row and not pd.isna(row.get("body_size")) else 0.0
 
@@ -2597,7 +3041,7 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
         {"name": "Signal Candle Bearish (open > close)", "met": current_bearish},
         {"name": "Previous Candle Bearish", "met": prev_bearish},
         {"name": "Both Bearish", "met": both_bearish},
-        {"name": "Volume: signal < previous", "met": vd},
+        {"name": "Volume: signal > previous", "met": vd},
         {"name": f"RSI < {RSI_OVERSOLD}", "met": rsi_oversold_ok},
         {"name": f"Expected Profit >= {min_profit_pct}%", "met": expected_profit_pct_ok},
     ]
@@ -2605,7 +3049,7 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
         {"name": "Signal Candle Bullish (close > open)", "met": current_bullish},
         {"name": "Previous Candle Bullish", "met": prev_bullish},
         {"name": "Both Bullish", "met": both_bullish},
-        {"name": "Volume: signal < previous", "met": vd},
+        {"name": "Volume: signal > previous", "met": vd},
         {"name": f"RSI > {RSI_OVERBOUGHT}", "met": rsi_overbought_ok},
         {"name": f"Expected Profit >= {min_profit_pct}%", "met": expected_profit_pct_ok},
     ]
@@ -2733,6 +3177,8 @@ async def _sl_supervisor_loop() -> None:
     while True:
         try:
             await asyncio.sleep(2)
+            if _virtual_trading_enabled():
+                continue
             if _is_setting_initial_sl:
                 continue
             if not USE_DELTA:
@@ -2862,9 +3308,14 @@ async def main_async() -> None:
         api_key = BYBIT_API_KEY or ""
         api_secret = BYBIT_API_SECRET or ""
         key_msg = "BYBIT_API_KEY and BYBIT_API_SECRET required in .env"
-    if not api_key or not api_secret:
+    if (not api_key or not api_secret) and not _virtual_trading_enabled():
         print(key_msg)
         return
+    if (not api_key or not api_secret) and _virtual_trading_enabled():
+        print(
+            "[VIRTUAL] Paper mode: missing API keys — WebSocket auth may fail; "
+            "add keys for live market data or use public feeds only."
+        )
 
     print(f"STRATEGY START: [{EXCHANGE_ID}] Monitoring {SYMBOL}")
     # Load last signal candle from file so we don't repeat signal on same candle after restart
@@ -2881,7 +3332,14 @@ async def main_async() -> None:
         print(f"[bot] Could not load last_signal_candle_start: {e}")
     # Resurrection Protocol: before any websocket loops begin, verify whether the exchange has
     # an active position and reconcile with local `.live_strategy_state.json`.
-    open_pos = await asyncio.to_thread(_fetch_exchange_open_position_for_symbol_sync)
+    # Paper mode: never poll the exchange; restore SL tracker + local position from disk only.
+    open_pos = None
+    if not _virtual_trading_enabled():
+        open_pos = await asyncio.to_thread(_fetch_exchange_open_position_for_symbol_sync)
+    else:
+        _load_sl_tp_tracker_from_file_on_startup()
+        _restore_paper_position_from_live_state_file()
+        _set_health_ok("Bot is running smoothly (paper mode)")
     if open_pos:
         local_state = _read_live_state_json_safe()
         if _local_state_compatible_with_open_position(local_state, open_pos):
@@ -2971,7 +3429,7 @@ async def main_async() -> None:
             if not ok:
                 logging.error("Emergency failsafe SL/TP may not have been placed successfully (ok=False).")
                 _set_health_error("Failsafe SL/TP may not be active")
-    else:
+    elif not _virtual_trading_enabled():
         # No active position on the exchange: wipe any stale local tracker state.
         _clear_sl_tp_tracker_on_file_and_globals()
 

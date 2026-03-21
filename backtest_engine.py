@@ -211,7 +211,7 @@ def compute_indicators(
     df["RSI_SMA"] = ta.sma(df["RSI"], length=sma_n)
     df["body_size"] = (df["close"] - df["open"]).abs()
     df["momentum_decreasing"] = df["body_size"] < df["body_size"].shift(1)
-    df["volume_decreasing"] = df["volume"] < df["volume"].shift(1)
+    df["volume_increasing"] = df["volume"] > df["volume"].shift(1)
     return df
 
 
@@ -287,7 +287,7 @@ def run_backtest(
 ) -> dict:
     """
     Aligns with live auto-trade (main.py):
-    - Same entry rules: LONG two bearish + vol + RSI<oversold; SHORT two bullish + vol + RSI>overbought; min-profit.
+    - Same entry rules: LONG two bearish + vol(signal)>vol(prev) + RSI<oversold; SHORT two bullish + same vol + RSI>overbought; min-profit.
     - LONG entry at ask proxy (open * (1+spread)); SHORT at bid proxy (open * (1-spread)).
     - Dynamic SL: entry candle uses sl_multiplier_max; later candles sl_multiplier_min; optional half-TP breakeven
       with breakeven_buffer_pct (SL past entry to cover fees).
@@ -498,7 +498,7 @@ def run_backtest(
         if pd.isna(rsi) or pd.isna(v_sig) or pd.isna(v_p2):
             i += 1
             continue
-        vd = float(v_sig) < float(v_p2)
+        vd = float(v_sig) > float(v_p2)
         close_s = float(row_sig["close"])
         open_s = float(row_sig["open"])
         high_prev = float(row_sig["high"])

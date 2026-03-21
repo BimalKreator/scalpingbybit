@@ -109,6 +109,7 @@
       <a href="/" class="text-xl font-semibold tracking-tight text-white">Momentum Reversal</a>
       <nav class="flex items-center gap-4">
         <a href="/" class="text-sm text-emerald-400 font-medium">Dashboard</a>
+        <!-- Closed trades list (newest first) lives on /logs — see fetchClosedTrades in logs.html -->
         <a href="/logs" class="text-sm text-slate-400 hover:text-white transition">Closed Trades</a>
         <a href="/backtest" class="text-sm text-slate-400 hover:text-white transition">Backtest</a>
       </nav>
@@ -131,13 +132,22 @@
         </div>
       </div>
       <div class="flex flex-wrap items-center gap-6">
-        <div class="flex items-baseline gap-2">
-          <span class="text-slate-500 text-sm">Available Balance</span>
-          <span id="availableBalance" class="text-lg font-bold text-white">--</span>
+        <div class="flex items-center gap-2 flex-wrap">
+          <span id="paperBadge" class="{% if not virtual_trading_enabled %}hidden {% endif %}text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border border-amber-500/60 text-amber-300 bg-amber-950/50">Paper</span>
+          <div class="flex items-baseline gap-2">
+            <span class="text-slate-500 text-sm">Available Balance</span>
+            <span id="availableBalance" class="text-lg font-bold text-white">--</span>
+          </div>
         </div>
         <div class="flex items-baseline gap-2">
           <span class="text-slate-500 text-sm">Overall P&amp;L</span>
           <span id="overallProfit" class="text-lg font-bold">--</span>
+        </div>
+        <div id="virtualFundsWrap" class="{% if not virtual_trading_enabled %}hidden {% endif %}flex items-center gap-2">
+          <button type="button" id="btnVirtualAdd" title="Add virtual USD to paper wallet"
+            class="rounded-lg border border-emerald-600/50 bg-emerald-950/40 hover:bg-emerald-900/50 text-emerald-300 text-xs font-medium px-2.5 py-1 transition">+ Funds</button>
+          <button type="button" id="btnVirtualReduce" title="Reduce virtual USD"
+            class="rounded-lg border border-red-600/50 bg-red-950/40 hover:bg-red-900/50 text-red-300 text-xs font-medium px-2.5 py-1 transition">− Funds</button>
         </div>
       </div>
     </section>
@@ -397,6 +407,16 @@
               <span class="pointer-events-none inline-block h-7 w-7 transform rounded-full bg-white shadow ring-0 transition {% if autotrade_enabled %}translate-x-6{% else %}translate-x-1{% endif %}"></span>
             </button>
           </div>
+          <div class="flex items-center justify-between rounded-xl bg-slate-800/80 border border-amber-900/40 p-4">
+            <div>
+              <p class="text-sm font-medium text-slate-200">Virtual / Paper Trading</p>
+              <p class="text-xs text-slate-500">Simulated balance &amp; fills — no exchange orders</p>
+            </div>
+            <button type="button" id="virtualModeToggle" role="switch" aria-checked="{{ 'true' if virtual_trading_enabled else 'false' }}"
+              class="relative inline-flex h-8 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 focus:ring-offset-slate-900 {% if virtual_trading_enabled %}bg-amber-500{% else %}bg-slate-600{% endif %}">
+              <span class="pointer-events-none inline-block h-7 w-7 transform rounded-full bg-white shadow ring-0 transition {% if virtual_trading_enabled %}translate-x-6{% else %}translate-x-1{% endif %}"></span>
+            </button>
+          </div>
         </div>
       </section>
     </div>
@@ -492,6 +512,25 @@
     const btnMockLong = document.getElementById('btnMockLong');
     const btnMockShort = document.getElementById('btnMockShort');
     const autotradeToggle = document.getElementById('autotradeToggle');
+    const virtualModeToggle = document.getElementById('virtualModeToggle');
+    const paperBadge = document.getElementById('paperBadge');
+    const virtualFundsWrap = document.getElementById('virtualFundsWrap');
+    const btnVirtualAdd = document.getElementById('btnVirtualAdd');
+    const btnVirtualReduce = document.getElementById('btnVirtualReduce');
+
+    function setVirtualUi(on) {
+      if (paperBadge) paperBadge.classList.toggle('hidden', !on);
+      if (virtualFundsWrap) virtualFundsWrap.classList.toggle('hidden', !on);
+      if (!virtualModeToggle) return;
+      virtualModeToggle.setAttribute('aria-checked', on ? 'true' : 'false');
+      virtualModeToggle.classList.toggle('bg-amber-500', on);
+      virtualModeToggle.classList.toggle('bg-slate-600', !on);
+      var sp = virtualModeToggle.querySelector('span');
+      if (sp) {
+        sp.classList.toggle('translate-x-6', on);
+        sp.classList.toggle('translate-x-1', !on);
+      }
+    }
 
     function updateAccountStatusBadges(running, autotrade) {
       var botEl = document.getElementById('statusBot');
@@ -552,7 +591,7 @@
         if (ind.close != null) lines.push('Close: ' + formatNum(ind.close));
         if (ind.body_size != null) lines.push('Body size: ' + formatNum(ind.body_size));
         if (ind.volume != null) lines.push('Volume: ' + formatNum(ind.volume));
-        lines.push('Volume (signal < prev): ' + (ind.volume_signal_vs_prev ? 'Yes' : 'No'));
+        lines.push('Volume (signal > prev): ' + (ind.volume_signal_vs_prev ? 'Yes' : 'No'));
         document.getElementById('liveIndicators').innerHTML = lines.map(function (l) { return '<p class="leading-tight">' + l + '</p>'; }).join('');
       }
 
@@ -639,6 +678,8 @@
         const res = await fetch('/api/account');
         if (!res.ok) throw new Error(res.statusText);
         const data = await res.json();
+        if (data.virtualMode === true) setVirtualUi(true);
+        else if (data.virtualMode === false) setVirtualUi(false);
         availableBalanceEl.textContent = formatNum(data.availableBalance) + ' USD';
         const profit = data.overallProfit != null ? Number(data.overallProfit) : NaN;
         overallProfitEl.textContent = (isNaN(profit) ? '--' : (profit >= 0 ? '+' : '') + formatNum(profit)) + ' USD';
@@ -944,6 +985,73 @@
         console.error('Failed to update Auto Trade:', e);
         showAppToast('Failed to update Auto Trade: ' + e.message, true);
       }
+    });
+
+    if (virtualModeToggle) {
+      virtualModeToggle.addEventListener('click', async function () {
+        const enabled = virtualModeToggle.getAttribute('aria-checked') !== 'true';
+        try {
+          const res = await fetch('/api/virtual/toggle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled })
+          });
+          const data = await res.json();
+          if (!res.ok || !data.ok) throw new Error((data && data.detail) || 'Toggle failed');
+          setVirtualUi(!!data.virtual_trading_mode);
+          showAppToast(data.virtual_trading_mode ? 'Paper trading ON' : 'Paper trading OFF', false);
+          pollAccount();
+        } catch (e) {
+          console.error(e);
+          showAppToast('Virtual mode toggle failed: ' + (e.message || e), true);
+        }
+      });
+    }
+
+    async function postVirtualBalanceAdd() {
+      var raw = window.prompt('Amount to add to paper wallet (USD)', '100');
+      if (raw === null) return;
+      var amt = parseFloat(String(raw).replace(/,/g, ''), 10);
+      if (!isFinite(amt) || amt <= 0) {
+        showAppToast('Enter a positive amount', true);
+        return;
+      }
+      try {
+        const res = await fetch('/api/virtual/balance', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'add', amount: amt })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error((typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) || data.error || res.statusText);
+        showAppToast('Virtual balance: ' + data.balance, false);
+        pollAccount();
+      } catch (e) {
+        showAppToast('Virtual balance update failed: ' + (e.message || e), true);
+      }
+    }
+
+    if (btnVirtualAdd) btnVirtualAdd.addEventListener('click', function () { postVirtualBalanceAdd(); });
+    if (btnVirtualReduce) btnVirtualReduce.addEventListener('click', function () {
+      var raw = window.prompt('Amount to subtract from virtual balance (USD)', '50');
+      if (raw === null) return;
+      var amt = parseFloat(String(raw).replace(/,/g, ''), 10);
+      if (!isFinite(amt) || amt <= 0) {
+        showAppToast('Invalid amount', true);
+        return;
+      }
+      fetch('/api/virtual/balance', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'add', amount: -amt })
+      })
+        .then(function (res) { return res.json().then(function (j) { return { res: res, j: j }; }); })
+        .then(function (o) {
+          if (!o.res.ok) throw new Error(o.j.detail || o.j.error || 'Failed');
+          showAppToast('Virtual balance: ' + o.j.balance, false);
+          pollAccount();
+        })
+        .catch(function (e) { showAppToast('Reduce failed: ' + (e.message || e), true); });
     });
 
     exchangeForm.addEventListener('submit', async function (e) {
