@@ -26,6 +26,9 @@ from bybit_client import (
     _map_exit_reason,
     execute_chunk_order_rest,
 )
+import instance_storage
+from strategies import STRATEGY_TYPE_LABELS
+
 from delta_client import (
     _delta_request,
     fetch_instrument_info_delta,
@@ -54,6 +57,7 @@ from main import (
     get_virtual_wallet,
     register_manual_trade,
     reload_active_strategies_from_env,
+    reload_strategy_instances_cache,
     set_virtual_balance,
     virtual_market_close_sync,
 )
@@ -907,6 +911,70 @@ async def api_strategies_toggle(body: StrategyToggleBody):
         logging.warning("[api/strategies/toggle] apply_dynamic_env_updates: %s", e)
     active = reload_active_strategies_from_env()
     return {"ok": True, "active": list(active)}
+
+
+class InstanceCreateBody(BaseModel):
+    strategy_type: str = "ema_trap"
+
+
+class InstanceUpdateBody(BaseModel):
+    name: str | None = None
+    enabled: bool | None = None
+    symbol: str | None = None
+    timeframe: str | None = None
+    strategy_type: str | None = None
+    params: dict | None = None
+
+
+@app.get("/api/instances")
+async def api_instances_list():
+    """All strategy instances from logs/strategy_instances.json."""
+    instance_storage.ensure_instances_file(BOT_SYMBOL)
+    return instance_storage.load_instances()
+
+
+@app.post("/api/instances")
+async def api_instances_create(body: InstanceCreateBody):
+    st = (body.strategy_type or "ema_trap").strip().lower()
+    if st not in STRATEGY_TYPE_LABELS:
+        raise HTTPException(status_code=400, detail=f"Unknown strategy_type: {st}")
+    inst = instance_storage.create_instance(st, BOT_SYMBOL)
+    reload_strategy_instances_cache()
+    try:
+        asyncio.create_task(apply_dynamic_env_updates())
+    except Exception as e:
+        logging.warning("[api/instances POST] apply_dynamic_env_updates: %s", e)
+    return inst
+
+
+@app.put("/api/instances/{instance_id}")
+async def api_instances_update(instance_id: str, body: InstanceUpdateBody):
+    patch = body.model_dump(exclude_unset=True)
+    if not patch:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    if "strategy_type" in patch and patch["strategy_type"] not in STRATEGY_TYPE_LABELS:
+        raise HTTPException(status_code=400, detail="Unknown strategy_type")
+    row = instance_storage.update_instance(instance_id, patch)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Instance not found")
+    reload_strategy_instances_cache()
+    try:
+        asyncio.create_task(apply_dynamic_env_updates())
+    except Exception as e:
+        logging.warning("[api/instances PUT] apply_dynamic_env_updates: %s", e)
+    return row
+
+
+@app.delete("/api/instances/{instance_id}")
+async def api_instances_delete(instance_id: str):
+    if not instance_storage.delete_instance(instance_id):
+        raise HTTPException(status_code=404, detail="Instance not found")
+    reload_strategy_instances_cache()
+    try:
+        asyncio.create_task(apply_dynamic_env_updates())
+    except Exception as e:
+        logging.warning("[api/instances DELETE] apply_dynamic_env_updates: %s", e)
+    return {"ok": True}
 
 
 class ManualTradeBody(BaseModel):

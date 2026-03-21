@@ -26,6 +26,19 @@ _REST_BASE_INDIA = "https://api.india.delta.exchange"
 _WS_BASE_INDIA = "wss://socket.india.delta.exchange"
 
 
+def _delta_candle_channel_name(interval_minutes: int) -> str:
+    return f"candlestick_{max(1, int(interval_minutes))}m"
+
+
+def _delta_interval_from_ws_type(t: str) -> int:
+    if isinstance(t, str) and t.startswith("candlestick_") and t.endswith("m"):
+        try:
+            return max(1, int(t[len("candlestick_") : -1]))
+        except ValueError:
+            return 1
+    return 1
+
+
 def normalize_delta_symbol(symbol: str) -> str:
     s = (symbol or "").strip().upper().replace("USDT", "USD")
     return s or "BTCUSD"
@@ -147,13 +160,18 @@ def fetch_instrument_info(symbol: str) -> tuple[bool, float | None, float | None
         return (False, None, None, None)
 
 
-def fetch_historical_klines_delta(symbol: str, klines_out: list, max_n: int = 1000) -> bool:
+def fetch_historical_klines_delta(
+    symbol: str, klines_out: list, max_n: int = 1000, resolution_minutes: int = 1
+) -> bool:
     """
-    Load up to max_n recent 1m candles (paginated; API returns at most ~1000 bars per window).
+    Load up to max_n recent candles (paginated; API returns at most ~1000 bars per window).
     Same row shape as Bybit.
     """
     dsym = normalize_delta_symbol(symbol)
     max_n = max(1, min(int(max_n), 5000))
+    rm = max(1, int(resolution_minutes))
+    res = f"{rm}m"
+    bar_sec = rm * 60
     by_start: dict[int, dict] = {}
     cur_end = int(time.time())
     base = f"{_REST_BASE_INDIA}/v2/history/candles"
@@ -162,11 +180,11 @@ def fetch_historical_klines_delta(symbol: str, klines_out: list, max_n: int = 10
             if len(by_start) >= max_n:
                 break
             chunk_mins = min(1000, max_n - len(by_start))
-            start_sec = cur_end - chunk_mins * 60
+            start_sec = cur_end - chunk_mins * bar_sec
             r = requests.get(
                 base,
                 params={
-                    "resolution": "1m",
+                    "resolution": res,
                     "symbol": dsym,
                     "start": str(start_sec),
                     "end": str(cur_end),
@@ -193,8 +211,8 @@ def fetch_historical_klines_delta(symbol: str, klines_out: list, max_n: int = 10
                 start_ms = t * 1000
                 by_start[start_ms] = {
                     "start": start_ms,
-                    "end": start_ms + 60000,
-                    "interval": "1",
+                    "end": start_ms + bar_sec * 1000,
+                    "interval": str(rm),
                     "open": float(c.get("open") or 0),
                     "high": float(c.get("high") or 0),
                     "low": float(c.get("low") or 0),
@@ -217,7 +235,7 @@ def fetch_historical_klines_delta(symbol: str, klines_out: list, max_n: int = 10
         rows = sorted(by_start.values(), key=lambda x: x["start"])
         klines_out.clear()
         klines_out.extend(rows[-max_n:])
-        print(f"[Delta] Loaded {len(klines_out)} historical 1m candles for {dsym}.")
+        print(f"[Delta] Loaded {len(klines_out)} historical {res} candles for {dsym}.")
         return True
     except Exception as e:
         print(f"[Delta] fetch_historical_klines: {e}")
@@ -229,15 +247,19 @@ def fetch_incremental_klines_delta(
     since_start_ms_exclusive: int,
     end_ms: int | None = None,
     max_bars: int = 20_000,
+    resolution_minutes: int = 1,
 ) -> list[dict]:
     """
-    1m candles with open time strictly after since_start_ms_exclusive, up to end_ms (default: now).
+    Candles with open time strictly after since_start_ms_exclusive, up to end_ms (default: now).
     Same row shape as fetch_historical_klines_delta / Bybit.
     """
     dsym = normalize_delta_symbol(symbol)
+    rm = max(1, int(resolution_minutes))
+    res = f"{rm}m"
+    bar_sec = rm * 60
     if end_ms is None:
         end_ms = int(time.time() * 1000)
-    start_sec = (int(since_start_ms_exclusive) // 1000) + 60
+    start_sec = (int(since_start_ms_exclusive) // 1000) + bar_sec
     end_sec = int(end_ms) // 1000
     if start_sec >= end_sec:
         return []
@@ -249,11 +271,11 @@ def fetch_incremental_klines_delta(
         for _ in range(600):
             if len(by_start) >= max_bars or cur >= end_sec:
                 break
-            chunk_end = min(cur + 1000 * 60, end_sec)
+            chunk_end = min(cur + 1000 * bar_sec, end_sec)
             r = requests.get(
                 base,
                 params={
-                    "resolution": "1m",
+                    "resolution": res,
                     "symbol": dsym,
                     "start": str(cur),
                     "end": str(chunk_end),
@@ -281,8 +303,8 @@ def fetch_incremental_klines_delta(
                     continue
                 by_start[start_ms] = {
                     "start": start_ms,
-                    "end": start_ms + 60000,
-                    "interval": "1",
+                    "end": start_ms + bar_sec * 1000,
+                    "interval": str(rm),
                     "open": float(c.get("open") or 0),
                     "high": float(c.get("high") or 0),
                     "low": float(c.get("low") or 0),
@@ -296,7 +318,7 @@ def fetch_incremental_klines_delta(
             lt = int(last.get("time") or 0)
             if lt > 10_000_000_000:
                 lt = lt // 1000
-            cur = lt + 60
+            cur = lt + bar_sec
             if len(by_start) == n_before:
                 cur = chunk_end + 1
             if len(batch_raw) < 10:
@@ -834,10 +856,11 @@ class DeltaLiveStream:
         api_key: str,
         api_secret: str,
         symbol: str,
-        on_kline: Callable[[dict], None],
+        on_kline: Callable[..., None],
         on_orderbook: Callable[[dict], None],
         on_position: Callable[[dict], None],
         on_execution: Callable[[dict], None],
+        kline_intervals: tuple[int, ...] = (1,),
     ) -> None:
         self._main_symbol = normalize_delta_symbol(symbol)
         self._env_symbol = (symbol or "").strip().upper() or self._main_symbol
@@ -848,13 +871,13 @@ class DeltaLiveStream:
             ping_timeout=20,
             close_timeout=10,
         )
+        ivs = sorted({max(1, int(x)) for x in kline_intervals})
+        candle_chans = [{"name": _delta_candle_channel_name(m), "symbols": [self._main_symbol]} for m in ivs]
         pub = {
             "type": "subscribe",
             "payload": {
-                "channels": [
-                    {"name": "candlestick_1m", "symbols": [self._main_symbol]},
-                    {"name": "l2_orderbook", "symbols": [self._main_symbol]},
-                ]
+                "channels": candle_chans
+                + [{"name": "l2_orderbook", "symbols": [self._main_symbol]}]
             },
         }
         await self._ws.send(json.dumps(pub))
@@ -901,11 +924,13 @@ class DeltaLiveStream:
         self._task = asyncio.create_task(
             self._recv_loop(on_kline, on_orderbook, on_position, on_execution)
         )
-        print(f"[Delta WS] Subscribed 1m/l2 + private positions/orders for {self._main_symbol}.")
+        print(
+            f"[Delta WS] Subscribed candles {ivs}m + l2 + private positions/orders for {self._main_symbol}."
+        )
 
     async def _recv_loop(
         self,
-        on_kline: Callable[[dict], None],
+        on_kline: Callable[..., None],
         on_orderbook: Callable[[dict], None],
         on_position: Callable[[dict], None],
         on_execution: Callable[[dict], None],
@@ -929,12 +954,14 @@ class DeltaLiveStream:
                 if t == "candlestick_1m" or (
                     isinstance(t, str) and t.startswith("candlestick_")
                 ):
+                    ivm = _delta_interval_from_ws_type(str(t))
+                    span_ms = ivm * 60_000
                     cst = int(msg.get("candle_start_time") or 0)
                     start_ms = cst // 1000 if cst > 10**15 else (cst * 1000 if cst < 10**12 else cst)
                     row = {
                         "start": int(start_ms),
-                        "end": int(start_ms) + 60000,
-                        "interval": "1",
+                        "end": int(start_ms) + span_ms,
+                        "interval": str(ivm),
                         "open": float(msg.get("open") or 0),
                         "high": float(msg.get("high") or 0),
                         "low": float(msg.get("low") or 0),
@@ -945,7 +972,7 @@ class DeltaLiveStream:
                         "timestamp": int(start_ms),
                     }
                     try:
-                        on_kline({"data": [row]})
+                        on_kline({"data": [row]}, ivm)
                     except Exception as e:
                         print(f"[Delta WS] on_kline error: {e}")
                 elif t == "l2_orderbook":

@@ -63,13 +63,15 @@ def _map_exit_reason(rec: dict) -> str:
     return ex or "–"
 
 
-def _kline_rest_row_to_dict(arr: list) -> dict:
+def _kline_rest_row_to_dict(arr: list, interval_minutes: int = 1) -> dict:
     """Bybit REST kline item [start_ms, open, high, low, close, volume, turnover]."""
     start_ms = int(arr[0])
+    iv = max(1, int(interval_minutes))
+    span_ms = iv * 60_000
     return {
         "start": start_ms,
-        "end": start_ms + 60000,
-        "interval": "1",
+        "end": start_ms + span_ms,
+        "interval": str(iv),
         "open": float(arr[1]),
         "high": float(arr[2]),
         "low": float(arr[3]),
@@ -86,15 +88,18 @@ def fetch_historical_klines_bybit(
     symbol: str,
     klines_out: list,
     max_n: int = 1000,
+    interval_minutes: int = 1,
 ) -> bool:
     """
-    Load up to max_n recent 1m candles (paginated, 1000/request) for RSI warm-up.
+    Load up to max_n recent candles (paginated, 1000/request) for RSI warm-up.
     """
     get_kline = getattr(http_client, "get_kline", None) or getattr(http_client, "get_kline_list", None)
     if get_kline is None:
         print("[Bybit] HTTP client has no get_kline.")
         return False
     max_n = max(1, min(int(max_n), 5000))
+    iv = max(1, int(interval_minutes))
+    ivs = str(iv)
     by_start: dict[int, dict] = {}
     end_cursor: int | None = None
     per_page = 1000
@@ -104,7 +109,7 @@ def fetch_historical_klines_bybit(
             kw: dict[str, Any] = {
                 "category": "linear",
                 "symbol": symbol,
-                "interval": "1",
+                "interval": ivs,
                 "limit": lim,
             }
             if end_cursor is not None:
@@ -119,7 +124,7 @@ def fetch_historical_klines_bybit(
             batch: list[dict] = []
             for item in lst:
                 if isinstance(item, (list, tuple)) and len(item) >= 6:
-                    batch.append(_kline_rest_row_to_dict(list(item)))
+                    batch.append(_kline_rest_row_to_dict(list(item), iv))
             if not batch:
                 break
             batch.sort(key=lambda r: r["start"])
@@ -133,7 +138,7 @@ def fetch_historical_klines_bybit(
         rows = sorted(by_start.values(), key=lambda r: r["start"])
         klines_out.clear()
         klines_out.extend(rows[-max_n:])
-        print(f"[Bybit] Loaded {len(klines_out)} historical 1m candles for {symbol}.")
+        print(f"[Bybit] Loaded {len(klines_out)} historical {ivs}m candles for {symbol}.")
         return True
     except Exception as e:
         print(f"[Bybit] fetch_historical_klines: {e}")
@@ -146,9 +151,10 @@ def fetch_incremental_klines_bybit(
     since_start_ms_exclusive: int,
     end_ms: int | None = None,
     max_bars: int = 20_000,
+    interval_minutes: int = 1,
 ) -> list[dict]:
     """
-    Fetch 1m candles whose open time is strictly after since_start_ms_exclusive (next bar = exclusive + 60_000).
+    Fetch candles whose open time is strictly after since_start_ms_exclusive.
     Paginates forward until end_ms (default: now). Returns rows sorted by start ascending.
     """
     get_kline = getattr(http_client, "get_kline", None) or getattr(http_client, "get_kline_list", None)
@@ -157,7 +163,10 @@ def fetch_incremental_klines_bybit(
         return []
     if end_ms is None:
         end_ms = int(time.time() * 1000)
-    next_start = int(since_start_ms_exclusive) + 60_000
+    iv = max(1, int(interval_minutes))
+    ivs = str(iv)
+    step_ms = iv * 60_000
+    next_start = int(since_start_ms_exclusive) + step_ms
     if next_start > end_ms:
         return []
     max_bars = max(1, min(int(max_bars), 50_000))
@@ -174,7 +183,7 @@ def fetch_incremental_klines_bybit(
             kw: dict[str, Any] = {
                 "category": "linear",
                 "symbol": symbol,
-                "interval": "1",
+                "interval": ivs,
                 "limit": lim,
                 "start": cur,
             }
@@ -188,7 +197,7 @@ def fetch_incremental_klines_bybit(
             batch: list[dict] = []
             for item in lst:
                 if isinstance(item, (list, tuple)) and len(item) >= 6:
-                    batch.append(_kline_rest_row_to_dict(list(item)))
+                    batch.append(_kline_rest_row_to_dict(list(item), iv))
             if not batch:
                 break
             batch.sort(key=lambda r: r["start"])
@@ -203,9 +212,9 @@ def fetch_incremental_klines_bybit(
             oldest = batch[0]["start"]
             if not added_any:
                 # Advance past this window to avoid infinite loop
-                cur = newest + 60_000
+                cur = newest + step_ms
             else:
-                cur = newest + 60_000
+                cur = newest + step_ms
             if len(lst) < lim:
                 break
             if newest < next_start:
@@ -748,6 +757,7 @@ class BybitLiveStream:
 
     def __init__(self) -> None:
         self.ws_kline: WebSocket | None = None
+        self.ws_kline_list: list[WebSocket] = []
         self.ws_orderbook: WebSocket | None = None
         self.ws_private: WebSocket | None = None
         self.ws_trade: WebSocketTrading | None = None
@@ -757,19 +767,28 @@ class BybitLiveStream:
         api_key: str,
         api_secret: str,
         symbol: str,
-        on_kline: Callable[[dict], None],
+        on_kline: Callable[..., None],
         on_orderbook: Callable[[dict], None],
         on_position: Callable[[dict], None],
         on_execution: Callable[[dict], None],
+        kline_intervals: tuple[int, ...] = (1,),
     ) -> None:
-        self.ws_kline = WebSocket(
-            testnet=False,
-            channel_type="linear",
-            api_key="",
-            api_secret="",
-        )
-        self.ws_kline.kline_stream(interval=1, symbol=symbol, callback=on_kline)
-        print("Subscribed to 1m kline " + symbol + " (public WebSocket).")
+        self.ws_kline_list = []
+        for iv in sorted({max(1, int(x)) for x in kline_intervals}):
+            ws_k = WebSocket(
+                testnet=False,
+                channel_type="linear",
+                api_key="",
+                api_secret="",
+            )
+
+            def _cb(msg: dict, interval: int = iv) -> None:
+                on_kline(msg, interval)
+
+            ws_k.kline_stream(interval=iv, symbol=symbol, callback=_cb)
+            self.ws_kline_list.append(ws_k)
+            print(f"Subscribed to {iv}m kline {symbol} (public WebSocket).")
+        self.ws_kline = self.ws_kline_list[0] if self.ws_kline_list else None
 
         self.ws_orderbook = WebSocket(
             testnet=False,
@@ -798,7 +817,15 @@ class BybitLiveStream:
         print("WebSocket Trade connected (order placement).")
 
     def stop(self) -> None:
-        for attr in ("ws_kline", "ws_orderbook", "ws_private", "ws_trade"):
+        for ws in list(getattr(self, "ws_kline_list", []) or []):
+            if ws is not None:
+                try:
+                    ws.exit()
+                except Exception:
+                    pass
+        self.ws_kline_list = []
+        self.ws_kline = None
+        for attr in ("ws_orderbook", "ws_private", "ws_trade"):
             ws = getattr(self, attr, None)
             if ws is not None:
                 try:

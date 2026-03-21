@@ -17,6 +17,10 @@ from pybit.unified_trading import WebSocket, WebSocketTrading
 from pybit.unified_trading import HTTP
 from pathlib import Path
 
+import instance_storage
+from strategies import ema_trap
+from strategies import STRATEGY_TYPE_LABELS
+
 from dotenv import load_dotenv, dotenv_values
 import os
 import logging
@@ -193,7 +197,7 @@ MIN_PROFIT_PCT = float(os.getenv("MIN_PROFIT_PCT", "0.5"))
 
 # --- Multi-strategy registry (keys match .env ACTIVE_STRATEGIES comma-separated list) ---
 AVAILABLE_STRATEGIES: dict[str, str] = {
-    "weak_momentum_reversal": "Weak Momentum Reversal",
+    **STRATEGY_TYPE_LABELS,
 }
 
 
@@ -267,7 +271,82 @@ try:
     KLINES_MAX = max(500, min(5000, int(os.getenv("HISTORICAL_KLINES", "1000"))))
 except ValueError:
     KLINES_MAX = 1000
-KLINES = []
+# Multi-timeframe buffers: key (symbol_upper, interval_minutes) -> list of candle dicts
+KLINES_BY_KEY: dict[tuple[str, int], list] = {}
+# Legacy alias: primary symbol 1m buffer (rebound in fetch_historical_klines_multi)
+KLINES: list = []
+_instances_runtime_lock = threading.Lock()
+_STRATEGY_INSTANCES_CACHE: list[dict] = []
+_active_order_instance_id: str | None = None
+
+
+def reload_strategy_instances_cache() -> list[dict]:
+    """Reload instances from JSON into memory (call after dashboard edits)."""
+    global _STRATEGY_INSTANCES_CACHE
+    with _instances_runtime_lock:
+        instance_storage.ensure_instances_file(SYMBOL)
+        _STRATEGY_INSTANCES_CACHE = instance_storage.load_instances()
+        return list(_STRATEGY_INSTANCES_CACHE)
+
+
+def get_strategy_instances() -> list[dict]:
+    with _instances_runtime_lock:
+        return list(_STRATEGY_INSTANCES_CACHE)
+
+
+def _norm_sym(s: str) -> str:
+    return (s or SYMBOL or "").strip().upper()
+
+
+def kline_buffer(symbol: str, interval_minutes: int) -> list:
+    key = (_norm_sym(symbol), max(1, int(interval_minutes)))
+    if key not in KLINES_BY_KEY:
+        KLINES_BY_KEY[key] = []
+    return KLINES_BY_KEY[key]
+
+
+def _required_kline_keys_from_instances() -> set[tuple[str, int]]:
+    keys: set[tuple[str, int]] = set()
+    for ins in get_strategy_instances():
+        if not ins.get("enabled", True):
+            continue
+        sym = _norm_sym(str(ins.get("symbol") or SYMBOL))
+        tfm = instance_storage.timeframe_to_minutes(str(ins.get("timeframe") or "1m"))
+        keys.add((sym, tfm))
+    keys.add((_norm_sym(SYMBOL), 1))
+    return keys
+
+
+def _patch_instance_state_cache(instance_id: str, state_patch: dict) -> None:
+    global _STRATEGY_INSTANCES_CACHE
+    if not state_patch:
+        return
+    with _instances_runtime_lock:
+        for i, row in enumerate(_STRATEGY_INSTANCES_CACHE):
+            if row.get("id") != instance_id:
+                continue
+            r2 = dict(row)
+            st = dict(r2.get("state") or {})
+            st.update(state_patch)
+            r2["state"] = st
+            _STRATEGY_INSTANCES_CACHE[i] = r2
+            break
+
+
+def _bump_instance_bar_state(instance_id: str, conf_start: int, state: dict) -> dict | None:
+    """
+    If this confirmation bar is new for the instance, persist bar_seq and return updated state.
+    Otherwise return None.
+    """
+    st = dict(state or {})
+    if int(st.get("last_evaluated_start") or 0) == int(conf_start):
+        return None
+    st["last_evaluated_start"] = int(conf_start)
+    st["bar_seq"] = int(st.get("bar_seq") or 0) + 1
+    instance_storage.merge_instance_state(instance_id, st)
+    _patch_instance_state_cache(instance_id, st)
+    return st
+
 
 from backtest_engine import CANDLE_CACHE_PATH, read_candle_cache_file
 
@@ -591,7 +670,10 @@ def _finalize_virtual_position_close(exit_price: float, exit_reason: str) -> Non
         exit_reason=exit_reason,
     )
     _monitor_had_position = False
-    on_position_closed(float(exit_price))
+    ep = float(exit_price)
+    sl_hit = _was_closed_by_sl(ep)
+    on_position_closed(ep)
+    _clear_active_instance_on_flat(sl_loss=sl_hit)
     _clear_sl_tp_tracker_on_file_and_globals()
     with _position_lock:
         _position_size = 0.0
@@ -1119,10 +1201,10 @@ def _queue_closed_candle_rows_for_cache(rows: list[dict]) -> None:
 
 def fetch_historical_klines() -> bool:
     """
-    Load 1m history from local cache (logs/market_data_1m.json), incrementally refresh from the
-    exchange since the last cached bar, then trim RAM to KLINES_MAX / MEMORY caps.
+    Load history for every enabled instance timeframe + default 1m primary chart.
+    For the primary (SYMBOL, 1m) buffer, also merge logs/market_data_1m.json candle cache.
     """
-    global KLINES, KLINES_MAX, RSI_SMA_LENGTH, _cache_high_water_ms
+    global KLINES, KLINES_MAX, RSI_SMA_LENGTH, _cache_high_water_ms, KLINES_BY_KEY
     load_dotenv(override=True)
     load_dotenv("env", override=True)
     try:
@@ -1134,128 +1216,134 @@ def fetch_historical_klines() -> bool:
     except ValueError:
         RSI_SMA_LENGTH = 14
 
+    reload_strategy_instances_cache()
+    keys = _required_kline_keys_from_instances()
     ex_id = _exchange_id_for_cache()
-    sym_u = (SYMBOL or "").strip().upper()
-    disk_rows, file_sym, file_ex = read_candle_cache_file(CANDLE_CACHE_PATH)
+    sym_u = _norm_sym(SYMBOL)
+    any_ok = False
 
-    merged_by_start: dict[int, dict] = {}
-    for c in disk_rows:
-        if isinstance(c, dict) and c.get("start") is not None:
-            try:
-                st = int(c["start"])
-                merged_by_start[st] = _normalize_candle_dict_for_cache(c)
-            except Exception:
-                continue
-
-    stale = False
-    if file_sym and file_sym.strip().upper() != sym_u:
-        stale = True
-    if file_ex and file_ex.strip().lower() != ex_id.lower():
-        stale = True
-    if stale:
-        logging.info(
-            "[candle_cache] Cache symbol/exchange mismatch (file %s/%s vs %s/%s); re-seeding from API.",
-            file_sym,
-            file_ex,
-            sym_u,
-            ex_id,
-        )
-        merged_by_start.clear()
-
-    last_ms: int | None = None
-    if merged_by_start:
-        last_ms = max(merged_by_start.keys())
-
-    incremental: list[dict] = []
-    if last_ms is not None:
-        if USE_DELTA:
-            incremental = fetch_incremental_klines_delta(SYMBOL, last_ms)
-        else:
-            incremental = fetch_incremental_klines_bybit(HTTP_CLIENT, SYMBOL, last_ms)
-        for r in incremental:
-            try:
-                merged_by_start[int(r["start"])] = _normalize_candle_dict_for_cache(r)
-            except Exception:
-                continue
-        if incremental:
-            logging.info(
-                "[candle_cache] Merged %s new bar(s) from exchange after %s",
-                len(incremental),
-                last_ms,
-            )
-    else:
+    for sym, tfm in sorted(keys):
+        buf = kline_buffer(sym, tfm)
+        buf.clear()
         seed: list = []
-        if USE_DELTA:
-            ok_seed = fetch_historical_klines_delta(SYMBOL, seed, KLINES_MAX)
+        if sym == sym_u and tfm == 1:
+            disk_rows, file_sym, file_ex = read_candle_cache_file(CANDLE_CACHE_PATH)
+            merged_by_start: dict[int, dict] = {}
+            for c in disk_rows:
+                if isinstance(c, dict) and c.get("start") is not None:
+                    try:
+                        st = int(c["start"])
+                        merged_by_start[st] = _normalize_candle_dict_for_cache(c)
+                    except Exception:
+                        continue
+            stale = False
+            if file_sym and file_sym.strip().upper() != sym_u:
+                stale = True
+            if file_ex and file_ex.strip().lower() != ex_id.lower():
+                stale = True
+            if stale:
+                merged_by_start.clear()
+            last_ms: int | None = max(merged_by_start.keys()) if merged_by_start else None
+            incremental: list[dict] = []
+            if last_ms is not None:
+                if USE_DELTA:
+                    incremental = fetch_incremental_klines_delta(
+                        sym, last_ms, resolution_minutes=1
+                    )
+                else:
+                    incremental = fetch_incremental_klines_bybit(
+                        HTTP_CLIENT, sym, last_ms, interval_minutes=1
+                    )
+                for r in incremental:
+                    try:
+                        merged_by_start[int(r["start"])] = _normalize_candle_dict_for_cache(r)
+                    except Exception:
+                        continue
+            else:
+                if USE_DELTA:
+                    ok_seed = fetch_historical_klines_delta(sym, seed, KLINES_MAX, resolution_minutes=1)
+                else:
+                    ok_seed = fetch_historical_klines_bybit(
+                        HTTP_CLIENT, sym, seed, KLINES_MAX, interval_minutes=1
+                    )
+                if not ok_seed and not merged_by_start:
+                    merged_list = []
+                else:
+                    for r in seed:
+                        try:
+                            merged_by_start[int(r["start"])] = _normalize_candle_dict_for_cache(r)
+                        except Exception:
+                            continue
+            merged_list = sorted(merged_by_start.values(), key=lambda r: r["start"])
+            if len(merged_list) > CANDLE_CACHE_MAX_BARS:
+                merged_list = merged_list[-CANDLE_CACHE_MAX_BARS:]
+            if merged_list:
+                try:
+                    _write_candle_cache_payload(merged_list, sym, ex_id)
+                    _cache_high_water_ms = merged_list[-1]["start"]
+                except Exception as e:
+                    logging.error("[candle_cache] Could not write %s: %s", CANDLE_CACHE_PATH, e)
+            buf.extend(merged_list[-KLINES_MAX:] if merged_list else [])
         else:
-            ok_seed = fetch_historical_klines_bybit(HTTP_CLIENT, SYMBOL, seed, KLINES_MAX)
-        if not ok_seed and not merged_by_start:
-            KLINES.clear()
-            print(
-                "Warning: historical kline load failed; RSI may diverge until buffer fills "
-                f"(set HISTORICAL_KLINES 500–5000, default 1000)."
-            )
-            return False
-        for r in seed:
-            try:
-                merged_by_start[int(r["start"])] = _normalize_candle_dict_for_cache(r)
-            except Exception:
-                continue
+            if USE_DELTA:
+                ok = fetch_historical_klines_delta(sym, buf, KLINES_MAX, resolution_minutes=tfm)
+            else:
+                ok = fetch_historical_klines_bybit(
+                    HTTP_CLIENT, sym, buf, KLINES_MAX, interval_minutes=tfm
+                )
+            if not ok:
+                logging.warning("[klines] Historical load failed for %s %sm", sym, tfm)
 
-    merged_list = sorted(merged_by_start.values(), key=lambda r: r["start"])
-    if len(merged_list) > CANDLE_CACHE_MAX_BARS:
-        merged_list = merged_list[-CANDLE_CACHE_MAX_BARS:]
+        if len(buf) > MEMORY_CAP_ROWS:
+            buf[:] = buf[-MEMORY_KEEP_ROWS:]
+        elif len(buf) > KLINES_MAX:
+            buf[:] = buf[-KLINES_MAX:]
+        if buf:
+            any_ok = True
+            print(f"Loaded {len(buf)} klines in RAM for {sym} ({tfm}m).")
 
-    if merged_list:
-        try:
-            _write_candle_cache_payload(merged_list, SYMBOL, ex_id)
-            _cache_high_water_ms = merged_list[-1]["start"]
-        except Exception as e:
-            logging.error("[candle_cache] Could not write %s: %s", CANDLE_CACHE_PATH, e)
+    KLINES = kline_buffer(SYMBOL, 1)
+    if not any_ok:
+        print("Warning: no klines in memory after multi-TF load.")
+    return any_ok
 
-    KLINES.clear()
-    KLINES.extend(merged_list[-KLINES_MAX:] if merged_list else [])
-    if len(KLINES) > MEMORY_CAP_ROWS:
-        KLINES[:] = KLINES[-MEMORY_KEEP_ROWS:]
 
-    ok = len(KLINES) > 0
-    if ok:
-        print(
-            f"Loaded {len(KLINES)} klines in RAM for {SYMBOL} "
-            f"(disk cache {len(merged_list)} bars; RSI_SMA length={RSI_SMA_LENGTH})."
-        )
-    else:
-        print(
-            "Warning: no klines in memory after cache/API merge; RSI may diverge until buffer fills."
-        )
-    return ok
+def ensure_updated_into(target_list: list, rows: list) -> None:
+    """Merge new/updated candles into a specific buffer by start time, then trim."""
+    for r in rows:
+        start = r["start"]
+        existing = next((i for i, k in enumerate(target_list) if k["start"] == start), None)
+        if existing is not None:
+            target_list[existing] = r
+        else:
+            target_list.append(r)
+    if len(target_list) > MEMORY_CAP_ROWS:
+        target_list[:] = target_list[-MEMORY_KEEP_ROWS:]
+    elif len(target_list) > KLINES_MAX:
+        target_list[:] = target_list[-KLINES_MAX:]
 
 
 def ensure_updated(rows: list) -> None:
-    """Merge new/updated candles into KLINES by start time, then trim."""
+    """Legacy: merge into primary 1m KLINES alias."""
     global KLINES
-    for r in rows:
-        start = r["start"]
-        existing = next((i for i, k in enumerate(KLINES) if k["start"] == start), None)
-        if existing is not None:
-            KLINES[existing] = r
-        else:
-            KLINES.append(r)
-    # Hard cap: avoid OOM on multi-day runs.
-    if len(KLINES) > MEMORY_CAP_ROWS:
-        KLINES = KLINES[-MEMORY_KEEP_ROWS:]
-    elif len(KLINES) > KLINES_MAX:
-        KLINES = KLINES[-KLINES_MAX:]
+    KLINES = kline_buffer(SYMBOL, 1)
+    ensure_updated_into(KLINES, rows)
 
 
-def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
+def compute_indicators(
+    df: pd.DataFrame,
+    rsi_length: int | None = None,
+    rsi_sma_length: int | None = None,
+) -> pd.DataFrame:
     """
     Compute Weak Momentum Reversal indicators.
     Uses the full available history so RSI (and shift-based fields) are stable as the dataframe grows.
     """
     df = df.sort_values("start").reset_index(drop=True)
-    df["RSI"] = ta.rsi(df["close"], length=RSI_LENGTH)
-    df["RSI_SMA"] = ta.sma(df["RSI"], length=RSI_SMA_LENGTH)
+    rl = int(rsi_length) if rsi_length is not None else int(RSI_LENGTH)
+    rsl = int(rsi_sma_length) if rsi_sma_length is not None else int(RSI_SMA_LENGTH)
+    df["RSI"] = ta.rsi(df["close"], length=rl)
+    df["RSI_SMA"] = ta.sma(df["RSI"], length=rsl)
     df["body_size"] = (df["close"] - df["open"]).abs()
     df["momentum_decreasing"] = df["body_size"] < df["body_size"].shift(1)
     # Volume rule: strictly volume > volume_prev (no equality)
@@ -1507,6 +1595,7 @@ async def apply_dynamic_env_updates() -> None:
     load_dotenv(override=True)
     load_dotenv("env", override=True)
     reload_active_strategies_from_env()
+    reload_strategy_instances_cache()
     br = float(_base_risk_dist)
     if not get_open_position() or br <= 0:
         return
@@ -2406,15 +2495,19 @@ async def _wait_for_entry_fill_confirmation(max_iters: int = 10, sleep_s: float 
     return False
 
 
-async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -> None:
+async def _place_order_async(
+    side: str, signal_candle: dict, is_reverse: bool, meta: dict | None = None
+) -> None:
     """
     Chunk execution then SL/TP. Signal_Range = signal candle high − low.
     LONG: base = best ask → SL = base − range×SL_MULT, TP = base + range×TP_MULT.
     SHORT: base = best bid → SL = base + range×SL_MULT, TP = base − range×TP_MULT.
+    If meta.use_fixed_sl_tp (EMA Trap), SL/TP prices come from the strategy meta dict.
     """
     global _last_position_side, _last_signal_candle, _last_sl_price, _last_tp_price, _last_position_was_reverse
     global _position_entry_price, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _half_target_reached, _last_active_sl_price, _exchange_sl_price, _local_close_reason
     global _is_setting_initial_sl, _last_entry_time, _base_risk_dist, _position_size, _monitor_had_position
+    global _active_order_instance_id
     if get_open_position():
         print("Position already open, skipping new signal")
         return
@@ -2452,6 +2545,7 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
     b_bid, b_ask, _, _ = _get_orderbook_l1()
     sl_mx, sl_mn = _sl_multipliers_from_env()
     tp_m = float(os.getenv("TP_MULTIPLIER", str(TP_MULTIPLIER)) or TP_MULTIPLIER)
+    use_fixed = bool(meta and meta.get("use_fixed_sl_tp") and not is_reverse)
 
     if is_reverse:
         if side == "Buy":
@@ -2465,6 +2559,23 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
                 return
             base = b_bid
         current_price = base
+    elif use_fixed:
+        if side == "Buy":
+            if not b_ask or b_ask <= 0:
+                print("No best ask; cannot place LONG.")
+                return
+            base = b_ask
+        else:
+            if not b_bid or b_bid <= 0:
+                print("No best bid; cannot place SHORT.")
+                return
+            base = b_bid
+        current_price = base
+        sl_wide = float(meta.get("sl_price"))
+        sl_tight = sl_wide
+        tp = float(meta.get("tp_price"))
+        sl = sl_wide
+        range_ = max(abs(float(base) - float(sl_wide)), 1e-12)
     elif side == "Buy":
         if not b_ask or b_ask <= 0:
             print("No best ask; cannot place LONG.")
@@ -2567,6 +2678,12 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
             _base_risk_dist = abs(float(ent) - float(sl_wide)) / max(float(sl_mx), 1e-12)
             _exchange_sl_price = float(sl_wide)
             _set_exchange_sl_health("ok", "")
+            if meta and meta.get("instance_id"):
+                _active_order_instance_id = str(meta["instance_id"])
+                instance_storage.merge_instance_state(_active_order_instance_id, {"in_position": True})
+                _patch_instance_state_cache(_active_order_instance_id, {"in_position": True})
+            elif not is_reverse:
+                _active_order_instance_id = None
             _sync_position_risk_to_state()
             _flush_live_state_file_with_tracker()
             _append_trade_journal_entry(
@@ -2680,6 +2797,10 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
             _base_risk_dist = abs(float(ent) - float(sl_wide)) / max(float(sl_mx), 1e-12)
             if ok_rev:
                 _exchange_sl_price = float(_sl_max_price)
+            if meta and meta.get("instance_id"):
+                _active_order_instance_id = str(meta["instance_id"])
+                instance_storage.merge_instance_state(_active_order_instance_id, {"in_position": True})
+                _patch_instance_state_cache(_active_order_instance_id, {"in_position": True})
             _sync_position_risk_to_state()
             _flush_live_state_file_with_tracker()
             if not ok_rev:
@@ -2745,6 +2866,12 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
         _base_risk_dist = abs(float(current_price) - float(sl_wide)) / max(float(sl_mx), 1e-12)
         if ok:
             _exchange_sl_price = float(_sl_max_price)
+        if meta and meta.get("instance_id"):
+            _active_order_instance_id = str(meta["instance_id"])
+            instance_storage.merge_instance_state(_active_order_instance_id, {"in_position": True})
+            _patch_instance_state_cache(_active_order_instance_id, {"in_position": True})
+        else:
+            _active_order_instance_id = None
         _sync_position_risk_to_state()
         _flush_live_state_file_with_tracker()
         _append_trade_journal_entry(
@@ -2806,6 +2933,66 @@ def strategy_weak_momentum_reversal(klines: pd.DataFrame) -> tuple[str | None, s
         return (
             "Buy",
             f"RSI<{RSI_OVERSOLD} two bearish candles, vol↑ vs prev, exp_profit_pct={expected_profit_pct:.3f}",
+        )
+    return (None, "")
+
+
+def evaluate_weak_momentum_instance(klines: pd.DataFrame, params: dict | None) -> tuple[str | None, str]:
+    """
+    Weak Momentum on a dataframe of **closed** candles only: signal = last row, prev = iloc[-2].
+    Params override .env when keys are present.
+    """
+    p = params or {}
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
+    rsi_len = int(p.get("rsiLength") or RSI_LENGTH)
+    rsi_ob = float(
+        p["rsiOverbought"] if "rsiOverbought" in p and p["rsiOverbought"] is not None else RSI_OVERBOUGHT
+    )
+    rsi_os = float(
+        p["rsiOversold"] if "rsiOversold" in p and p["rsiOversold"] is not None else RSI_OVERSOLD
+    )
+    tp_mult = float(
+        p["tpMultiplier"] if "tpMultiplier" in p and p["tpMultiplier"] is not None else os.getenv("TP_MULTIPLIER", "2.0")
+    )
+    min_profit_pct = float(
+        p["minProfitPerc"] if "minProfitPerc" in p and p["minProfitPerc"] is not None else MIN_PROFIT_PCT
+    )
+    if len(klines) < 3:
+        return (None, "")
+    df = compute_indicators(klines.copy(), rsi_length=rsi_len)
+    row = df.iloc[-1]
+    row_prev = df.iloc[-2]
+    rsi = row.get("RSI")
+    if pd.isna(rsi):
+        return (None, "")
+    v_sig, v_prev = row.get("volume"), row_prev.get("volume")
+    if pd.isna(v_sig) or pd.isna(v_prev):
+        return (None, "")
+    vd = float(v_sig) > float(v_prev)
+    close, open_ = float(row["close"]), float(row["open"])
+    high, low = float(row["high"]), float(row["low"])
+    close_prev, open_prev = float(row_prev["close"]), float(row_prev["open"])
+    range_ = high - low
+    tp_dist = range_ * tp_mult
+    ref_mid = (high + low) / 2 if high > 0 and low > 0 else close
+    expected_profit_pct = (tp_dist / ref_mid) * 100 if ref_mid > 0 else 0.0
+    if expected_profit_pct < min_profit_pct:
+        return (None, "")
+    rf = float(rsi)
+    current_bullish = close > open_
+    prev_bullish = close_prev > open_prev
+    current_bearish = open_ > close
+    prev_bearish = open_prev > close_prev
+    if current_bullish and prev_bullish and vd and rf > rsi_ob:
+        return (
+            "Sell",
+            f"RSI>{rsi_ob} two bullish candles, vol↑ vs prev, exp_profit_pct={expected_profit_pct:.3f}",
+        )
+    if current_bearish and prev_bearish and vd and rf < rsi_os:
+        return (
+            "Buy",
+            f"RSI<{rsi_os} two bearish candles, vol↑ vs prev, exp_profit_pct={expected_profit_pct:.3f}",
         )
     return (None, "")
 
@@ -3099,6 +3286,14 @@ def on_position_closed(current_price: float) -> None:
     if _last_position_was_reverse:
         print("Reverse trade hit SL – no further reverse (limit 1 reverse per loss).")
         return
+    rev_meta: dict | None = None
+    iid = _active_order_instance_id
+    if iid:
+        inst = next((x for x in get_strategy_instances() if x.get("id") == iid), None)
+        if inst and not bool((inst.get("params") or {}).get("enableReverse")):
+            print("Strategy instance: enableReverse OFF — skipping post-SL reversal.")
+            return
+        rev_meta = {"instance_id": iid, "strategy_type": (inst or {}).get("strategy_type")}
     if not _is_autotrade_enabled() and not _manual_reversal_allowed:
         print("Auto Trade is OFF and manual reversal not allowed; skipping post-SL reversal.")
         return
@@ -3107,7 +3302,9 @@ def on_position_closed(current_price: float) -> None:
         f"Stop loss on {_last_position_side} — queueing REVERSAL {reverse_side} "
         "(priority over any concurrent strategy signals; same signal range)."
     )
-    _loop.call_soon_threadsafe(_signal_queue.put_nowait, ("entry", reverse_side, _last_signal_candle, True))
+    _loop.call_soon_threadsafe(
+        _signal_queue.put_nowait, ("entry", reverse_side, _last_signal_candle, True, rev_meta)
+    )
     _manual_reversal_allowed = False
 
 
@@ -3170,9 +3367,11 @@ def handle_position_message(message: dict) -> None:
             with _orderbook_lock:
                 bb, ba = best_bid, best_ask
             mid = (bb + ba) / 2.0 if bb > 0 and ba > 0 else 0.0
+            sl_hit = _was_closed_by_sl(mid)
             _monitor_had_position = False
             _cancel_protective_orders_after_flat_sync(SYMBOL)
             on_position_closed(mid)
+            _clear_active_instance_on_flat(sl_loss=sl_hit)
             _append_delta_closed_trade_to_file(
                 snap_entry=snap_entry_at_close,
                 snap_size=snap_size_at_close,
@@ -3197,6 +3396,123 @@ def _is_autotrade_enabled() -> bool:
     vals = dotenv_values(_ENV_DOTFILE) if _ENV_DOTFILE.is_file() else {}
     v = (vals.get("AUTO_TRADE_ENABLED") or "").strip().lower()
     return v in ("true", "1", "yes")
+
+
+def _closed_kline_dataframe(buf: list) -> pd.DataFrame:
+    """Drop in-progress tail bar (confirm==False) for strategy evaluation."""
+    df = pd.DataFrame(buf)
+    if df.empty:
+        return df
+    df = df.sort_values("start").reset_index(drop=True)
+    last = df.iloc[-1].to_dict()
+    if not _is_ws_kline_fully_closed(last):
+        return df.iloc[:-1].reset_index(drop=True)
+    return df
+
+
+def _clear_active_instance_on_flat(*, sl_loss: bool) -> None:
+    """When flat, release instance lock + optional cooldown after SL."""
+    global _active_order_instance_id
+    iid = _active_order_instance_id
+    if not iid:
+        return
+    inst = next((x for x in get_strategy_instances() if x.get("id") == iid), None)
+    patch: dict = {"in_position": False}
+    if sl_loss and inst:
+        cd = int((inst.get("params") or {}).get("cooldownCandles") or 0)
+        if cd > 0:
+            st = dict(inst.get("state") or {})
+            seq = int(st.get("bar_seq") or 0)
+            patch["cooldown_until_bar"] = seq + cd
+    instance_storage.merge_instance_state(iid, patch)
+    _patch_instance_state_cache(iid, patch)
+    _active_order_instance_id = None
+
+
+def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> None:
+    """Evaluate all enabled instances for this (symbol, timeframe) on latest closed bars."""
+    global _loop, _signal_queue
+    sym_u = _norm_sym(symbol)
+    buf = kline_buffer(sym_u, interval_minutes)
+    df_closed = _closed_kline_dataframe(list(buf))
+    if len(df_closed) < 3 or _loop is None or _signal_queue is None:
+        return
+    conf_start = int(df_closed.iloc[-1]["start"])
+    for inst in get_strategy_instances():
+        if not inst.get("enabled", True):
+            continue
+        if _norm_sym(str(inst.get("symbol") or "")) != sym_u:
+            continue
+        if instance_storage.timeframe_to_minutes(str(inst.get("timeframe") or "1m")) != int(interval_minutes):
+            continue
+        st0 = dict(inst.get("state") or {})
+        st_new = _bump_instance_bar_state(inst["id"], conf_start, st0)
+        if st_new is None:
+            continue
+        inst = {**inst, "state": st_new}
+        st = st_new
+        strat = str(inst.get("strategy_type") or "").strip().lower()
+        meta_base = {
+            "instance_id": inst["id"],
+            "strategy_type": strat,
+            "symbol": sym_u,
+        }
+        signal = None
+        reason = ""
+        row_dict: dict | None = None
+        use_fixed = False
+        sl_p = tp_p = None
+
+        if strat == "ema_trap":
+            ev = ema_trap.evaluate(df_closed, dict(inst.get("params") or {}), st)
+            signal = ev.get("signal")
+            reason = str(ev.get("reason") or "")
+            row_dict = ev.get("signal_row")
+            if signal in ("Buy", "Sell") and ev.get("sl_price") is not None:
+                use_fixed = True
+                sl_p = float(ev["sl_price"])
+                tp_p = float(ev["tp_price"])
+        elif strat == "weak_momentum_reversal":
+            signal, reason = evaluate_weak_momentum_instance(df_closed, dict(inst.get("params") or {}))
+            if signal in ("Buy", "Sell"):
+                row_dict = df_closed.iloc[-1].to_dict()
+        else:
+            continue
+
+        if signal not in ("Buy", "Sell") or row_dict is None:
+            continue
+        if bool(st.get("in_position")):
+            continue
+        if int(st.get("last_signal_start") or 0) == conf_start:
+            continue
+        if get_open_position():
+            logging.info(
+                "[instances] Skip %s signal — exchange position already open",
+                inst.get("id"),
+            )
+            continue
+
+        label = AVAILABLE_STRATEGIES.get(strat, strat)
+        emoji = "🟢" if signal == "Buy" else "🔴"
+        print(
+            f"[{datetime.now().isoformat()}] {emoji} {signal.upper()} ({sym_u} {interval_minutes}m) "
+            f"[{label}] [{inst.get('name')}] {reason}"
+        )
+        instance_storage.merge_instance_state(inst["id"], {"last_signal_start": conf_start})
+        _patch_instance_state_cache(inst["id"], {"last_signal_start": conf_start})
+        if not _is_autotrade_enabled():
+            print("Signal detected but Auto Trade is OFF. Skipping execution.")
+            continue
+        meta = {
+            **meta_base,
+            "use_fixed_sl_tp": use_fixed,
+            "sl_price": sl_p,
+            "tp_price": tp_p,
+        }
+        _loop.call_soon_threadsafe(
+            _signal_queue.put_nowait,
+            ("entry", signal, row_dict, False, meta),
+        )
 
 
 def check_signals(df: pd.DataFrame) -> None:
@@ -3233,7 +3549,9 @@ def check_signals(df: pd.DataFrame) -> None:
         if not _is_autotrade_enabled():
             print("Signal detected but Auto Trade is OFF. Skipping execution.")
             return
-        _loop.call_soon_threadsafe(_signal_queue.put_nowait, ("entry", signal, row_dict, False))
+        _loop.call_soon_threadsafe(
+            _signal_queue.put_nowait, ("entry", signal, row_dict, False, None)
+        )
         return
 
     print(
@@ -3367,22 +3685,30 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
         pass
 
 
-def handle_kline_message(message: dict) -> None:
-    """Handle kline WebSocket message: update store, compute indicators, print last 3 rows."""
+def handle_kline_message(message: dict, interval_minutes: int = 1) -> None:
+    """Handle kline WebSocket message: update multi-TF store, run instance engines, refresh dashboard (1m)."""
     if "data" not in message or not message["data"]:
         return
     rows = [kline_to_row(d) for d in message["data"]]
-    ensure_updated(rows)
+    iv = max(1, int(interval_minutes))
+    sym_u = _norm_sym(SYMBOL)
+    buf = kline_buffer(sym_u, iv)
+    ensure_updated_into(buf, rows)
+    global KLINES
+    KLINES = kline_buffer(sym_u, 1)
     try:
-        _queue_closed_candle_rows_for_cache(rows)
+        if iv == 1:
+            _queue_closed_candle_rows_for_cache(rows)
     except Exception as e:
         logging.debug("[candle_cache] WS persist skip: %s", e)
+    _run_strategy_instances_for_kline(sym_u, iv)
+    if iv != 1:
+        return
     df = pd.DataFrame(KLINES)
     if df.empty:
         return
     df = compute_indicators(df)
     _update_live_strategy_state(df)
-    check_signals(df)
     last3 = df.tail(3)
     cols = [c for c in DISPLAY_COLUMNS if c in last3.columns]
     if not cols:
@@ -3417,7 +3743,11 @@ async def _signal_consumer() -> None:
             item = await _signal_queue.get()
             if item[0] != "entry":
                 continue
-            _, side, row_dict, is_reverse = item
+            meta: dict | None = None
+            if len(item) >= 5:
+                _, side, row_dict, is_reverse, meta = item[0], item[1], item[2], item[3], item[4]
+            else:
+                _, side, row_dict, is_reverse = item
             if is_reverse:
                 load_dotenv(override=True)
                 load_dotenv("env", override=True)
@@ -3427,7 +3757,7 @@ async def _signal_consumer() -> None:
                     rev_cd = 0.0
                 if rev_cd > 0:
                     await asyncio.sleep(rev_cd)
-            await _place_order_async(side, row_dict, is_reverse)
+            await _place_order_async(side, row_dict, is_reverse, meta)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -3587,6 +3917,18 @@ async def main_async() -> None:
         )
 
     print(f"STRATEGY START: [{EXCHANGE_ID}] Monitoring {SYMBOL}")
+    reload_strategy_instances_cache()
+    kline_ivs = tuple(
+        sorted(
+            {1}
+            | {
+                instance_storage.timeframe_to_minutes(str(ins.get("timeframe") or "1m"))
+                for ins in get_strategy_instances()
+                if ins.get("enabled", True)
+            }
+        )
+    )
+    logging.info("[instances] Subscribing kline intervals (minutes): %s", kline_ivs)
     # Load last signal candle from file so we don't repeat signal on same candle after restart
     try:
         if _LIVE_STATE_PATH.exists():
@@ -3769,6 +4111,7 @@ async def main_async() -> None:
                         handle_orderbook_message,
                         handle_position_message,
                         handle_execution_message,
+                        kline_intervals=kline_ivs,
                     )
                     ws_kline = None
                     ws_orderbook = None
@@ -3784,6 +4127,7 @@ async def main_async() -> None:
                         handle_orderbook_message,
                         handle_position_message,
                         handle_execution_message,
+                        kline_intervals=kline_ivs,
                     )
                     ws_kline = live_stream.ws_kline
                     ws_orderbook = live_stream.ws_orderbook

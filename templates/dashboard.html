@@ -421,12 +421,25 @@
       </section>
     </div>
 
-    <!-- Active Strategies (multi-engine hub; keys match main.ACTIVE_STRATEGIES / .env) -->
-    <section class="card mb-6" id="strategiesSection">
-      <h2 class="text-sm font-semibold text-slate-200 mb-1">Active Strategies</h2>
-      <p class="text-xs text-slate-500 mb-4">Only enabled strategies can emit auto-trade signals. Order follows the list (first match wins). Saved to <code class="text-slate-400">ACTIVE_STRATEGIES</code> in .env.</p>
-      <div id="strategiesToggleMount" class="space-y-3">
-        <p class="text-sm text-slate-500">Loading strategies…</p>
+    <!-- Strategy Hub: multi-instance / multi-timeframe (logs/strategy_instances.json) -->
+    <section class="card mb-6" id="strategyHubSection">
+      <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div>
+          <h2 class="text-sm font-semibold text-slate-200">Strategy Hub</h2>
+          <p class="text-xs text-slate-500 mt-0.5">Independent instances per timeframe. Settings save to <code class="text-slate-400">logs/strategy_instances.json</code>; bot reloads config without server restart.</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <select id="addInstanceStrategyType" class="rounded-lg bg-slate-800 border border-slate-600 text-xs text-slate-200 px-3 py-2">
+            <option value="ema_trap">EMA Trap + RF</option>
+            <option value="weak_momentum_reversal">Weak Momentum Reversal</option>
+          </select>
+          <button type="button" id="btnAddInstance" class="rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium py-2 px-4 transition">
+            Add Strategy Instance
+          </button>
+        </div>
+      </div>
+      <div id="strategyHubMount" class="space-y-2">
+        <p class="text-sm text-slate-500">Loading instances…</p>
       </div>
     </section>
 
@@ -554,70 +567,221 @@
       el.textContent = (exId === 'delta_india') ? 'Exchange: 🟠 Delta' : 'Exchange: 🔵 Bybit';
     }
 
-    async function loadStrategiesPanel() {
-      var mount = document.getElementById('strategiesToggleMount');
+    var STRATEGY_LABELS = { ema_trap: 'EMA Trap + RF', weak_momentum_reversal: 'Weak Momentum' };
+
+    function hubBadgeClass(on) {
+      return on
+        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-600/40'
+        : 'bg-slate-700 text-slate-400 border border-slate-600';
+    }
+
+    async function loadStrategyHub() {
+      var mount = document.getElementById('strategyHubMount');
       if (!mount) return;
       try {
-        var res = await fetch('/api/strategies');
-        var data = await res.json();
-        if (!res.ok) throw new Error(data.detail || data.error || res.statusText);
-        var avail = data.available || {};
-        var active = data.active || [];
-        var activeSet = {};
-        active.forEach(function (k) { activeSet[k] = true; });
+        var res = await fetch('/api/instances');
+        var list = await res.json();
+        if (!res.ok) throw new Error(list.detail || res.statusText);
+        if (!Array.isArray(list)) list = [];
         mount.innerHTML = '';
-        var keys = Object.keys(avail);
-        if (keys.length === 0) {
-          mount.innerHTML = '<p class="text-sm text-slate-500">No strategies registered.</p>';
+        if (list.length === 0) {
+          mount.innerHTML = '<p class="text-sm text-slate-500">No instances. Add one above.</p>';
           return;
         }
-        keys.forEach(function (key) {
-          var label = avail[key];
-          var on = !!activeSet[key];
-          var row = document.createElement('div');
-          row.className = 'flex items-center justify-between rounded-xl bg-slate-800/80 border border-slate-700 p-4';
-          var left = document.createElement('div');
-          left.innerHTML = '<p class="text-sm font-medium text-slate-200">' + label + '</p>' +
-            '<p class="text-[11px] text-slate-500 font-mono mt-0.5">' + key + '</p>';
-          var btn = document.createElement('button');
-          btn.type = 'button';
-          btn.setAttribute('role', 'switch');
-          btn.setAttribute('data-strategy-key', key);
-          btn.setAttribute('aria-label', label);
-          btn.setAttribute('aria-checked', on ? 'true' : 'false');
-          btn.className = 'relative inline-flex h-8 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2 focus:ring-offset-slate-900 ' +
-            (on ? 'bg-violet-500' : 'bg-slate-600');
-          var knob = document.createElement('span');
-          knob.className = 'pointer-events-none inline-block h-7 w-7 transform rounded-full bg-white shadow ring-0 transition ' +
-            (on ? 'translate-x-6' : 'translate-x-1');
-          btn.appendChild(knob);
-          row.appendChild(left);
-          row.appendChild(btn);
-          mount.appendChild(row);
-          btn.addEventListener('click', async function () {
-            var wantOn = btn.getAttribute('aria-checked') !== 'true';
-            try {
-              var r = await fetch('/api/strategies/toggle', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ key: key, enabled: wantOn })
-              });
-              var j = await r.json();
-              if (!r.ok) throw new Error((typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail || j)) || j.error || r.statusText);
-              showAppToast((wantOn ? 'Enabled: ' : 'Disabled: ') + label, false);
-              await loadStrategiesPanel();
-            } catch (e) {
-              console.error(e);
-              showAppToast('Strategy toggle failed: ' + (e.message || e), true);
-              await loadStrategiesPanel();
-            }
+        list.forEach(function (inst) {
+          var id = inst.id;
+          var st = inst.strategy_type || '';
+          var open = false;
+          var wrap = document.createElement('div');
+          wrap.className = 'rounded-xl border border-slate-700 bg-slate-800/60 overflow-hidden';
+          var head = document.createElement('button');
+          head.type = 'button';
+          head.className = 'w-full flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-left hover:bg-slate-800/90 transition';
+          var en = !!inst.enabled;
+          head.innerHTML =
+            '<div class="min-w-0">' +
+              '<p class="text-sm font-medium text-slate-100 truncate">' + (inst.name || id) + '</p>' +
+              '<p class="text-[11px] text-slate-500 font-mono">' + (inst.timeframe || '1m') + ' · ' + (STRATEGY_LABELS[st] || st) + '</p>' +
+            '</div>' +
+            '<div class="flex items-center gap-3 shrink-0">' +
+              '<span class="hub-status text-xs font-medium rounded-full px-2 py-0.5 ' + hubBadgeClass(en) + '">' + (en ? 'Active' : 'Stopped') + '</span>' +
+              '<span class="hub-chevron text-slate-500 text-xs">▼</span>' +
+            '</div>';
+          var body = document.createElement('div');
+          body.className = 'hidden border-t border-slate-700 px-4 py-4 space-y-4';
+          body.innerHTML = buildInstanceFormHtml(inst);
+          head.addEventListener('click', function () {
+            open = !open;
+            body.classList.toggle('hidden', !open);
+            head.querySelector('.hub-chevron').textContent = open ? '▲' : '▼';
           });
+          wireInstanceForm(body, inst);
+          wrap.appendChild(head);
+          wrap.appendChild(body);
+          mount.appendChild(wrap);
         });
       } catch (e) {
-        mount.innerHTML = '<p class="text-sm text-red-400">Could not load strategies.</p>';
+        mount.innerHTML = '<p class="text-sm text-red-400">Could not load instances.</p>';
         console.error(e);
       }
     }
+
+    function buildInstanceFormHtml(inst) {
+      var st = inst.strategy_type || '';
+      var p = inst.params || {};
+      var sym = inst.symbol || '';
+      var tf = inst.timeframe || '1m';
+      var common =
+        '<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">' +
+          '<label class="block text-xs text-slate-400">Name<input data-f="name" type="text" value="' + escAttr(inst.name || '') + '" class="mt-1 w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white"/></label>' +
+          '<label class="block text-xs text-slate-400">Symbol<input data-f="symbol" type="text" value="' + escAttr(sym) + '" class="mt-1 w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white"/></label>' +
+          '<label class="block text-xs text-slate-400">Timeframe' +
+            '<select data-f="timeframe" class="mt-1 w-full rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white">' +
+              ['1m','3m','5m','15m','30m','60m','120m','240m'].map(function (x) {
+                return '<option value="' + x + '"' + (tf === x ? ' selected' : '') + '>' + x + '</option>';
+              }).join('') +
+            '</select></label>' +
+        '</div>' +
+        '<div class="flex items-center justify-between rounded-lg bg-slate-900/50 border border-slate-700 px-4 py-3">' +
+          '<span class="text-sm text-slate-300">Instance ON / OFF</span>' +
+          '<button type="button" data-hub-toggle class="relative inline-flex h-8 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent ' + (inst.enabled ? 'bg-emerald-500' : 'bg-slate-600') + '">' +
+            '<span class="pointer-events-none inline-block h-7 w-7 transform rounded-full bg-white shadow transition ' + (inst.enabled ? 'translate-x-6' : 'translate-x-1') + '"></span>' +
+          '</button>' +
+        '</div>';
+      var adv = '';
+      if (st === 'ema_trap') {
+        adv =
+          '<p class="text-xs font-semibold text-slate-400">EMA Trap parameters</p>' +
+          '<div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">' +
+          numField('emaLength', p.emaLength, 20) +
+          numField('rsiLength', p.rsiLength, 14) +
+          numField('rsiOversold', p.rsiOversold, 40) +
+          numField('rsiOverbought', p.rsiOverbought, 60) +
+          numField('slMultiplier', p.slMultiplier, 1.25) +
+          numField('tpMultiplier', p.tpMultiplier, 1.5) +
+          numField('minProfitPerc', p.minProfitPerc, 0.09) +
+          numField('rangeLength', p.rangeLength, 14) +
+          numField('rangeMultiplier', p.rangeMultiplier, 1.1) +
+          numField('maxCandleAtrMult', p.maxCandleAtrMult, 3) +
+          numField('minVolatilityAtrMult', p.minVolatilityAtrMult, 0.15) +
+          '</div>' +
+          '<div class="flex flex-wrap gap-4 text-xs text-slate-300">' +
+          chkField('enableReverse', p.enableReverse) +
+          chkField('trendFilter', p.trendFilter) +
+          '</div>' +
+          '<label class="block text-xs text-slate-400">Cooldown candles (after loss)<input data-p="cooldownCandles" type="number" step="1" value="' + escAttr(p.cooldownCandles != null ? p.cooldownCandles : 0) + '" class="mt-1 w-full max-w-xs rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white"/></label>';
+      } else {
+        adv =
+          '<p class="text-xs font-semibold text-slate-400">Weak Momentum parameters (optional overrides)</p>' +
+          '<div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">' +
+          numField('rsiLength', p.rsiLength, 14) +
+          numField('rsiOversold', p.rsiOversold, 40) +
+          numField('rsiOverbought', p.rsiOverbought, 60) +
+          numField('tpMultiplier', p.tpMultiplier, 2) +
+          numField('minProfitPerc', p.minProfitPerc, 0.5) +
+          '</div>';
+      }
+      return common + adv +
+        '<div class="flex flex-wrap gap-2 pt-2">' +
+          '<button type="button" data-hub-save class="rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-sm font-medium py-2 px-4">Save Settings</button>' +
+          '<button type="button" data-hub-delete class="rounded-lg bg-red-900/60 hover:bg-red-800 text-red-100 text-sm font-medium py-2 px-4">Delete Instance</button>' +
+        '</div>';
+    }
+
+    function numField(key, val, defv) {
+      var v = val != null && val !== '' ? val : defv;
+      return '<label class="block text-slate-400">' + key + '<input data-p="' + key + '" type="number" step="any" value="' + escAttr(v) + '" class="mt-1 w-full rounded-lg bg-slate-900 border border-slate-600 px-2 py-1.5 text-sm text-white"/></label>';
+    }
+
+    function chkField(key, val) {
+      var on = !!val;
+      return '<label class="inline-flex items-center gap-2 cursor-pointer"><input data-p="' + key + '" type="checkbox" ' + (on ? 'checked' : '') + '/> ' + key + '</label>';
+    }
+
+    function escAttr(s) {
+      return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+    }
+
+    function wireInstanceForm(root, inst) {
+      var id = inst.id;
+      var st = inst.strategy_type;
+      var toggle = root.querySelector('[data-hub-toggle]');
+      if (toggle) {
+        toggle.addEventListener('click', async function () {
+          var next = !inst.enabled;
+          try {
+            var r = await fetch('/api/instances/' + encodeURIComponent(id), {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ enabled: next })
+            });
+            var j = await r.json();
+            if (!r.ok) throw new Error(j.detail || r.statusText);
+            showAppToast(next ? 'Instance enabled' : 'Instance stopped', false);
+            await loadStrategyHub();
+          } catch (e) {
+            showAppToast('Toggle failed: ' + (e.message || e), true);
+          }
+        });
+      }
+      root.querySelector('[data-hub-save]')?.addEventListener('click', async function () {
+        var params = {};
+        root.querySelectorAll('[data-p]').forEach(function (el) {
+          var k = el.getAttribute('data-p');
+          if (el.type === 'checkbox') params[k] = el.checked;
+          else if (el.value !== '') params[k] = parseFloat(el.value);
+        });
+        var payload = {
+          name: root.querySelector('[data-f="name"]')?.value,
+          symbol: root.querySelector('[data-f="symbol"]')?.value,
+          timeframe: root.querySelector('[data-f="timeframe"]')?.value,
+          params: params
+        };
+        try {
+          var r = await fetch('/api/instances/' + encodeURIComponent(id), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          var j = await r.json();
+          if (!r.ok) throw new Error(typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail || j));
+          showAppToast('Instance saved', false);
+          await loadStrategyHub();
+        } catch (e) {
+          showAppToast('Save failed: ' + (e.message || e), true);
+        }
+      });
+      root.querySelector('[data-hub-delete]')?.addEventListener('click', async function () {
+        if (!confirm('Delete this strategy instance?')) return;
+        try {
+          var r = await fetch('/api/instances/' + encodeURIComponent(id), { method: 'DELETE' });
+          var j = await r.json();
+          if (!r.ok) throw new Error(j.detail || r.statusText);
+          showAppToast('Instance deleted', false);
+          await loadStrategyHub();
+        } catch (e) {
+          showAppToast('Delete failed: ' + (e.message || e), true);
+        }
+      });
+    }
+
+    document.getElementById('btnAddInstance')?.addEventListener('click', async function () {
+      var sel = document.getElementById('addInstanceStrategyType');
+      var st = sel ? sel.value : 'ema_trap';
+      try {
+        var r = await fetch('/api/instances', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ strategy_type: st })
+        });
+        var j = await r.json();
+        if (!r.ok) throw new Error(j.detail || r.statusText);
+        showAppToast('Instance created', false);
+        await loadStrategyHub();
+      } catch (e) {
+        showAppToast('Create failed: ' + (e.message || e), true);
+      }
+    });
 
     function applyBotStatus(data) {
       const running = !!data.running;
@@ -640,7 +804,7 @@
         .then(function (res) { return res.json(); })
         .then(applyBotStatus)
         .catch(function () {});
-      loadStrategiesPanel();
+      loadStrategyHub();
       pollLiveStrategy();
       setInterval(pollLiveStrategy, 1000);
     });
