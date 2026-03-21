@@ -1,71 +1,71 @@
 {
   "symbol": "BTCUSDT",
-  "price": 70335.0,
+  "price": 70256.5,
   "indicators": {
-    "RSI": 64.8,
-    "RSI_SMA": 47.03,
-    "volume_signal_vs_prev": true,
-    "body_size": 15.0,
-    "open": 70320.0,
-    "close": 70335.0,
-    "volume": 1055.0,
-    "Expected_Profit_Pct": 0.03
+    "RSI": 28.11,
+    "RSI_SMA": 41.28,
+    "volume_signal_vs_prev": false,
+    "body_size": 2.5,
+    "open": 70259.0,
+    "close": 70256.5,
+    "volume": 534.0,
+    "Expected_Profit_Pct": 0.01
   },
   "conditions": {
     "long": [
       {
         "name": "Signal Candle Bearish (open > close)",
-        "met": false
+        "met": true
       },
       {
         "name": "Previous Candle Bearish",
-        "met": false
+        "met": true
       },
       {
         "name": "Both Bearish",
-        "met": false
+        "met": true
       },
       {
         "name": "Volume: signal > previous",
-        "met": true
-      },
-      {
-        "name": "RSI < 40.0",
         "met": false
       },
       {
-        "name": "Expected Profit >= 0.02%",
+        "name": "RSI < 40.0",
         "met": true
+      },
+      {
+        "name": "Expected Profit >= 0.02%",
+        "met": false
       }
     ],
     "short": [
       {
         "name": "Signal Candle Bullish (close > open)",
-        "met": true
+        "met": false
       },
       {
         "name": "Previous Candle Bullish",
-        "met": true
+        "met": false
       },
       {
         "name": "Both Bullish",
-        "met": true
+        "met": false
       },
       {
         "name": "Volume: signal > previous",
-        "met": true
+        "met": false
       },
       {
         "name": "RSI > 60.0",
-        "met": true
+        "met": false
       },
       {
         "name": "Expected Profit >= 0.02%",
-        "met": true
+        "met": false
       }
     ]
   },
-  "status": "Short Signal",
+  "status": "Waiting",
   "last_signal_candle_start": 1774111200000,
   "position_risk": {
     "open": false
@@ -112,15 +112,15 @@
         },
         {
           "text": "Previous bar bearish",
-          "met": false
+          "met": true
         },
         {
           "text": "Two consecutive bearish bars",
-          "met": false
+          "met": true
         },
         {
-          "text": "RSI < oversold (77.97 < 40.0)",
-          "met": false
+          "text": "RSI < oversold (22.58 < 40.0)",
+          "met": true
         }
       ],
       "rules_short": [
@@ -154,15 +154,15 @@
         },
         {
           "text": "Previous bar bullish",
-          "met": true
+          "met": false
         },
         {
           "text": "Two consecutive bullish bars",
           "met": false
         },
         {
-          "text": "RSI > overbought (77.97 > 60.0)",
-          "met": true
+          "text": "RSI > overbought (22.58 > 60.0)",
+          "met": false
         }
       ]
     },
@@ -172,125 +172,45 @@
       "strategy_type": "ema_trap",
       "rules_long": [
         {
-          "text": "Instance not marked in_position (flat)",
+          "text": "Prev Close < EMA Low",
           "met": true
         },
         {
-          "text": "No cooldown configured",
+          "text": "Prev RSI < 40.0",
           "met": true
         },
         {
-          "text": "EMA bands valid (signal bar)",
-          "met": true
-        },
-        {
-          "text": "RSI valid (signal bar)",
-          "met": true
-        },
-        {
-          "text": "ATR > 0 (signal bar)",
-          "met": true
-        },
-        {
-          "text": "EMA bands valid (confirm bar)",
-          "met": true
-        },
-        {
-          "text": "RSI valid (confirm bar)",
-          "met": true
-        },
-        {
-          "text": "ATR > 0 (confirm bar)",
-          "met": true
-        },
-        {
-          "text": "5-bar range \u2265 0.15\u00d7ATR (confirm)",
-          "met": true
-        },
-        {
-          "text": "Signal candle range \u2264 3.0\u00d7ATR (signal)",
-          "met": true
-        },
-        {
-          "text": "Signal: close < EMA low (7.03e+04 < 7.034e+04)",
-          "met": true
-        },
-        {
-          "text": "Signal: RSI < oversold (39.75 < 40.0)",
-          "met": true
-        },
-        {
-          "text": "Confirm: close > EMA low & rf\u2191",
+          "text": "Curr Close > EMA Low",
           "met": false
         },
         {
-          "text": "Trend filter (off)",
-          "met": true
+          "text": "Range Filter Uptrend",
+          "met": false
         },
         {
-          "text": "Expected TP move \u2265 0.08% (long)",
+          "text": "Expected Profit >= 0.08%",
           "met": false
         }
       ],
       "rules_short": [
         {
-          "text": "Instance not marked in_position (flat)",
-          "met": true
-        },
-        {
-          "text": "No cooldown configured",
-          "met": true
-        },
-        {
-          "text": "EMA bands valid (signal bar)",
-          "met": true
-        },
-        {
-          "text": "RSI valid (signal bar)",
-          "met": true
-        },
-        {
-          "text": "ATR > 0 (signal bar)",
-          "met": true
-        },
-        {
-          "text": "EMA bands valid (confirm bar)",
-          "met": true
-        },
-        {
-          "text": "RSI valid (confirm bar)",
-          "met": true
-        },
-        {
-          "text": "ATR > 0 (confirm bar)",
-          "met": true
-        },
-        {
-          "text": "5-bar range \u2265 0.15\u00d7ATR (confirm)",
-          "met": true
-        },
-        {
-          "text": "Signal candle range \u2264 3.0\u00d7ATR (signal)",
-          "met": true
-        },
-        {
-          "text": "Signal: close > EMA high (7.03e+04 > 7.038e+04)",
+          "text": "Prev Close > EMA High",
           "met": false
         },
         {
-          "text": "Signal: RSI > overbought (39.75 > 60.0)",
+          "text": "Prev RSI > 60.0",
           "met": false
         },
         {
-          "text": "Confirm: close < EMA high & rf\u2193",
-          "met": false
-        },
-        {
-          "text": "Trend filter (off)",
+          "text": "Curr Close < EMA High",
           "met": true
         },
         {
-          "text": "Expected TP move \u2265 0.08% (short)",
+          "text": "Range Filter Downtrend",
+          "met": true
+        },
+        {
+          "text": "Expected Profit >= 0.08%",
           "met": false
         }
       ]

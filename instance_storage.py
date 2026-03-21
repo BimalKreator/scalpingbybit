@@ -36,6 +36,7 @@ WEAK_MOMENTUM_DEFAULT_PARAMS: dict = {
     "rsiOverbought": 60,
     "tpMultiplier": 2.0,
     "minProfitPerc": 0.5,
+    "enableReverse": True,
 }
 
 ALLOWED_MINUTES = frozenset({1, 3, 5, 15, 30, 60, 120, 240})
