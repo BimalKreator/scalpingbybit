@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>Backtest – Weak Momentum Reversal</title>
+  <title>Backtest – Multi-strategy</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -46,7 +46,20 @@
       </div>
 
       <div class="bg-slate-900/80 rounded-2xl p-5 border border-slate-800 space-y-4">
-        <h2 class="text-sm font-semibold text-slate-200">Parameters (single run)</h2>
+        <h2 class="text-sm font-semibold text-slate-200">Strategy</h2>
+        <div>
+          <label for="backtestStrategy" class="block text-xs font-medium text-slate-400 mb-1">Strategy type</label>
+          <select id="backtestStrategy"
+            class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition">
+            <option value="weak_momentum_reversal">Weak Momentum Reversal</option>
+            <option value="ema_trap">EMA Trap + Range Filter</option>
+          </select>
+        </div>
+        <p class="text-xs text-slate-500">OHLCV is read only from <code class="text-slate-400">logs/market_data_1m.json</code> (local bot cache). No exchange fetch during backtest.</p>
+      </div>
+
+      <div id="params-weak-momentum" class="bg-slate-900/80 rounded-2xl p-5 border border-slate-800 space-y-4">
+        <h2 class="text-sm font-semibold text-slate-200">Weak Momentum — parameters</h2>
         <div>
           <label for="rsi_length" class="block text-xs font-medium text-slate-400 mb-1">RSI length</label>
           <input type="number" id="rsi_length" name="rsi_length" value="14" min="2" max="50" step="any"
@@ -118,10 +131,98 @@
             class="rounded border-slate-600 bg-slate-800 text-emerald-500 focus:ring-emerald-500" />
           <label for="allow_reversal" class="text-xs font-medium text-slate-400">Allow one reversal after SL (same signal range)</label>
         </div>
-        <p class="text-xs text-slate-500">Data source follows <strong class="text-slate-400">EXCHANGE_ID</strong> in .env: Bybit (CCXT) or Delta (REST). Delta uses 0% exit fee in backtest; Bybit 0.055% entry + exit.</p>
+        <p class="text-xs text-slate-500">Fees: Bybit 0.055% entry + exit taker; Delta India 0% exit in engine. Exchange ID from .env affects fee model only.</p>
       </div>
 
-      <div class="bg-slate-900/80 rounded-2xl p-5 border border-slate-800 space-y-4">
+      <div id="params-ema-trap" class="hidden bg-slate-900/80 rounded-2xl p-5 border border-slate-800 space-y-4">
+        <h2 class="text-sm font-semibold text-slate-200">EMA Trap — parameters</h2>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">EMA length</label>
+            <input type="number" id="ema_emaLength" value="20" min="2" step="1" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">RSI length</label>
+            <input type="number" id="ema_rsiLength" value="14" min="2" step="1" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">RSI overbought</label>
+            <input type="number" id="ema_rsiOverbought" value="60" step="any" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">RSI oversold</label>
+            <input type="number" id="ema_rsiOversold" value="40" step="any" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Range / ATR length</label>
+            <input type="number" id="ema_rangeLength" value="14" min="2" step="1" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Range multiplier</label>
+            <input type="number" id="ema_rangeMultiplier" value="1.1" step="any" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">SL multiplier</label>
+            <input type="number" id="ema_slMultiplier" value="1.25" step="any" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">TP multiplier</label>
+            <input type="number" id="ema_tpMultiplier" value="1.5" step="any" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Min profit %</label>
+            <input type="number" id="ema_minProfitPerc" value="0.09" min="0" step="any" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Max candle × ATR</label>
+            <input type="number" id="ema_maxCandleAtrMult" value="3" step="any" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Min vol (5-bar × ATR)</label>
+            <input type="number" id="ema_minVolatilityAtrMult" value="0.15" step="any" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Cooldown candles</label>
+            <input type="number" id="ema_cooldownCandles" value="0" min="0" step="1" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Trade capital (USD)</label>
+            <input type="number" id="ema_tradeCapitalUsd" value="100" min="1" step="any" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Leverage</label>
+            <input type="number" id="ema_leverage" value="5" min="1" max="100" step="1" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Reversal SL max / min (live-style)</label>
+            <div class="grid grid-cols-2 gap-2 mt-1">
+              <input type="number" id="ema_slMultiplierMax" value="3" step="any" placeholder="max" class="rounded-xl bg-slate-800 border border-slate-700 px-2 py-2 text-white text-sm" />
+              <input type="number" id="ema_slMultiplierMin" value="0.5" step="any" placeholder="min" class="rounded-xl bg-slate-800 border border-slate-700 px-2 py-2 text-white text-sm" />
+            </div>
+          </div>
+        </div>
+        <div class="flex flex-wrap gap-4">
+          <label class="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
+            <input type="checkbox" id="ema_enableReverse" class="rounded border-slate-600 bg-slate-800 text-emerald-500" /> enableReverse
+          </label>
+          <label class="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
+            <input type="checkbox" id="ema_trendFilter" class="rounded border-slate-600 bg-slate-800 text-emerald-500" /> trendFilter
+          </label>
+          <label class="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
+            <input type="checkbox" id="ema_trailingSlEnabled" checked class="rounded border-slate-600 bg-slate-800 text-emerald-500" /> Breakeven at half-TP
+          </label>
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-slate-400 mb-1">Breakeven buffer %</label>
+          <input type="number" id="ema_breakevenBufferPct" value="0.05" min="0" step="any" class="w-full max-w-xs rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
+        </div>
+        <div class="flex items-center gap-2">
+          <input type="checkbox" id="ema_allow_reversal" checked class="rounded border-slate-600 bg-slate-800 text-emerald-500" />
+          <label for="ema_allow_reversal" class="text-xs font-medium text-slate-400">Allow reversal after SL (requires enableReverse)</label>
+        </div>
+      </div>
+
+      <div id="optimizeSection" class="bg-slate-900/80 rounded-2xl p-5 border border-slate-800 space-y-4">
         <h2 class="text-sm font-semibold text-slate-200">Optimization (grid search)</h2>
         <div>
           <label for="optimize_by" class="block text-xs font-medium text-slate-400 mb-1">Optimize by</label>
@@ -214,6 +315,16 @@
       document.getElementById('start_date').value = start.toISOString().slice(0, 10);
     })();
 
+    function syncStrategyPanels() {
+      var st = document.getElementById('backtestStrategy').value;
+      document.getElementById('params-weak-momentum').classList.toggle('hidden', st !== 'weak_momentum_reversal');
+      document.getElementById('params-ema-trap').classList.toggle('hidden', st !== 'ema_trap');
+      var opt = document.getElementById('optimizeSection');
+      if (opt) opt.classList.toggle('hidden', st !== 'weak_momentum_reversal');
+    }
+    document.getElementById('backtestStrategy').addEventListener('change', syncStrategyPanels);
+    syncStrategyPanels();
+
     let chartInstance = null;
 
     document.getElementById('backtestForm').addEventListener('submit', async (e) => {
@@ -226,40 +337,92 @@
       runBtn.textContent = 'Running…';
       try {
         const num = (id, def) => { const v = document.getElementById(id).value; if (v === '') return def; const n = parseFloat(v); return isNaN(n) ? def : n; };
+        const numEl = (el, def) => { if (!el) return def; const v = el.value; if (v === '') return def; const n = parseFloat(v); return isNaN(n) ? def : n; };
         const optNum = (id) => { const v = document.getElementById(id).value; if (v === '') return null; const n = parseFloat(v); return isNaN(n) ? null : n; };
+        const strategy_type = document.getElementById('backtestStrategy').value || 'weak_momentum_reversal';
+        var params = {};
+        var trade_amount_usd = 100;
+        var leverage = 5;
+        var allow_reversal = true;
+        if (strategy_type === 'weak_momentum_reversal') {
+          params = {
+            rsiLength: parseInt(document.getElementById('rsi_length').value, 10) || 14,
+            rsiOverbought: num('rsi_overbought', 60),
+            rsiOversold: num('rsi_oversold', 40),
+            slMultiplierMax: num('sl_multiplier_max', 3),
+            slMultiplierMin: num('sl_multiplier_min', 0.5),
+            tpMultiplier: num('tp_multiplier', 2),
+            trailingSlEnabled: document.getElementById('trailing_sl_enabled_bt').checked,
+            breakevenBufferPct: num('breakeven_buffer_pct_bt', 0.05),
+            minProfitPerc: num('min_profit_pct', 0.5),
+            tradeCapitalUsd: num('trade_amount_usd', 100),
+            leverage: num('leverage', 5)
+          };
+          trade_amount_usd = params.tradeCapitalUsd;
+          leverage = params.leverage;
+          allow_reversal = document.getElementById('allow_reversal').checked;
+        } else {
+          params = {
+            emaLength: parseInt(document.getElementById('ema_emaLength').value, 10) || 20,
+            rsiLength: parseInt(document.getElementById('ema_rsiLength').value, 10) || 14,
+            rsiOverbought: numEl(document.getElementById('ema_rsiOverbought'), 60),
+            rsiOversold: numEl(document.getElementById('ema_rsiOversold'), 40),
+            rangeLength: parseInt(document.getElementById('ema_rangeLength').value, 10) || 14,
+            rangeMultiplier: numEl(document.getElementById('ema_rangeMultiplier'), 1.1),
+            slMultiplier: numEl(document.getElementById('ema_slMultiplier'), 1.25),
+            tpMultiplier: numEl(document.getElementById('ema_tpMultiplier'), 1.5),
+            minProfitPerc: numEl(document.getElementById('ema_minProfitPerc'), 0.09),
+            maxCandleAtrMult: numEl(document.getElementById('ema_maxCandleAtrMult'), 3),
+            minVolatilityAtrMult: numEl(document.getElementById('ema_minVolatilityAtrMult'), 0.15),
+            cooldownCandles: parseInt(document.getElementById('ema_cooldownCandles').value, 10) || 0,
+            tradeCapitalUsd: numEl(document.getElementById('ema_tradeCapitalUsd'), 100),
+            leverage: numEl(document.getElementById('ema_leverage'), 5),
+            slMultiplierMax: numEl(document.getElementById('ema_slMultiplierMax'), 3),
+            slMultiplierMin: numEl(document.getElementById('ema_slMultiplierMin'), 0.5),
+            enableReverse: document.getElementById('ema_enableReverse').checked,
+            trendFilter: document.getElementById('ema_trendFilter').checked,
+            trailingSlEnabled: document.getElementById('ema_trailingSlEnabled').checked,
+            breakevenBufferPct: numEl(document.getElementById('ema_breakevenBufferPct'), 0.05)
+          };
+          trade_amount_usd = params.tradeCapitalUsd;
+          leverage = params.leverage;
+          allow_reversal = document.getElementById('ema_allow_reversal').checked;
+        }
         const payload = {
+          strategy_type: strategy_type,
+          params: params,
           symbol: document.getElementById('symbol').value.trim() || 'BTCUSDT',
           start_date: document.getElementById('start_date').value,
           end_date: document.getElementById('end_date').value,
-          rsi_length: parseInt(document.getElementById('rsi_length').value, 10) || 14,
-          rsi_overbought: num('rsi_overbought', 60),
-          rsi_oversold: num('rsi_oversold', 40),
-          sl_multiplier_max: num('sl_multiplier_max', 3),
-          sl_multiplier_min: num('sl_multiplier_min', 0.5),
-          tp_multiplier: num('tp_multiplier', 2),
-          trailing_sl_enabled: document.getElementById('trailing_sl_enabled_bt').checked,
-          breakeven_buffer_pct: num('breakeven_buffer_pct_bt', 0.05),
-          trade_amount_usd: num('trade_amount_usd', 100),
-          leverage: num('leverage', 5),
-          min_profit_pct: num('min_profit_pct', 0.5),
-          allow_reversal: document.getElementById('allow_reversal').checked,
+          rsi_length: params.rsiLength != null ? params.rsiLength : 14,
+          rsi_overbought: params.rsiOverbought != null ? params.rsiOverbought : 60,
+          rsi_oversold: params.rsiOversold != null ? params.rsiOversold : 40,
+          sl_multiplier_max: params.slMultiplierMax != null ? params.slMultiplierMax : 3,
+          sl_multiplier_min: params.slMultiplierMin != null ? params.slMultiplierMin : 0.5,
+          tp_multiplier: params.tpMultiplier != null ? params.tpMultiplier : 2,
+          trailing_sl_enabled: params.trailingSlEnabled !== false,
+          breakeven_buffer_pct: params.breakevenBufferPct != null ? params.breakevenBufferPct : 0.05,
+          trade_amount_usd: trade_amount_usd,
+          leverage: leverage,
+          min_profit_pct: params.minProfitPerc != null ? params.minProfitPerc : 0.5,
+          allow_reversal: allow_reversal,
           initial_capital: 10000,
           optimize_by: document.getElementById('optimize_by').value || 'total_pnl',
-          rsi_len_min: optNum('rsi_len_min'),
-          rsi_len_max: optNum('rsi_len_max'),
-          rsi_len_step: (() => { const s = optNum('rsi_len_step'); return (s == null || s <= 0) ? null : s; })(),
-          rsi_ob_min: optNum('rsi_ob_min'),
-          rsi_ob_max: optNum('rsi_ob_max'),
-          rsi_ob_step: (() => { const s = optNum('rsi_ob_step'); return (s == null || s <= 0) ? null : s; })(),
-          rsi_os_min: optNum('rsi_os_min'),
-          rsi_os_max: optNum('rsi_os_max'),
-          rsi_os_step: (() => { const s = optNum('rsi_os_step'); return (s == null || s <= 0) ? null : s; })(),
-          sl_min: optNum('sl_min'),
-          sl_max: optNum('sl_max'),
-          sl_step: (() => { const s = optNum('sl_step'); return (s == null || s <= 0) ? null : s; })(),
-          tp_min: optNum('tp_min'),
-          tp_max: optNum('tp_max'),
-          tp_step: (() => { const s = optNum('tp_step'); return (s == null || s <= 0) ? null : s; })()
+          rsi_len_min: strategy_type === 'weak_momentum_reversal' ? optNum('rsi_len_min') : null,
+          rsi_len_max: strategy_type === 'weak_momentum_reversal' ? optNum('rsi_len_max') : null,
+          rsi_len_step: strategy_type === 'weak_momentum_reversal' ? (() => { const s = optNum('rsi_len_step'); return (s == null || s <= 0) ? null : s; })() : null,
+          rsi_ob_min: strategy_type === 'weak_momentum_reversal' ? optNum('rsi_ob_min') : null,
+          rsi_ob_max: strategy_type === 'weak_momentum_reversal' ? optNum('rsi_ob_max') : null,
+          rsi_ob_step: strategy_type === 'weak_momentum_reversal' ? (() => { const s = optNum('rsi_ob_step'); return (s == null || s <= 0) ? null : s; })() : null,
+          rsi_os_min: strategy_type === 'weak_momentum_reversal' ? optNum('rsi_os_min') : null,
+          rsi_os_max: strategy_type === 'weak_momentum_reversal' ? optNum('rsi_os_max') : null,
+          rsi_os_step: strategy_type === 'weak_momentum_reversal' ? (() => { const s = optNum('rsi_os_step'); return (s == null || s <= 0) ? null : s; })() : null,
+          sl_min: strategy_type === 'weak_momentum_reversal' ? optNum('sl_min') : null,
+          sl_max: strategy_type === 'weak_momentum_reversal' ? optNum('sl_max') : null,
+          sl_step: strategy_type === 'weak_momentum_reversal' ? (() => { const s = optNum('sl_step'); return (s == null || s <= 0) ? null : s; })() : null,
+          tp_min: strategy_type === 'weak_momentum_reversal' ? optNum('tp_min') : null,
+          tp_max: strategy_type === 'weak_momentum_reversal' ? optNum('tp_max') : null,
+          tp_step: strategy_type === 'weak_momentum_reversal' ? (() => { const s = optNum('tp_step'); return (s == null || s <= 0) ? null : s; })() : null
         };
         const res = await fetch('/api/backtest', {
           method: 'POST',
@@ -275,14 +438,14 @@
         document.getElementById('profitableTrades').textContent = data.profitable_trades + ' (' + data.profitable_pct + '%)';
         document.getElementById('profitFactor').textContent = data.profit_factor;
         const bp = data.best_params;
-        if (bp) {
+        if (bp && typeof bp === 'object') {
+          const skip = { strategy_type: true };
           const parts = [];
-          if (bp.rsi_length != null) parts.push('RSI len: ' + bp.rsi_length);
-          if (bp.rsi_overbought != null) parts.push('RSI OB: ' + bp.rsi_overbought);
-          if (bp.rsi_oversold != null) parts.push('RSI OS: ' + bp.rsi_oversold);
-          if (bp.sl_multiplier_max != null) parts.push('SL max: ' + bp.sl_multiplier_max);
-          if (bp.sl_multiplier_min != null) parts.push('SL min: ' + bp.sl_multiplier_min);
-          if (bp.tp_multiplier != null) parts.push('TP: ' + bp.tp_multiplier);
+          Object.keys(bp).forEach(function (k) {
+            if (skip[k]) return;
+            if (bp[k] !== undefined && bp[k] !== null && bp[k] !== '') parts.push(k + ': ' + bp[k]);
+          });
+          if (bp.strategy_type) parts.unshift('[' + bp.strategy_type + ']');
           document.getElementById('bestParams').textContent = parts.length ? parts.join(', ') : '–';
         } else {
           document.getElementById('bestParams').textContent = '–';

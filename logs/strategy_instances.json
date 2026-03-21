@@ -10,8 +10,8 @@
     "state": {
       "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 62,
-      "last_evaluated_start": 1774115280000,
+      "bar_seq": 79,
+      "last_evaluated_start": 1774116300000,
       "last_signal_start": null
     }
   },
@@ -49,8 +49,8 @@
     "state": {
       "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 14,
-      "last_evaluated_start": 1774115280000,
+      "bar_seq": 19,
+      "last_evaluated_start": 1774116180000,
       "last_signal_start": null
     }
   }

@@ -1,15 +1,15 @@
 {
   "symbol": "BTCUSDT",
-  "price": 70349.5,
+  "price": 70286.5,
   "indicators": {
-    "RSI": 30.63,
-    "RSI_SMA": 52.0,
+    "RSI": 36.76,
+    "RSI_SMA": 39.59,
     "volume_signal_vs_prev": true,
-    "body_size": 26.0,
-    "open": 70375.5,
-    "close": 70349.5,
-    "volume": 4086.0,
-    "Expected_Profit_Pct": 0.08
+    "body_size": 15.5,
+    "open": 70302.0,
+    "close": 70286.5,
+    "volume": 2459.0,
+    "Expected_Profit_Pct": 0.03
   },
   "conditions": {
     "long": [
@@ -45,7 +45,7 @@
       },
       {
         "name": "Previous Candle Bullish",
-        "met": true
+        "met": false
       },
       {
         "name": "Both Bullish",

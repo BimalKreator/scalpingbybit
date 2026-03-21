@@ -15,7 +15,7 @@ logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 from fastapi import FastAPI, Request, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from dotenv import load_dotenv, dotenv_values
@@ -1565,6 +1565,13 @@ async def backtest_page():
 
 
 class BacktestRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    strategy_type: str = "weak_momentum_reversal"
+    """weak_momentum_reversal | ema_trap"""
+    params: dict | None = None
+    """Strategy-specific parameters (merged with legacy top-level fields for weak momentum)."""
+
     symbol: str = "BTCUSDT"
     start_date: str
     end_date: str
@@ -1603,8 +1610,33 @@ class BacktestRequest(BaseModel):
     tp_step: float | None = None
 
 
+def _merge_backtest_params(req: BacktestRequest) -> dict:
+    """Merge `req.params` with legacy top-level fields (weak momentum only)."""
+    m = dict(req.params or {})
+    st = (req.strategy_type or "weak_momentum_reversal").strip().lower()
+    if st == "ema_trap":
+        return m
+
+    def put(camel: str, snake: str, val):
+        if camel not in m and snake not in m:
+            m[camel] = val
+
+    put("rsiLength", "rsi_length", req.rsi_length)
+    put("rsiOverbought", "rsi_overbought", req.rsi_overbought)
+    put("rsiOversold", "rsi_oversold", req.rsi_oversold)
+    put("slMultiplierMax", "sl_multiplier_max", req.sl_multiplier_max)
+    put("slMultiplierMin", "sl_multiplier_min", req.sl_multiplier_min)
+    put("tpMultiplier", "tp_multiplier", req.tp_multiplier)
+    put("trailingSlEnabled", "trailing_sl_enabled", req.trailing_sl_enabled)
+    put("breakevenBufferPct", "breakeven_buffer_pct", max(0.0, float(req.breakeven_buffer_pct)))
+    put("minProfitPerc", "min_profit_pct", req.min_profit_pct)
+    put("tradeCapitalUsd", "trade_amount_usd", req.trade_amount_usd)
+    put("leverage", "leverage", req.leverage)
+    return m
+
+
 def _run_backtest_sync(req: BacktestRequest):
-    """Sync helper: fetch data and run backtest (called in thread to avoid blocking event loop)."""
+    """Load OHLCV from local candle cache only; run multi-strategy backtest (thread pool)."""
     load_dotenv(str(get_env_path()))
     ex_id = (os.getenv("EXCHANGE_ID") or "bybit").strip().lower()
     if ex_id not in ("bybit", "delta_india"):
@@ -1625,8 +1657,12 @@ def _run_backtest_sync(req: BacktestRequest):
         return None, cache_err
     if df is None or df.empty:
         return None, "No data returned for the given symbol and date range."
+    merged_params = _merge_backtest_params(req)
+    st = (req.strategy_type or "weak_momentum_reversal").strip().lower()
     result = run_backtest_grid(
         df,
+        strategy_type=st,
+        strategy_params=merged_params,
         rsi_length=req.rsi_length,
         rsi_overbought=req.rsi_overbought,
         rsi_oversold=req.rsi_oversold,
@@ -1667,7 +1703,10 @@ def _run_backtest_sync(req: BacktestRequest):
 
 @app.post("/api/backtest")
 async def api_backtest(req: BacktestRequest):
-    print(f"[backtest] POST /api/backtest received: symbol={req.symbol}, start={req.start_date}, end={req.end_date}, optimize_by={req.optimize_by}")
+    print(
+        f"[backtest] POST /api/backtest strategy={req.strategy_type} symbol={req.symbol} "
+        f"start={req.start_date} end={req.end_date} optimize_by={req.optimize_by}"
+    )
     print("[backtest] Running fetch + backtest in thread pool (avoids blocking event loop)...")
     try:
         result, err = await asyncio.to_thread(_run_backtest_sync, req)

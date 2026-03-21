@@ -1,6 +1,9 @@
 """
-Backtest engine for Weak Momentum Reversal strategy.
-Bybit via CCXT; Delta via REST /v2/history/candles. Fees + reversal logic aligned with live bot.
+Multi-strategy backtest engine (Weak Momentum, EMA Trap + RF).
+
+Web/API backtests load OHLCV only from ``logs/market_data_1m.json`` (see ``load_backtest_df_from_candle_cache``).
+Optional CCXT/REST fetch helpers remain for CLI tools (e.g. ``run_heavy_backtest.py``).
+Fees + reversal behaviour aligned with the live bot where applicable.
 """
 from __future__ import annotations
 
@@ -406,7 +409,310 @@ def _qty_like_live(
     return max(m, q)
 
 
-def run_backtest(
+def _df_with_start_column(df: pd.DataFrame) -> pd.DataFrame:
+    """EMA Trap evaluate() expects a `start` column (ms); cache uses `timestamp`."""
+    out = df.copy()
+    if "start" not in out.columns:
+        out["start"] = pd.to_numeric(out["timestamp"], errors="coerce").fillna(0).astype(int)
+    return out
+
+
+def _run_backtest_ema_trap(
+    df: pd.DataFrame,
+    params: dict,
+    *,
+    trade_amount_usd: float = 100.0,
+    leverage: float = 5.0,
+    initial_capital: float = 10000.0,
+    exchange: str = "bybit",
+    allow_reversal: bool = True,
+    contract_value: float | None = None,
+    qty_step: float = 0.001,
+    min_order_qty: float = 0.001,
+    require_equity_for_entry: bool = True,
+    breakeven_buffer_pct: float = 0.05,
+    trailing_sl_enabled: bool = True,
+) -> dict:
+    """
+    Backtest EMA Trap + RF using ema_trap.evaluate() on each growing slice.
+    SL/TP are the absolute prices from the strategy (anchored signal extremes + multipliers).
+    """
+    from strategies.ema_trap import DEFAULT_PARAMS as EMA_DEFAULTS
+    from strategies.ema_trap import evaluate as ema_evaluate
+
+    p = {**EMA_DEFAULTS, **(params or {})}
+    tam = float(p.get("tradeCapitalUsd") or trade_amount_usd)
+    lev = float(p.get("leverage") or leverage)
+    sl_m = float(p.get("slMultiplier") or 1.25)
+    sl_mx = float(p.get("slMultiplierMax") or 3.0)
+    sl_mn = float(p.get("slMultiplierMin") or 0.5)
+    tp_m = float(p.get("tpMultiplier") or 1.5)
+    enable_rev = bool(p.get("enableReverse", False)) and allow_reversal
+    cd_n = max(0, int(p.get("cooldownCandles") or 0))
+
+    empty = {
+        "total_pnl": 0.0,
+        "max_drawdown": 0.0,
+        "total_trades": 0,
+        "profitable_trades": 0,
+        "profitable_pct": 0.0,
+        "profit_factor": 0.0,
+        "equity_curve": [],
+        "trades": [],
+        "best_params": {k: p.get(k) for k in ("emaLength", "rsiLength", "slMultiplier", "tpMultiplier", "minProfitPerc")},
+        "strategy_type": "ema_trap",
+    }
+
+    df2 = _df_with_start_column(df)
+    need = max(int(p["emaLength"]), int(p["rsiLength"]), int(p["rangeLength"]), 5) + 5
+    if df2.empty or len(df2) < need:
+        print(f"[backtest ema_trap] skip: len={len(df2)} need={need}")
+        return empty
+
+    ex = (exchange or "bybit").lower()
+    exit_fee_r = _exit_fee_rate(ex)
+    cv = _resolve_contract_value(ex, contract_value)
+    _SPREAD_HALF = 0.00015
+
+    equity = initial_capital
+    t0 = int(df2["timestamp"].iloc[0]) // 1000
+    equity_curve = [{"time": t0, "value": round(initial_capital, 2)}]
+    trades: list[dict] = []
+
+    in_position = False
+    entry_price = 0.0
+    entry_time = 0
+    side = ""
+    sl_price_pos = 0.0
+    tp_price_pos = 0.0
+    reversal_count = 0
+    trade_breakeven = False
+    rev_rng = 0.0
+
+    state: dict = {
+        "in_position": False,
+        "bar_seq": 0,
+        "cooldown_until_bar": 0,
+    }
+
+    i = need - 1
+    while i < len(df2):
+        row = df2.iloc[i]
+        ts = int(row["timestamp"])
+        h, l = float(row["high"]), float(row["low"])
+        state["bar_seq"] = i
+
+        if in_position:
+            if trailing_sl_enabled and tp_price_pos:
+                if side == "Buy" and tp_price_pos > entry_price:
+                    half_tp = entry_price + (tp_price_pos - entry_price) / 2.0
+                    if h >= half_tp:
+                        trade_breakeven = True
+                elif side == "Sell" and tp_price_pos < entry_price:
+                    half_tp = entry_price - (entry_price - tp_price_pos) / 2.0
+                    if l <= half_tp:
+                        trade_breakeven = True
+            buf = max(0.0, float(breakeven_buffer_pct)) / 100.0
+            if trade_breakeven:
+                if side == "Buy":
+                    sl_active = entry_price * (1.0 + buf)
+                else:
+                    sl_active = entry_price * (1.0 - buf)
+            else:
+                sl_active = sl_price_pos
+
+            exit_price = None
+            exit_reason = None
+            if side == "Buy":
+                if l <= sl_active:
+                    exit_price = sl_active
+                    exit_reason = "sl"
+                elif h >= tp_price_pos:
+                    exit_price = tp_price_pos
+                    exit_reason = "tp"
+            else:
+                if h >= sl_active:
+                    exit_price = sl_active
+                    exit_reason = "sl"
+                elif l <= tp_price_pos:
+                    exit_price = tp_price_pos
+                    exit_reason = "tp"
+
+            if exit_price is None:
+                i += 1
+                continue
+
+            qty = _qty_like_live(
+                entry_price,
+                trade_amount_usd=tam,
+                leverage=lev,
+                contract_value=cv,
+                qty_step=qty_step,
+                min_order_qty=min_order_qty,
+            )
+            if side == "Buy":
+                gross = (exit_price - entry_price) * qty
+            else:
+                gross = (entry_price - exit_price) * qty
+            fee_in = qty * entry_price * TAKER_ENTRY_FEE
+            fee_out = qty * float(exit_price) * exit_fee_r
+            net_pnl = gross - fee_in - fee_out
+            equity += net_pnl
+            cumulative_pnl = equity - initial_capital
+            trades.append(
+                {
+                    "entry_time": entry_time,
+                    "exit_time": ts,
+                    "side": side,
+                    "entry_price": round(entry_price, 4),
+                    "exit_price": round(float(exit_price), 4),
+                    "qty": round(qty, 6),
+                    "pnl": round(net_pnl, 4),
+                    "cumulative_pnl": round(cumulative_pnl, 4),
+                    "exit_reason": exit_reason or "",
+                    "reversal_leg": reversal_count > 0,
+                    "strategy": "ema_trap",
+                }
+            )
+            equity_curve.append({"time": ts // 1000, "value": round(equity, 2)})
+
+            do_reversal = (
+                exit_reason == "sl"
+                and reversal_count == 0
+                and enable_rev
+                and rev_rng > 0
+            )
+            if do_reversal:
+                rng = max(rev_rng, 1e-12)
+                x = float(exit_price)
+                if side == "Buy":
+                    side = "Sell"
+                    base = x * (1.0 - _SPREAD_HALF)
+                    entry_price = base
+                    sl_price_pos = base + rng * sl_mx
+                    tp_price_pos = base - rng * tp_m
+                else:
+                    side = "Buy"
+                    base = x * (1.0 + _SPREAD_HALF)
+                    entry_price = base
+                    sl_price_pos = base - rng * sl_mx
+                    tp_price_pos = base + rng * tp_m
+                qty2 = _qty_like_live(
+                    entry_price,
+                    trade_amount_usd=tam,
+                    leverage=lev,
+                    contract_value=cv,
+                    qty_step=qty_step,
+                    min_order_qty=min_order_qty,
+                )
+                if qty2 >= min_order_qty:
+                    reversal_count = 1
+                    entry_time = ts
+                    trade_breakeven = False
+                    state["in_position"] = True
+                    i += 1
+                    continue
+
+            in_position = False
+            state["in_position"] = False
+            reversal_count = 0
+            trade_breakeven = False
+            rev_rng = 0.0
+            if exit_reason == "sl" and cd_n > 0 and net_pnl < 0:
+                state["cooldown_until_bar"] = i + cd_n
+            i += 1
+            continue
+
+        if require_equity_for_entry and equity < tam:
+            i += 1
+            continue
+
+        if cd_n > 0 and i < int(state.get("cooldown_until_bar") or 0):
+            i += 1
+            continue
+
+        sub = df2.iloc[: i + 1]
+        res = ema_evaluate(sub, p, state)
+        su = res.get("state_updates") or {}
+        if isinstance(su, dict):
+            state.update(su)
+
+        sig = res.get("signal")
+        if sig not in ("Buy", "Sell"):
+            i += 1
+            continue
+
+        o = float(row["open"])
+        if sig == "Buy":
+            base = o * (1.0 + _SPREAD_HALF)
+        else:
+            base = o * (1.0 - _SPREAD_HALF)
+
+        sl_abs = float(res["sl_price"])
+        tp_abs = float(res["tp_price"])
+        qty = _qty_like_live(
+            base,
+            trade_amount_usd=tam,
+            leverage=lev,
+            contract_value=cv,
+            qty_step=qty_step,
+            min_order_qty=min_order_qty,
+        )
+        if qty < min_order_qty:
+            i += 1
+            continue
+
+        entry_price = base
+        entry_time = ts
+        side = "Buy" if sig == "Buy" else "Sell"
+        sl_price_pos = sl_abs
+        tp_price_pos = tp_abs
+        trade_breakeven = False
+        reversal_count = 0
+        in_position = True
+        state["in_position"] = True
+        if side == "Buy":
+            rev_rng = max((entry_price - sl_abs) / max(sl_m, 1e-12), 1e-12)
+        else:
+            rev_rng = max((sl_abs - entry_price) / max(sl_m, 1e-12), 1e-12)
+        i += 1
+        continue
+
+    total_pnl = equity - initial_capital
+    peak = initial_capital
+    max_dd = 0.0
+    for point in equity_curve:
+        v = point["value"]
+        peak = max(peak, v)
+        max_dd = max(max_dd, peak - v)
+    profitable = sum(1 for t in trades if t["pnl"] > 0)
+    gross_profit = sum(t["pnl"] for t in trades if t["pnl"] > 0)
+    gross_loss = abs(sum(t["pnl"] for t in trades if t["pnl"] < 0))
+    profit_factor = gross_profit / gross_loss if gross_loss else (float("inf") if gross_profit else 0.0)
+
+    return {
+        "total_pnl": round(total_pnl, 4),
+        "max_drawdown": round(max_dd, 4),
+        "total_trades": len(trades),
+        "profitable_trades": profitable,
+        "profitable_pct": round(100.0 * profitable / len(trades), 2) if trades else 0.0,
+        "profit_factor": round(profit_factor, 4) if isinstance(profit_factor, float) else profit_factor,
+        "equity_curve": equity_curve,
+        "trades": trades,
+        "final_equity": round(equity, 2),
+        "best_params": {**{k: p.get(k) for k in ("emaLength", "rsiLength", "rangeLength", "slMultiplier", "tpMultiplier", "minProfitPerc")}, "strategy_type": "ema_trap"},
+        "exchange": ex,
+        "strategy_type": "ema_trap",
+        "sizing": {
+            "model": "delta_contract_value" if cv else "bybit_linear",
+            "contract_value": cv,
+            "qty_step": qty_step,
+            "min_order_qty": min_order_qty,
+        },
+    }
+
+
+def _run_backtest_weak_momentum(
     df: pd.DataFrame,
     *,
     rsi_length: int = 14,
@@ -734,6 +1040,8 @@ def run_backtest(
         "sl_multiplier_min": sl_multiplier_min,
         "tp_multiplier": tp_multiplier,
         "trailing_sl_enabled": trailing_sl_enabled,
+        "rsi_length": rsi_length,
+        "strategy_type": "weak_momentum_reversal",
     }
     return {
         "total_pnl": round(total_pnl, 4),
@@ -748,6 +1056,7 @@ def run_backtest(
         "best_params": best_params,
         "exchange": ex,
         "min_profit_pct": min_profit_pct,
+        "strategy_type": "weak_momentum_reversal",
         "sizing": {
             "model": "delta_contract_value" if cv else "bybit_linear",
             "contract_value": cv,
@@ -755,6 +1064,85 @@ def run_backtest(
             "min_order_qty": min_order_qty,
         },
     }
+
+
+def run_backtest(
+    df: pd.DataFrame,
+    *,
+    strategy_type: str = "weak_momentum_reversal",
+    strategy_params: dict | None = None,
+    rsi_length: int = 14,
+    rsi_overbought: float = 60.0,
+    rsi_oversold: float = 40.0,
+    sl_multiplier_max: float = 3.0,
+    sl_multiplier_min: float = 0.5,
+    tp_multiplier: float = 2.0,
+    trailing_sl_enabled: bool = True,
+    trade_amount_usd: float = 100.0,
+    leverage: float = 5.0,
+    initial_capital: float = 10000.0,
+    exchange: str = "bybit",
+    min_profit_pct: float = 0.5,
+    breakeven_buffer_pct: float = 0.05,
+    allow_reversal: bool = True,
+    contract_value: float | None = None,
+    qty_step: float = 0.001,
+    min_order_qty: float = 0.001,
+    require_equity_for_entry: bool = True,
+) -> dict:
+    """
+    Dispatch backtest by strategy_type. `strategy_params` merges over defaults (camelCase or snake_case for weak).
+    """
+    sp = dict(strategy_params or {})
+    st = (strategy_type or "weak_momentum_reversal").strip().lower()
+
+    if st == "ema_trap":
+        return _run_backtest_ema_trap(
+            df,
+            sp,
+            trade_amount_usd=trade_amount_usd,
+            leverage=leverage,
+            initial_capital=initial_capital,
+            exchange=exchange,
+            allow_reversal=allow_reversal,
+            contract_value=contract_value,
+            qty_step=qty_step,
+            min_order_qty=min_order_qty,
+            require_equity_for_entry=require_equity_for_entry,
+            breakeven_buffer_pct=float(sp.get("breakevenBufferPct", breakeven_buffer_pct)),
+            trailing_sl_enabled=bool(
+                sp.get("trailingSlEnabled", sp.get("trailing_sl_enabled", trailing_sl_enabled))
+            ),
+        )
+
+    def _g(key_snake: str, key_camel: str, default):
+        if key_camel in sp and sp[key_camel] is not None:
+            return sp[key_camel]
+        if key_snake in sp and sp[key_snake] is not None:
+            return sp[key_snake]
+        return default
+
+    return _run_backtest_weak_momentum(
+        df,
+        rsi_length=int(_g("rsi_length", "rsiLength", rsi_length)),
+        rsi_overbought=float(_g("rsi_overbought", "rsiOverbought", rsi_overbought)),
+        rsi_oversold=float(_g("rsi_oversold", "rsiOversold", rsi_oversold)),
+        sl_multiplier_max=float(_g("sl_multiplier_max", "slMultiplierMax", sl_multiplier_max)),
+        sl_multiplier_min=float(_g("sl_multiplier_min", "slMultiplierMin", sl_multiplier_min)),
+        tp_multiplier=float(_g("tp_multiplier", "tpMultiplier", tp_multiplier)),
+        trailing_sl_enabled=bool(_g("trailing_sl_enabled", "trailingSlEnabled", trailing_sl_enabled)),
+        trade_amount_usd=float(_g("trade_amount_usd", "tradeCapitalUsd", trade_amount_usd)),
+        leverage=float(_g("leverage", "leverage", leverage)),
+        initial_capital=initial_capital,
+        exchange=exchange,
+        min_profit_pct=float(_g("min_profit_pct", "minProfitPerc", min_profit_pct)),
+        breakeven_buffer_pct=float(_g("breakeven_buffer_pct", "breakevenBufferPct", breakeven_buffer_pct)),
+        allow_reversal=allow_reversal,
+        contract_value=contract_value,
+        qty_step=qty_step,
+        min_order_qty=min_order_qty,
+        require_equity_for_entry=require_equity_for_entry,
+    )
 
 
 def _param_grid(
@@ -814,6 +1202,8 @@ def _param_grid(
 def run_backtest_grid(
     df: pd.DataFrame,
     *,
+    strategy_type: str = "weak_momentum_reversal",
+    strategy_params: dict | None = None,
     rsi_length: int = 14,
     rsi_overbought: float = 60.0,
     rsi_oversold: float = 40.0,
@@ -850,6 +1240,23 @@ def run_backtest_grid(
     tp_step: float | None = None,
     return_all_results: bool = False,
 ) -> dict:
+    st = (strategy_type or "weak_momentum_reversal").strip().lower()
+    if st == "ema_trap":
+        return run_backtest(
+            df,
+            strategy_type="ema_trap",
+            strategy_params=strategy_params,
+            trade_amount_usd=trade_amount_usd,
+            leverage=leverage,
+            initial_capital=initial_capital,
+            exchange=exchange,
+            allow_reversal=allow_reversal,
+            contract_value=contract_value,
+            qty_step=qty_step,
+            min_order_qty=min_order_qty,
+            require_equity_for_entry=require_equity_for_entry,
+        )
+
     param_combos = _param_grid(
         rsi_len_min, rsi_len_max, rsi_len_step,
         rsi_ob_min, rsi_ob_max, rsi_ob_step,
@@ -912,9 +1319,12 @@ def run_backtest_grid(
             "final_equity": res["final_equity"],
         }
 
+    base_sp = dict(strategy_params or {})
     if not param_combos:
         res = run_backtest(
             df,
+            strategy_type="weak_momentum_reversal",
+            strategy_params=base_sp,
             rsi_length=rsi_length,
             rsi_overbought=rsi_overbought,
             rsi_oversold=rsi_oversold,
@@ -945,8 +1355,19 @@ def run_backtest_grid(
     for idx, combo in enumerate(param_combos):
         rl = int(combo.get("rsi_length", rsi_length))
         cmx, cmn = _combo_sl_bounds(combo)
+        merged_sp = {
+            **base_sp,
+            "rsiLength": rl,
+            "rsiOverbought": float(combo.get("rsi_overbought", rsi_overbought)),
+            "rsiOversold": float(combo.get("rsi_oversold", rsi_oversold)),
+            "slMultiplierMax": cmx,
+            "slMultiplierMin": cmn,
+            "tpMultiplier": float(combo.get("tp_multiplier", tp_multiplier)),
+        }
         res = run_backtest(
             df,
+            strategy_type="weak_momentum_reversal",
+            strategy_params=merged_sp,
             rsi_length=rl,
             rsi_overbought=float(combo.get("rsi_overbought", rsi_overbought)),
             rsi_oversold=float(combo.get("rsi_oversold", rsi_oversold)),
@@ -978,6 +1399,8 @@ def run_backtest_grid(
 
     fallback = run_backtest(
         df,
+        strategy_type="weak_momentum_reversal",
+        strategy_params=base_sp,
         rsi_length=rsi_length,
         rsi_overbought=rsi_overbought,
         rsi_oversold=rsi_oversold,
