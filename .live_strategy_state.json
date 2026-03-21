@@ -1,21 +1,21 @@
 {
   "symbol": "BTCUSDT",
-  "price": 70460.5,
+  "price": 70324.5,
   "indicators": {
-    "RSI": 52.6,
-    "RSI_SMA": 65.64,
+    "RSI": 54.34,
+    "RSI_SMA": 27.33,
     "volume_signal_vs_prev": true,
-    "body_size": 22.0,
-    "open": 70482.5,
-    "close": 70460.5,
-    "volume": 21095.0,
-    "Expected_Profit_Pct": 0.11
+    "body_size": 4.0,
+    "open": 70320.5,
+    "close": 70324.5,
+    "volume": 2106.0,
+    "Expected_Profit_Pct": 0.01
   },
   "conditions": {
     "long": [
       {
         "name": "Signal Candle Bearish (open > close)",
-        "met": true
+        "met": false
       },
       {
         "name": "Previous Candle Bearish",
@@ -35,17 +35,17 @@
       },
       {
         "name": "Expected Profit >= 0.02%",
-        "met": true
+        "met": false
       }
     ],
     "short": [
       {
         "name": "Signal Candle Bullish (close > open)",
-        "met": false
+        "met": true
       },
       {
         "name": "Previous Candle Bullish",
-        "met": true
+        "met": false
       },
       {
         "name": "Both Bullish",
@@ -61,7 +61,7 @@
       },
       {
         "name": "Expected Profit >= 0.02%",
-        "met": true
+        "met": false
       }
     ]
   },
@@ -104,22 +104,22 @@
         },
         {
           "text": "Expected move \u2265 0.02% (latest bar range \u00d7 TP mult)",
-          "met": true
+          "met": false
         },
         {
           "text": "Latest bar bearish (open > close)",
-          "met": true
+          "met": false
         },
         {
           "text": "Previous bar bearish",
-          "met": true
+          "met": false
         },
         {
           "text": "Two consecutive bearish bars",
-          "met": true
+          "met": false
         },
         {
-          "text": "RSI < oversold (43.37 < 40.0)",
+          "text": "RSI < oversold (57.09 < 40.0)",
           "met": false
         }
       ],
@@ -146,22 +146,22 @@
         },
         {
           "text": "Expected move \u2265 0.02% (latest bar range \u00d7 TP mult)",
-          "met": true
+          "met": false
         },
         {
           "text": "Confirm bar bullish (close > open)",
-          "met": false
+          "met": true
         },
         {
           "text": "Previous bar bullish",
-          "met": false
+          "met": true
         },
         {
           "text": "Two consecutive bullish bars",
-          "met": false
+          "met": true
         },
         {
-          "text": "RSI > overbought (43.37 > 60.0)",
+          "text": "RSI > overbought (57.09 > 60.0)",
           "met": false
         }
       ]
@@ -212,12 +212,12 @@
           "met": true
         },
         {
-          "text": "Signal: close < EMA low (7.046e+04 < 7.035e+04)",
-          "met": false
+          "text": "Signal: close < EMA low (7.032e+04 < 7.036e+04)",
+          "met": true
         },
         {
-          "text": "Signal: RSI < oversold (64.87 < 40.0)",
-          "met": false
+          "text": "Signal: RSI < oversold (38.88 < 40.0)",
+          "met": true
         },
         {
           "text": "Confirm: close > EMA low & rf\u2191",
@@ -274,12 +274,12 @@
           "met": true
         },
         {
-          "text": "Signal: close > EMA high (7.046e+04 > 7.04e+04)",
-          "met": true
+          "text": "Signal: close > EMA high (7.032e+04 > 7.04e+04)",
+          "met": false
         },
         {
-          "text": "Signal: RSI > overbought (64.87 > 60.0)",
-          "met": true
+          "text": "Signal: RSI > overbought (38.88 > 60.0)",
+          "met": false
         },
         {
           "text": "Confirm: close < EMA high & rf\u2193",
