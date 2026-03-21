@@ -1588,6 +1588,7 @@ class BacktestRequest(BaseModel):
     sl_multiplier_min: float = 0.5
     trailing_sl_enabled: bool = True
     tp_multiplier: float = 2.0
+    sl_decay_seconds: float = 10.0
     breakeven_buffer_pct: float = 0.05
     trade_amount_usd: float = 100.0
     leverage: float = 5.0
@@ -1633,6 +1634,7 @@ def _merge_backtest_params(req: BacktestRequest) -> dict:
     put("slMultiplierMax", "sl_multiplier_max", req.sl_multiplier_max)
     put("slMultiplierMin", "sl_multiplier_min", req.sl_multiplier_min)
     put("tpMultiplier", "tp_multiplier", req.tp_multiplier)
+    put("slDecaySeconds", "sl_decay_seconds", max(0.0, float(req.sl_decay_seconds)))
     put("trailingSlEnabled", "trailing_sl_enabled", req.trailing_sl_enabled)
     put("breakevenBufferPct", "breakeven_buffer_pct", max(0.0, float(req.breakeven_buffer_pct)))
     put("minProfitPerc", "min_profit_pct", req.min_profit_pct)
@@ -1676,6 +1678,7 @@ def _run_backtest_sync(req: BacktestRequest):
         sl_multiplier_min=req.sl_multiplier_min,
         trailing_sl_enabled=req.trailing_sl_enabled,
         tp_multiplier=req.tp_multiplier,
+        sl_decay_seconds=max(0.0, float(req.sl_decay_seconds)),
         breakeven_buffer_pct=max(0.0, float(req.breakeven_buffer_pct)),
         trade_amount_usd=req.trade_amount_usd,
         leverage=req.leverage,

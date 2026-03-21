@@ -89,6 +89,12 @@
               class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
           </div>
         </div>
+        <div>
+          <label for="sl_decay_seconds_bt" class="block text-xs font-medium text-slate-400 mb-1">SL decay (seconds, wide → tight)</label>
+          <input type="number" id="sl_decay_seconds_bt" value="10" min="0" step="any"
+            class="w-full max-w-xs rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
+          <p class="text-xs text-slate-500 mt-1">Matches live <code class="text-slate-400">slDecaySeconds</code>: 0 = tight SL immediately.</p>
+        </div>
         <div class="grid grid-cols-2 gap-3">
           <div>
             <label for="tp_multiplier" class="block text-xs font-medium text-slate-400 mb-1">TP multiplier</label>
@@ -98,7 +104,7 @@
           <div class="flex items-end pb-3">
             <label class="flex items-center gap-2 text-xs font-medium text-slate-400 cursor-pointer">
               <input type="checkbox" id="trailing_sl_enabled_bt" checked class="rounded border-slate-600 bg-slate-800 text-emerald-500" />
-              Breakeven at half-TP (backtest)
+              Breakeven at 45% to TP (live-style)
             </label>
           </div>
         </div>
@@ -124,7 +130,7 @@
           <label for="min_profit_pct" class="block text-xs font-medium text-slate-400 mb-1">Min profit % (price move to TP)</label>
           <input type="number" id="min_profit_pct" name="min_profit_pct" value="0.5" min="0" step="0.01"
             class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
-          <p class="text-xs text-slate-500 mt-1">Matches live bot: skip signals if (TP distance / close)×100 is below this.</p>
+          <p class="text-xs text-slate-500 mt-1">Legacy API field; pure Weak Momentum backtest does not filter entries on this (matches live WM).</p>
         </div>
         <div class="flex items-center gap-2">
           <input type="checkbox" id="allow_reversal" name="allow_reversal" checked
@@ -331,6 +337,7 @@
             slMultiplierMax: num('sl_multiplier_max', 3),
             slMultiplierMin: num('sl_multiplier_min', 0.5),
             tpMultiplier: num('tp_multiplier', 2),
+            slDecaySeconds: num('sl_decay_seconds_bt', 10),
             trailingSlEnabled: document.getElementById('trailing_sl_enabled_bt').checked,
             breakevenBufferPct: num('breakeven_buffer_pct_bt', 0.05),
             minProfitPerc: num('min_profit_pct', 0.5),
@@ -374,6 +381,7 @@
           sl_multiplier_max: params.slMultiplierMax != null ? params.slMultiplierMax : 3,
           sl_multiplier_min: params.slMultiplierMin != null ? params.slMultiplierMin : 0.5,
           tp_multiplier: params.tpMultiplier != null ? params.tpMultiplier : 2,
+          sl_decay_seconds: params.slDecaySeconds != null ? params.slDecaySeconds : 10,
           trailing_sl_enabled: params.trailingSlEnabled !== false,
           breakeven_buffer_pct: params.breakevenBufferPct != null ? params.breakevenBufferPct : 0.05,
           trade_amount_usd: trade_amount_usd,

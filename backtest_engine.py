@@ -722,6 +722,7 @@ def _run_backtest_weak_momentum(
     sl_multiplier_max: float = 3.0,
     sl_multiplier_min: float = 0.5,
     tp_multiplier: float = 2.0,
+    sl_decay_seconds: float = 10.0,
     trailing_sl_enabled: bool = True,
     trade_amount_usd: float = 100.0,
     leverage: float = 5.0,
@@ -736,16 +737,16 @@ def _run_backtest_weak_momentum(
     require_equity_for_entry: bool = True,
 ) -> dict:
     """
-    Aligns with live auto-trade (main.py):
-    - Same entry rules: LONG two bearish + vol(signal)>vol(prev) + RSI<oversold; SHORT two bullish + same vol + RSI>overbought; min-profit.
-    - LONG entry at ask proxy (open * (1+spread)); SHORT at bid proxy (open * (1-spread)).
-    - Dynamic SL: entry candle uses sl_multiplier_max; later candles sl_multiplier_min; optional half-TP breakeven
-      with breakeven_buffer_pct (SL past entry to cover fees).
-    - Delta: position size = (TRADE_AMOUNT*LEVERAGE)/(contract_value*price), floored to qty_step.
-    - Bybit: size = (TRADE_AMOUNT*LEVERAGE)/price, same stepping.
-    - One reversal after SL only, same signal_range (like on_position_closed path).
-    - Fees: entry taker 0.055%; Bybit exit taker, Delta exit 0%.
-    Differences from live: exits use bar high/low vs L1 mid; no partial fills/chunk orders.
+    Aligns with live `main.evaluate_weak_momentum_instance` (pure price action + RSI):
+    - sig_bar = df.iloc[i-1], conf_bar = df.iloc[i].
+    - LONG: sig RSI < oversold, sig bearish, conf close > sig high.
+    - SHORT: sig RSI > overbought, sig bullish, conf close < sig low.
+    - base_risk = sig high − sig low; SL wide/tight and TP from conf close anchor (same formulas as main.py).
+    - SL decay: use wide SL until (bar_time − entry_time) >= sl_decay_seconds, then tight (matches main time decay).
+    - Optional half-TP breakeven (trailing_sl_enabled) + buffer %.
+    - One reversal after SL if allow_reversal, using stored base_risk (signal range).
+    - Fees: entry taker; exit per exchange.
+    Note: min_profit_pct is ignored for entries (live WM no longer filters on it); kept for API compatibility.
     """
     empty = {
         "total_pnl": 0.0,
@@ -762,6 +763,7 @@ def _run_backtest_weak_momentum(
             "sl_multiplier_max": sl_multiplier_max,
             "sl_multiplier_min": sl_multiplier_min,
             "tp_multiplier": tp_multiplier,
+            "sl_decay_seconds": sl_decay_seconds,
             "trailing_sl_enabled": trailing_sl_enabled,
         },
     }
@@ -775,7 +777,7 @@ def _run_backtest_weak_momentum(
     _SPREAD_HALF = 0.00015
     print(
         f"[backtest] exchange={ex} min_profit_pct={min_profit_pct} allow_reversal={allow_reversal} "
-        f"entry_fee={TAKER_ENTRY_FEE} exit_fee={exit_fee_r} "
+        f"sl_decay_seconds={sl_decay_seconds} entry_fee={TAKER_ENTRY_FEE} exit_fee={exit_fee_r} "
         f"delta_cv={cv if cv else 'n/a'} qty_step={qty_step}"
     )
 
@@ -808,7 +810,6 @@ def _run_backtest_weak_momentum(
     qty = 0.0
     signal_range = 0.0
     reversal_count = 0
-    entry_bar_idx = -1
     trade_breakeven = False
     sl_wide = 0.0
     sl_tight = 0.0
@@ -822,13 +823,16 @@ def _run_backtest_weak_momentum(
 
         if in_position:
             if trailing_sl_enabled:
+                # Match main._compute_active_sl_price: 45% of entry→TP path (favorable excursion).
                 if side == "Buy" and tp_price_pos > entry_price:
-                    half_tp = entry_price + (tp_price_pos - entry_price) / 2.0
-                    if h >= half_tp:
+                    total_dist = tp_price_pos - entry_price
+                    current_dist = max(0.0, h - entry_price)
+                    if total_dist > 1e-12 and current_dist >= total_dist * 0.45:
                         trade_breakeven = True
                 elif side == "Sell" and tp_price_pos < entry_price:
-                    half_tp = entry_price - (entry_price - tp_price_pos) / 2.0
-                    if l <= half_tp:
+                    total_dist = entry_price - tp_price_pos
+                    current_dist = max(0.0, entry_price - l)
+                    if total_dist > 1e-12 and current_dist >= total_dist * 0.45:
                         trade_breakeven = True
             if trade_breakeven:
                 buf = max(0.0, float(breakeven_buffer_pct)) / 100.0
@@ -836,10 +840,12 @@ def _run_backtest_weak_momentum(
                     sl_active = entry_price * (1.0 + buf)
                 else:
                     sl_active = entry_price * (1.0 - buf)
-            elif i == entry_bar_idx:
-                sl_active = sl_wide
             else:
-                sl_active = sl_tight
+                elapsed_sec = (ts - entry_time) / 1000.0 if entry_time > 0 else float("inf")
+                if elapsed_sec >= float(sl_decay_seconds):
+                    sl_active = sl_tight
+                else:
+                    sl_active = sl_wide
 
             exit_price = None
             exit_reason = None
@@ -894,8 +900,7 @@ def _run_backtest_weak_momentum(
                 and signal_range > 0
             )
             if do_reversal:
-                # Reversal leg: same dynamic SL as live — wide (max) on entry bar, tight (min) after;
-                # breakeven trailing uses half-TP vs new entry_price / tp_price_pos (loop above).
+                # Reversal leg: same range multipliers; time decay (sl_decay_seconds) applies from reversal bar ts.
                 rng = max(signal_range, 1e-12)
                 if side == "Buy":
                     side = "Sell"
@@ -925,55 +930,54 @@ def _run_backtest_weak_momentum(
                 )
                 reversal_count = 1
                 entry_time = ts
-                entry_bar_idx = i
                 trade_breakeven = False
                 continue
 
             in_position = False
             signal_range = 0.0
             reversal_count = 0
-            entry_bar_idx = -1
             trade_breakeven = False
             i += 1
             continue
 
-        if i < 3:
+        min_i = max(2, rsi_length + 1)
+        if i < min_i:
             i += 1
             continue
-        row_sig = df.iloc[i - 1]
-        row_prev2 = df.iloc[i - 2]
-        rsi = row_sig.get("RSI")
-        v_sig = row_sig.get("volume")
-        v_p2 = row_prev2.get("volume")
-        if pd.isna(rsi) or pd.isna(v_sig) or pd.isna(v_p2):
+        sig_bar = df.iloc[i - 1]
+        conf_bar = df.iloc[i]
+        sig_rsi = sig_bar.get("RSI")
+        if sig_rsi is None or pd.isna(sig_rsi):
             i += 1
             continue
-        vd = float(v_sig) > float(v_p2)
-        close_s = float(row_sig["close"])
-        open_s = float(row_sig["open"])
-        high_prev = float(row_sig["high"])
-        low_prev = float(row_sig["low"])
-        close_p2 = float(row_prev2["close"])
-        open_p2 = float(row_prev2["open"])
-        range_ = max(high_prev - low_prev, 1e-12)
-        tp_dist = range_ * tp_multiplier
-        ref_mid = (high_prev + low_prev) / 2 if high_prev > 0 and low_prev > 0 else close_s
-        expected_profit_pct = (tp_dist / ref_mid) * 100 if ref_mid > 0 else 0.0
-        if expected_profit_pct < min_profit_pct:
-            i += 1
-            continue
+        sig_high = float(sig_bar["high"])
+        sig_low = float(sig_bar["low"])
+        sig_open = float(sig_bar["open"])
+        sig_close = float(sig_bar["close"])
+        conf_close = float(conf_bar["close"])
+        base_risk = max(sig_high - sig_low, 1e-12)
+        sig_is_bearish = sig_close < sig_open
+        sig_is_bullish = sig_close > sig_open
+        rsi_f = float(sig_rsi)
+        long_ok = rsi_f < rsi_oversold and sig_is_bearish and conf_close > sig_high
+        short_ok = rsi_f > rsi_overbought and sig_is_bullish and conf_close < sig_low
 
-        rsi_f = float(rsi)
-        both_bull = close_s > open_s and close_p2 > open_p2
-        both_bear = open_s > close_s and open_p2 > close_p2
         entered = False
-        o_entry = float(row["open"])
         if require_equity_for_entry and equity < trade_amount_usd:
             i += 1
             continue
-        if both_bull and vd and rsi_f > rsi_overbought:
-            base = o_entry * (1.0 - _SPREAD_HALF)
-            entry_price = base
+        if long_ok and short_ok:
+            i += 1
+            continue
+
+        # Anchor SL/TP to conf close (same as main.evaluate_weak_momentum_instance).
+        entry_ref = conf_close
+        if entry_ref <= 0:
+            i += 1
+            continue
+
+        if long_ok:
+            entry_price = entry_ref
             qty = _qty_like_live(
                 entry_price,
                 trade_amount_usd=trade_amount_usd,
@@ -985,16 +989,15 @@ def _run_backtest_weak_momentum(
             if qty < min_order_qty:
                 i += 1
                 continue
-            sl_wide = base + range_ * sl_multiplier_max
-            sl_tight = base + range_ * sl_multiplier_min
-            tp_price_pos = base - range_ * tp_multiplier
-            side = "Sell"
-            signal_range = range_
+            sl_wide = entry_ref - (base_risk * sl_multiplier_max)
+            sl_tight = entry_ref - (base_risk * sl_multiplier_min)
+            tp_price_pos = entry_ref + (base_risk * tp_multiplier)
+            side = "Buy"
+            signal_range = base_risk
             reversal_count = 0
             entered = True
-        elif both_bear and vd and rsi_f < rsi_oversold:
-            base = o_entry * (1.0 + _SPREAD_HALF)
-            entry_price = base
+        elif short_ok:
+            entry_price = entry_ref
             qty = _qty_like_live(
                 entry_price,
                 trade_amount_usd=trade_amount_usd,
@@ -1006,18 +1009,17 @@ def _run_backtest_weak_momentum(
             if qty < min_order_qty:
                 i += 1
                 continue
-            sl_wide = base - range_ * sl_multiplier_max
-            sl_tight = base - range_ * sl_multiplier_min
-            tp_price_pos = base + range_ * tp_multiplier
-            side = "Buy"
-            signal_range = range_
+            sl_wide = entry_ref + (base_risk * sl_multiplier_max)
+            sl_tight = entry_ref + (base_risk * sl_multiplier_min)
+            tp_price_pos = entry_ref - (base_risk * tp_multiplier)
+            side = "Sell"
+            signal_range = base_risk
             reversal_count = 0
             entered = True
 
         if entered:
             in_position = True
-            entry_time = int(row["timestamp"])
-            entry_bar_idx = i
+            entry_time = ts
             trade_breakeven = False
             continue
 
@@ -1040,6 +1042,7 @@ def _run_backtest_weak_momentum(
         "sl_multiplier_max": sl_multiplier_max,
         "sl_multiplier_min": sl_multiplier_min,
         "tp_multiplier": tp_multiplier,
+        "sl_decay_seconds": sl_decay_seconds,
         "trailing_sl_enabled": trailing_sl_enabled,
         "rsi_length": rsi_length,
         "strategy_type": "weak_momentum_reversal",
@@ -1078,6 +1081,7 @@ def run_backtest(
     sl_multiplier_max: float = 3.0,
     sl_multiplier_min: float = 0.5,
     tp_multiplier: float = 2.0,
+    sl_decay_seconds: float = 10.0,
     trailing_sl_enabled: bool = True,
     trade_amount_usd: float = 100.0,
     leverage: float = 5.0,
@@ -1131,6 +1135,7 @@ def run_backtest(
         sl_multiplier_max=float(_g("sl_multiplier_max", "slMultiplierMax", sl_multiplier_max)),
         sl_multiplier_min=float(_g("sl_multiplier_min", "slMultiplierMin", sl_multiplier_min)),
         tp_multiplier=float(_g("tp_multiplier", "tpMultiplier", tp_multiplier)),
+        sl_decay_seconds=float(_g("sl_decay_seconds", "slDecaySeconds", sl_decay_seconds)),
         trailing_sl_enabled=bool(_g("trailing_sl_enabled", "trailingSlEnabled", trailing_sl_enabled)),
         trade_amount_usd=float(_g("trade_amount_usd", "tradeCapitalUsd", trade_amount_usd)),
         leverage=float(_g("leverage", "leverage", leverage)),
@@ -1211,6 +1216,7 @@ def run_backtest_grid(
     sl_multiplier_max: float = 3.0,
     sl_multiplier_min: float = 0.5,
     tp_multiplier: float = 2.0,
+    sl_decay_seconds: float = 10.0,
     trailing_sl_enabled: bool = True,
     trade_amount_usd: float = 100.0,
     leverage: float = 5.0,
@@ -1278,6 +1284,7 @@ def run_backtest_grid(
         min_order_qty=min_order_qty,
         require_equity_for_entry=require_equity_for_entry,
         trailing_sl_enabled=trailing_sl_enabled,
+        sl_decay_seconds=sl_decay_seconds,
     )
 
     def _combo_sl_bounds(combo: dict) -> tuple[float, float]:
@@ -1385,6 +1392,9 @@ def run_backtest_grid(
             "sl_multiplier_max": cmx,
             "sl_multiplier_min": cmn,
             "tp_multiplier": float(combo.get("tp_multiplier", tp_multiplier)),
+            "sl_decay_seconds": float(
+                (res.get("best_params") or {}).get("sl_decay_seconds", sl_decay_seconds)
+            ),
         }
         res_with_params = {**res, "best_params": best_params}
         if return_all_results:

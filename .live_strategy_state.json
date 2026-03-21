@@ -1,21 +1,21 @@
 {
   "symbol": "BTCUSDT",
-  "price": 70280.5,
+  "price": 70260.5,
   "indicators": {
-    "RSI": 47.57,
-    "RSI_SMA": 56.34,
+    "RSI": 41.82,
+    "RSI_SMA": 37.5,
     "volume_signal_vs_prev": true,
-    "body_size": 11.5,
-    "open": 70269.0,
-    "close": 70280.5,
-    "volume": 742.0,
+    "body_size": 13.5,
+    "open": 70274.0,
+    "close": 70260.5,
+    "volume": 649.0,
     "Expected_Profit_Pct": 0.03
   },
   "conditions": {
     "long": [
       {
         "name": "Signal Candle Bearish (open > close)",
-        "met": false
+        "met": true
       },
       {
         "name": "Previous Candle Bearish",
@@ -41,7 +41,7 @@
     "short": [
       {
         "name": "Signal Candle Bullish (close > open)",
-        "met": true
+        "met": false
       },
       {
         "name": "Previous Candle Bullish",
@@ -49,7 +49,7 @@
       },
       {
         "name": "Both Bullish",
-        "met": true
+        "met": false
       },
       {
         "name": "Volume: signal > previous",
@@ -83,85 +83,37 @@
       "strategy_type": "weak_momentum_reversal",
       "rules_long": [
         {
-          "text": "Instance flat (not in_position)",
+          "text": "Instance & Exchange Flat",
           "met": true
         },
         {
-          "text": "No open exchange position (allows new entries)",
+          "text": "Prev RSI < 40.0 (was 33.68)",
           "met": true
         },
         {
-          "text": "RSI computed (latest closed bar)",
+          "text": "Prev Bar Bearish (Red)",
           "met": true
         },
         {
-          "text": "Volume valid (signal & prev)",
-          "met": true
-        },
-        {
-          "text": "Volume: latest bar > previous",
-          "met": true
-        },
-        {
-          "text": "Expected move \u2265 0.03% (latest bar range \u00d7 TP mult)",
-          "met": true
-        },
-        {
-          "text": "Latest bar bearish (open > close)",
-          "met": true
-        },
-        {
-          "text": "Previous bar bearish",
+          "text": "Curr Close > Prev High",
           "met": false
-        },
-        {
-          "text": "Two consecutive bearish bars",
-          "met": false
-        },
-        {
-          "text": "RSI < oversold (19.54 < 40.0)",
-          "met": true
         }
       ],
       "rules_short": [
         {
-          "text": "Instance flat (not in_position)",
+          "text": "Instance & Exchange Flat",
           "met": true
         },
         {
-          "text": "No open exchange position (allows new entries)",
-          "met": true
-        },
-        {
-          "text": "RSI computed (latest closed bar)",
-          "met": true
-        },
-        {
-          "text": "Volume valid (signal & prev)",
-          "met": true
-        },
-        {
-          "text": "Volume: latest bar > previous",
-          "met": true
-        },
-        {
-          "text": "Expected move \u2265 0.03% (latest bar range \u00d7 TP mult)",
-          "met": true
-        },
-        {
-          "text": "Confirm bar bullish (close > open)",
+          "text": "Prev RSI > 60.0 (was 33.68)",
           "met": false
         },
         {
-          "text": "Previous bar bullish",
-          "met": true
-        },
-        {
-          "text": "Two consecutive bullish bars",
+          "text": "Prev Bar Bullish (Green)",
           "met": false
         },
         {
-          "text": "RSI > overbought (19.54 > 60.0)",
+          "text": "Curr Close < Prev Low",
           "met": false
         }
       ]
@@ -207,7 +159,7 @@
         },
         {
           "text": "Range Filter Downtrend",
-          "met": true
+          "met": false
         },
         {
           "text": "Expected Profit >= 0.08%",
