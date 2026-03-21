@@ -421,6 +421,15 @@
       </section>
     </div>
 
+    <!-- Active Strategies (multi-engine hub; keys match main.ACTIVE_STRATEGIES / .env) -->
+    <section class="card mb-6" id="strategiesSection">
+      <h2 class="text-sm font-semibold text-slate-200 mb-1">Active Strategies</h2>
+      <p class="text-xs text-slate-500 mb-4">Only enabled strategies can emit auto-trade signals. Order follows the list (first match wins). Saved to <code class="text-slate-400">ACTIVE_STRATEGIES</code> in .env.</p>
+      <div id="strategiesToggleMount" class="space-y-3">
+        <p class="text-sm text-slate-500">Loading strategies…</p>
+      </div>
+    </section>
+
     <!-- Exchange & API Setup (below Power Station row) -->
     <section class="card mb-6">
       <h2 class="text-sm font-semibold text-slate-200 mb-2">Exchange &amp; API Setup</h2>
@@ -545,6 +554,71 @@
       el.textContent = (exId === 'delta_india') ? 'Exchange: 🟠 Delta' : 'Exchange: 🔵 Bybit';
     }
 
+    async function loadStrategiesPanel() {
+      var mount = document.getElementById('strategiesToggleMount');
+      if (!mount) return;
+      try {
+        var res = await fetch('/api/strategies');
+        var data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.error || res.statusText);
+        var avail = data.available || {};
+        var active = data.active || [];
+        var activeSet = {};
+        active.forEach(function (k) { activeSet[k] = true; });
+        mount.innerHTML = '';
+        var keys = Object.keys(avail);
+        if (keys.length === 0) {
+          mount.innerHTML = '<p class="text-sm text-slate-500">No strategies registered.</p>';
+          return;
+        }
+        keys.forEach(function (key) {
+          var label = avail[key];
+          var on = !!activeSet[key];
+          var row = document.createElement('div');
+          row.className = 'flex items-center justify-between rounded-xl bg-slate-800/80 border border-slate-700 p-4';
+          var left = document.createElement('div');
+          left.innerHTML = '<p class="text-sm font-medium text-slate-200">' + label + '</p>' +
+            '<p class="text-[11px] text-slate-500 font-mono mt-0.5">' + key + '</p>';
+          var btn = document.createElement('button');
+          btn.type = 'button';
+          btn.setAttribute('role', 'switch');
+          btn.setAttribute('data-strategy-key', key);
+          btn.setAttribute('aria-label', label);
+          btn.setAttribute('aria-checked', on ? 'true' : 'false');
+          btn.className = 'relative inline-flex h-8 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2 focus:ring-offset-slate-900 ' +
+            (on ? 'bg-violet-500' : 'bg-slate-600');
+          var knob = document.createElement('span');
+          knob.className = 'pointer-events-none inline-block h-7 w-7 transform rounded-full bg-white shadow ring-0 transition ' +
+            (on ? 'translate-x-6' : 'translate-x-1');
+          btn.appendChild(knob);
+          row.appendChild(left);
+          row.appendChild(btn);
+          mount.appendChild(row);
+          btn.addEventListener('click', async function () {
+            var wantOn = btn.getAttribute('aria-checked') !== 'true';
+            try {
+              var r = await fetch('/api/strategies/toggle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key: key, enabled: wantOn })
+              });
+              var j = await r.json();
+              if (!r.ok) throw new Error((typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail || j)) || j.error || r.statusText);
+              showAppToast((wantOn ? 'Enabled: ' : 'Disabled: ') + label, false);
+              await loadStrategiesPanel();
+            } catch (e) {
+              console.error(e);
+              showAppToast('Strategy toggle failed: ' + (e.message || e), true);
+              await loadStrategiesPanel();
+            }
+          });
+        });
+      } catch (e) {
+        mount.innerHTML = '<p class="text-sm text-red-400">Could not load strategies.</p>';
+        console.error(e);
+      }
+    }
+
     function applyBotStatus(data) {
       const running = !!data.running;
       const autotrade = !!data.autotrade_enabled;
@@ -566,6 +640,7 @@
         .then(function (res) { return res.json(); })
         .then(applyBotStatus)
         .catch(function () {});
+      loadStrategiesPanel();
       pollLiveStrategy();
       setInterval(pollLiveStrategy, 1000);
     });

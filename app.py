@@ -39,6 +39,7 @@ from delta_client import (
     normalize_delta_symbol,
 )
 from main import (
+    AVAILABLE_STRATEGIES,
     CLOSED_TRADES_JSON_PATH,
     VIRTUAL_CLOSED_TRADES_JSON_PATH,
     SYMBOL as BOT_SYMBOL,
@@ -48,9 +49,11 @@ from main import (
     _initial_sl_setting_guard,
     apply_dynamic_env_updates,
     execute_strategy_signal,
+    get_active_strategies_from_env,
     get_paper_position_rows_for_ui,
     get_virtual_wallet,
     register_manual_trade,
+    reload_active_strategies_from_env,
     set_virtual_balance,
     virtual_market_close_sync,
 )
@@ -854,6 +857,56 @@ async def api_bot_autotrade(body: AutotradeToggleBody):
     write_env_vars({"AUTO_TRADE_ENABLED": value})
     load_dotenv(get_env_path())
     return {"autotrade_enabled": body.enabled}
+
+
+@app.get("/api/strategies")
+async def api_strategies_get():
+    """Registered strategy names and which are active (from .env ACTIVE_STRATEGIES)."""
+    load_dotenv(str(get_env_path()))
+    active = get_active_strategies_from_env()
+    return {
+        "available": dict(AVAILABLE_STRATEGIES),
+        "active": list(active),
+    }
+
+
+class StrategyToggleBody(BaseModel):
+    key: str
+    enabled: bool
+
+
+@app.post("/api/strategies/toggle")
+async def api_strategies_toggle(body: StrategyToggleBody):
+    """Enable or disable a strategy key in ACTIVE_STRATEGIES (comma-separated in .env)."""
+    k = (body.key or "").strip()
+    if k not in AVAILABLE_STRATEGIES:
+        raise HTTPException(status_code=400, detail=f"Unknown strategy: {k}")
+
+    env_map = read_env_vars()
+    if "ACTIVE_STRATEGIES" not in env_map:
+        keys_ordered: list[str] = ["weak_momentum_reversal"]
+    else:
+        raw = (env_map.get("ACTIVE_STRATEGIES") or "").strip()
+        if not raw:
+            keys_ordered = []
+        else:
+            keys_ordered = [x.strip() for x in raw.split(",") if x.strip()]
+    keys_ordered = [x for x in keys_ordered if x in AVAILABLE_STRATEGIES]
+
+    if body.enabled:
+        if k not in keys_ordered:
+            keys_ordered.append(k)
+    else:
+        keys_ordered = [x for x in keys_ordered if x != k]
+
+    write_env_vars({"ACTIVE_STRATEGIES": ",".join(keys_ordered)})
+    load_dotenv(str(get_env_path()))
+    try:
+        asyncio.create_task(apply_dynamic_env_updates())
+    except Exception as e:
+        logging.warning("[api/strategies/toggle] apply_dynamic_env_updates: %s", e)
+    active = reload_active_strategies_from_env()
+    return {"ok": True, "active": list(active)}
 
 
 class ManualTradeBody(BaseModel):

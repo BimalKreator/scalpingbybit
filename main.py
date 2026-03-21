@@ -6,6 +6,7 @@ Weak Momentum Reversal: indicators, live orders, and reverse-trade safety loop.
 import asyncio
 from contextlib import asynccontextmanager
 import math
+from typing import Callable
 import threading
 import time
 from datetime import datetime
@@ -189,6 +190,41 @@ def _sl_multipliers_from_env() -> tuple[float, float]:
         mn = 0.5
     return max(mx, 1e-12), max(mn, 1e-12)
 MIN_PROFIT_PCT = float(os.getenv("MIN_PROFIT_PCT", "0.5"))
+
+# --- Multi-strategy registry (keys match .env ACTIVE_STRATEGIES comma-separated list) ---
+AVAILABLE_STRATEGIES: dict[str, str] = {
+    "weak_momentum_reversal": "Weak Momentum Reversal",
+}
+
+
+def _parse_active_strategies_from_env() -> list[str]:
+    """If ACTIVE_STRATEGIES is missing from .env → default weak_momentum_reversal. If present but empty → []."""
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
+    vals = dotenv_values(_ENV_DOTFILE) if _ENV_DOTFILE.is_file() else {}
+    if "ACTIVE_STRATEGIES" not in vals:
+        keys_src = "weak_momentum_reversal"
+    else:
+        keys_src = (vals.get("ACTIVE_STRATEGIES") or "").strip()
+        if keys_src == "":
+            return []
+    keys = [x.strip() for x in keys_src.split(",") if x.strip()]
+    return [k for k in keys if k in AVAILABLE_STRATEGIES]
+
+
+ACTIVE_STRATEGIES: list[str] = _parse_active_strategies_from_env()
+
+# Alias for API reads (does not mutate ACTIVE_STRATEGIES global; use reload_* after .env writes).
+get_active_strategies_from_env = _parse_active_strategies_from_env
+
+
+def reload_active_strategies_from_env() -> list[str]:
+    """Re-read ACTIVE_STRATEGIES from .env (call after dashboard saves .env)."""
+    global ACTIVE_STRATEGIES
+    ACTIVE_STRATEGIES = _parse_active_strategies_from_env()
+    logging.info("[strategies] ACTIVE_STRATEGIES=%s", ACTIVE_STRATEGIES)
+    return ACTIVE_STRATEGIES
+
 
 if USE_DELTA:
     from delta_client import (
@@ -1470,6 +1506,7 @@ async def apply_dynamic_env_updates() -> None:
     global _sl_max_price, _sl_min_price, _exchange_sl_price
     load_dotenv(override=True)
     load_dotenv("env", override=True)
+    reload_active_strategies_from_env()
     br = float(_base_risk_dist)
     if not get_open_position() or br <= 0:
         return
@@ -2724,23 +2761,25 @@ async def _place_order_async(side: str, signal_candle: dict, is_reverse: bool) -
         _is_setting_initial_sl = False
 
 
-def has_valid_entry_signal_now(df: pd.DataFrame) -> tuple[str | None, pd.Series | None]:
+def strategy_weak_momentum_reversal(klines: pd.DataFrame) -> tuple[str | None, str]:
     """
-    Evaluate latest CLOSED candle for valid LONG or SHORT (1m chart).
-    LONG: two bearish candles; volume(signal) > volume(previous); RSI < oversold; min-profit.
-    SHORT: two bullish candles; same volume rule; RSI > overbought; min-profit.
+    Weak Momentum Reversal: evaluate latest CLOSED 1m candle (klines.iloc[-2]).
+    LONG: two bearish; volume(signal) > volume(prev); RSI < oversold; min expected TP %.
+    SHORT: two bullish; same volume; RSI > overbought; min expected TP %.
+    Returns ("Buy"|"Sell", reason) or (None, "").
     """
-    if len(df) < 3:
-        return (None, None)
-    row = df.iloc[-2]   # signal (closed) candle
-    row_prev = df.iloc[-3]  # candle before signal
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
+    if len(klines) < 3:
+        return (None, "")
+    row = klines.iloc[-2]
+    row_prev = klines.iloc[-3]
     rsi = row.get("RSI")
     if pd.isna(rsi):
-        return (None, None)
-    v_sig = row.get("volume")
-    v_prev = row_prev.get("volume")
+        return (None, "")
+    v_sig, v_prev = row.get("volume"), row_prev.get("volume")
     if pd.isna(v_sig) or pd.isna(v_prev):
-        return (None, None)
+        return (None, "")
     vd = float(v_sig) > float(v_prev)
     close, open_ = float(row["close"]), float(row["open"])
     high, low = float(row["high"]), float(row["low"])
@@ -2752,15 +2791,46 @@ def has_valid_entry_signal_now(df: pd.DataFrame) -> tuple[str | None, pd.Series 
     ref_mid = (high + low) / 2 if high > 0 and low > 0 else close
     expected_profit_pct = (tp_dist / ref_mid) * 100 if ref_mid > 0 else 0.0
     if expected_profit_pct < min_profit_pct:
-        return (None, None)
+        return (None, "")
+    rf = float(rsi)
     current_bullish = close > open_
     prev_bullish = close_prev > open_prev
     current_bearish = open_ > close
     prev_bearish = open_prev > close_prev
-    if current_bullish and prev_bullish and vd and float(rsi) > RSI_OVERBOUGHT:
-        return ("Sell", row)
-    if current_bearish and prev_bearish and vd and float(rsi) < RSI_OVERSOLD:
-        return ("Buy", row)
+    if current_bullish and prev_bullish and vd and rf > RSI_OVERBOUGHT:
+        return (
+            "Sell",
+            f"RSI>{RSI_OVERBOUGHT} two bullish candles, vol↑ vs prev, exp_profit_pct={expected_profit_pct:.3f}",
+        )
+    if current_bearish and prev_bearish and vd and rf < RSI_OVERSOLD:
+        return (
+            "Buy",
+            f"RSI<{RSI_OVERSOLD} two bearish candles, vol↑ vs prev, exp_profit_pct={expected_profit_pct:.3f}",
+        )
+    return (None, "")
+
+
+STRATEGY_REGISTRY: dict[str, Callable[[pd.DataFrame], tuple[str | None, str]]] = {
+    "weak_momentum_reversal": strategy_weak_momentum_reversal,
+}
+
+
+def has_valid_entry_signal_now(df: pd.DataFrame) -> tuple[str | None, pd.Series | None]:
+    """
+    Run registered strategies in ACTIVE_STRATEGIES order on the latest closed candle.
+    Returns first (side, signal_row) or (None, None).
+    """
+    reload_active_strategies_from_env()
+    if len(df) < 3:
+        return (None, None)
+    row_signal = df.iloc[-2]
+    for key in ACTIVE_STRATEGIES:
+        fn = STRATEGY_REGISTRY.get(key)
+        if fn is None:
+            continue
+        signal, _reason = fn(df)
+        if signal in ("Buy", "Sell"):
+            return (signal, row_signal)
     return (None, None)
 
 
@@ -3131,60 +3201,45 @@ def _is_autotrade_enabled() -> bool:
 
 def check_signals(df: pd.DataFrame) -> None:
     """
-    Evaluate latest CLOSED candle for entry (1m chart).
-    LONG: two bearish, vol, RSI < oversold. SHORT: two bullish, vol, RSI > overbought. Min-profit both.
+    Strategy hub: run each key in ACTIVE_STRATEGIES in order; first non-null signal queues entry.
     """
     global LAST_SIGNAL_CANDLE_START, _loop, _signal_queue
     if len(df) < 3 or _loop is None or _signal_queue is None:
         return
+    reload_active_strategies_from_env()
     row = df.iloc[-2]
-    row_prev = df.iloc[-3]
     candle_start = int(row["start"])
     if LAST_SIGNAL_CANDLE_START == candle_start:
         return
-    rsi = row.get("RSI")
-    if pd.isna(rsi):
-        return
-    v_sig, v_prev = row.get("volume"), row_prev.get("volume")
-    if pd.isna(v_sig) or pd.isna(v_prev):
-        return
-    vd = float(v_sig) > float(v_prev)
-    close, open_ = float(row["close"]), float(row["open"])
-    high, low = float(row["high"]), float(row["low"])
-    close_prev, open_prev = float(row_prev["close"]), float(row_prev["open"])
-    range_ = high - low
-    tp_mult = float(os.getenv("TP_MULTIPLIER", "2.0"))
-    tp_dist = range_ * tp_mult
-    min_profit_pct = float(os.getenv("MIN_PROFIT_PCT", "0.5"))
-    ref_mid = (high + low) / 2 if high > 0 and low > 0 else close
-    expected_profit_pct = (tp_dist / ref_mid) * 100 if ref_mid > 0 else 0.0
-    if expected_profit_pct < min_profit_pct:
-        return
+
     row_dict = row.to_dict() if hasattr(row, "to_dict") else dict(row)
-    rf = float(rsi)
-    current_bullish = close > open_
-    prev_bullish = close_prev > open_prev
-    current_bearish = open_ > close
-    prev_bearish = open_prev > close_prev
-    if current_bullish and prev_bullish and vd and rf > RSI_OVERBOUGHT:
-        print(f"[{datetime.now().isoformat()}] 🔴 SHORT SIGNAL DETECTED ({SYMBOL})")
+
+    for strat_key in ACTIVE_STRATEGIES:
+        fn = STRATEGY_REGISTRY.get(strat_key)
+        if fn is None:
+            logging.warning("[strategies] Unknown strategy key in ACTIVE_STRATEGIES: %s", strat_key)
+            continue
+        signal, reason = fn(df)
+        if signal not in ("Buy", "Sell"):
+            continue
+        label = AVAILABLE_STRATEGIES.get(strat_key, strat_key)
+        emoji = "🟢" if signal == "Buy" else "🔴"
+        print(
+            f"[{datetime.now().isoformat()}] {emoji} {signal.upper()} SIGNAL ({SYMBOL}) "
+            f"[{label}] {reason}"
+        )
         LAST_SIGNAL_CANDLE_START = candle_start
         _persist_last_signal_candle_start(candle_start)
         if not _is_autotrade_enabled():
             print("Signal detected but Auto Trade is OFF. Skipping execution.")
             return
-        _loop.call_soon_threadsafe(_signal_queue.put_nowait, ("entry", "Sell", row_dict, False))
+        _loop.call_soon_threadsafe(_signal_queue.put_nowait, ("entry", signal, row_dict, False))
         return
-    if current_bearish and prev_bearish and vd and rf < RSI_OVERSOLD:
-        print(f"[{datetime.now().isoformat()}] 🟢 LONG SIGNAL DETECTED ({SYMBOL})")
-        LAST_SIGNAL_CANDLE_START = candle_start
-        _persist_last_signal_candle_start(candle_start)
-        if not _is_autotrade_enabled():
-            print("Signal detected but Auto Trade is OFF. Skipping execution.")
-            return
-        _loop.call_soon_threadsafe(_signal_queue.put_nowait, ("entry", "Buy", row_dict, False))
-        return
-    print(f"[{datetime.now().isoformat()}] Signal check for {SYMBOL}: None")
+
+    print(
+        f"[{datetime.now().isoformat()}] Signal check for {SYMBOL}: None "
+        f"(active_strategies={ACTIVE_STRATEGIES})"
+    )
 
 
 DISPLAY_COLUMNS = ["close", "volume", "volume_increasing", "RSI", "RSI_SMA"]
