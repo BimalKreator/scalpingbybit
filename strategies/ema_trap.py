@@ -234,31 +234,43 @@ def evaluate(
         out["reason"] = "no_setup"
         return out
 
-    # --- SL / TP (R-multiples from signal extreme to confirmation close) ---
+    # --- SL / TP: risk anchored to signal-candle extreme; entry = confirmation close ---
+    entry_price = float(conf_close)
+    if entry_price <= 0:
+        out["reason"] = "invalid_entry_price"
+        return out
+
     if side == "Buy":
-        raw = conf_close - sig_low
-        if raw <= 0:
+        # SL anchor: signal low. base_risk = distance from entry down to that anchor.
+        exact_sig_sl = float(sig_low)
+        base_risk = entry_price - exact_sig_sl
+        if base_risk <= 0:
             out["reason"] = "invalid_long_geometry"
             return out
-        sl_price = conf_close - raw * sl_m
-        tp_price = conf_close + raw * tp_m
+        sl_price = entry_price - (base_risk * sl_m)
+        tp_price = entry_price + (base_risk * tp_m)
+        expected_profit_pct = ((tp_price - entry_price) / entry_price) * 100.0
     else:
-        raw = sig_high - conf_close
-        if raw <= 0:
+        # SL anchor: signal high. base_risk = distance from anchor down to entry.
+        exact_sig_sl = float(sig_high)
+        base_risk = exact_sig_sl - entry_price
+        if base_risk <= 0:
             out["reason"] = "invalid_short_geometry"
             return out
-        sl_price = conf_close + raw * sl_m
-        tp_price = conf_close - raw * tp_m
+        sl_price = entry_price + (base_risk * sl_m)
+        tp_price = entry_price - (base_risk * tp_m)
+        expected_profit_pct = ((entry_price - tp_price) / entry_price) * 100.0
 
-    exp_pct = abs((tp_price - conf_close) / conf_close) * 100.0 if conf_close else 0.0
-    if exp_pct < min_profit:
-        out["reason"] = f"min_profit_not_met_need_{min_profit}_got_{exp_pct:.4f}"
+    if expected_profit_pct < min_profit:
+        out["reason"] = (
+            f"min_profit_not_met_need_{min_profit}_got_{expected_profit_pct:.4f}"
+        )
         return out
 
     conf_row = d.iloc[conf_i].to_dict()
     out["signal"] = "Buy" if side == "Buy" else "Sell"
     out["reason"] = (
-        f"ema_trap {side} raw_r={raw:.6f} exp_profit_pct={exp_pct:.4f} "
+        f"ema_trap {side} base_risk={base_risk:.6f} exp_profit_pct={expected_profit_pct:.4f} "
         f"rsi_sig={rsi_sig:.2f} rsi_conf={rsi_conf:.2f}"
     )
     out["signal_row"] = conf_row

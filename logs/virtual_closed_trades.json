@@ -1,0 +1,17 @@
+[
+  {
+    "exchange": "Virtual (Paper)",
+    "symbol": "BTCUSDT",
+    "side": "BUY",
+    "createdTime": "1774113884903",
+    "updatedTime": "1774113884903",
+    "avgEntryPrice": "70247.5",
+    "avgExitPrice": "70364.5",
+    "leverage": "5",
+    "marginUsed": "",
+    "closedPnl": "0.117",
+    "fees": 0,
+    "exitReason": "Take Profit (paper)",
+    "strategy_name": "EMA Trap 3m"
+  }
+]
