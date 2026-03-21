@@ -6,7 +6,7 @@ Weak Momentum Reversal: indicators, live orders, and reverse-trade safety loop.
 import asyncio
 from contextlib import asynccontextmanager
 import math
-from typing import Callable
+from typing import Any, Callable
 import threading
 import time
 from datetime import datetime
@@ -519,6 +519,7 @@ live_strategy_state = {
     "price": 0.0,
     "indicators": {},
     "conditions": {"long": [], "short": []},
+    "checks": {},
     "status": "Waiting",
     "sl_price": None,
     "tp_price": None,
@@ -3130,6 +3131,101 @@ def evaluate_weak_momentum_instance(klines: pd.DataFrame, params: dict | None) -
     return (None, "")
 
 
+def weak_momentum_instance_entry_checklists(
+    klines: pd.DataFrame,
+    params: dict | None,
+    state: dict | None = None,
+) -> dict[str, Any]:
+    """
+    LONG/SHORT rule rows aligned with :func:`evaluate_weak_momentum_instance` (read-only).
+    Returns ``rules_long``, ``rules_short`` as list of ``{"text", "met"}``.
+    """
+    p = params or {}
+    st = state or {}
+
+    def R(text: str, met: bool) -> dict[str, Any]:
+        return {"text": text, "met": bool(met)}
+
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
+    rsi_len = int(p.get("rsiLength") or RSI_LENGTH)
+    rsi_ob = float(
+        p["rsiOverbought"] if "rsiOverbought" in p and p["rsiOverbought"] is not None else RSI_OVERBOUGHT
+    )
+    rsi_os = float(
+        p["rsiOversold"] if "rsiOversold" in p and p["rsiOversold"] is not None else RSI_OVERSOLD
+    )
+    _wm_tp_default = 2.0
+    tp_mult = float(
+        p["tpMultiplier"] if "tpMultiplier" in p and p["tpMultiplier"] is not None else _wm_tp_default
+    )
+    min_profit_pct = float(
+        p["minProfitPerc"] if "minProfitPerc" in p and p["minProfitPerc"] is not None else MIN_PROFIT_PCT
+    )
+
+    long_rules: list[dict[str, Any]] = []
+    short_rules: list[dict[str, Any]] = []
+    long_rules.append(R("Instance flat (not in_position)", not bool(st.get("in_position"))))
+    short_rules.append(R("Instance flat (not in_position)", not bool(st.get("in_position"))))
+    exch_ok = not get_open_position()
+    long_rules.append(R("No open exchange position (allows new entries)", exch_ok))
+    short_rules.append(R("No open exchange position (allows new entries)", exch_ok))
+
+    if len(klines) < 3:
+        msg = "Need ≥3 closed bars"
+        long_rules.append(R(msg, False))
+        short_rules.append(R(msg, False))
+        return {"rules_long": long_rules, "rules_short": short_rules, "note": "insufficient_bars"}
+
+    df = compute_indicators(klines.copy(), rsi_length=rsi_len)
+    row = df.iloc[-1]
+    row_prev = df.iloc[-2]
+    rsi = row.get("RSI")
+    rsi_valid = rsi is not None and not pd.isna(rsi)
+    long_rules.append(R("RSI computed (latest closed bar)", rsi_valid))
+    short_rules.append(R("RSI computed (latest closed bar)", rsi_valid))
+
+    v_sig, v_prev = row.get("volume"), row_prev.get("volume")
+    vol_valid = not pd.isna(v_sig) and not pd.isna(v_prev)
+    vd = vol_valid and float(v_sig) > float(v_prev)
+    long_rules.append(R("Volume valid (signal & prev)", vol_valid))
+    short_rules.append(R("Volume valid (signal & prev)", vol_valid))
+    long_rules.append(R("Volume: latest bar > previous", vd))
+    short_rules.append(R("Volume: latest bar > previous", vd))
+
+    close, open_ = float(row["close"]), float(row["open"])
+    high, low = float(row["high"]), float(row["low"])
+    close_prev, open_prev = float(row_prev["close"]), float(row_prev["open"])
+    range_ = high - low
+    tp_dist = range_ * tp_mult
+    ref_mid = (high + low) / 2 if high > 0 and low > 0 else close
+    expected_profit_pct = (tp_dist / ref_mid) * 100 if ref_mid > 0 else 0.0
+    exp_ok = expected_profit_pct >= min_profit_pct
+    long_rules.append(R(f"Expected move ≥ {min_profit_pct}% (latest bar range × TP mult)", exp_ok))
+    short_rules.append(R(f"Expected move ≥ {min_profit_pct}% (latest bar range × TP mult)", exp_ok))
+
+    current_bullish = close > open_
+    prev_bullish = close_prev > open_prev
+    current_bearish = open_ > close
+    prev_bearish = open_prev > close_prev
+    both_bearish = current_bearish and prev_bearish
+    both_bullish = current_bullish and prev_bullish
+
+    long_rules.append(R("Latest bar bearish (open > close)", current_bearish))
+    long_rules.append(R("Previous bar bearish", prev_bearish))
+    long_rules.append(R("Two consecutive bearish bars", both_bearish))
+
+    short_rules.append(R("Confirm bar bullish (close > open)", current_bullish))
+    short_rules.append(R("Previous bar bullish", prev_bullish))
+    short_rules.append(R("Two consecutive bullish bars", both_bullish))
+
+    rf = float(rsi) if rsi_valid else float("nan")
+    long_rules.append(R(f"RSI < oversold ({rf:.2f} < {rsi_os})", rsi_valid and rf < rsi_os))
+    short_rules.append(R(f"RSI > overbought ({rf:.2f} > {rsi_ob})", rsi_valid and rf > rsi_ob))
+
+    return {"rules_long": long_rules, "rules_short": short_rules, "note": None}
+
+
 STRATEGY_REGISTRY: dict[str, Callable[[pd.DataFrame], tuple[str | None, str]]] = {
     "weak_momentum_reversal": strategy_weak_momentum_reversal,
 }
@@ -3551,6 +3647,85 @@ def _closed_kline_dataframe(buf: list) -> pd.DataFrame:
     return df
 
 
+def _rebuild_instance_checks_live_state(symbol_normalized: str) -> None:
+    """
+    Build per-instance entry rule checklists for the Live Monitor (``live_strategy_state["checks"]``).
+    Uses each instance's timeframe buffer and strategy_type (EMA Trap vs Weak Momentum).
+    """
+    global live_strategy_state
+    sym_u = _norm_sym(symbol_normalized)
+    checks: dict[str, Any] = {}
+    for inst in get_strategy_instances():
+        if not inst.get("enabled", True):
+            continue
+        if _norm_sym(str(inst.get("symbol") or "")) != sym_u:
+            continue
+        iid = str(inst.get("id") or "").strip()
+        if not iid:
+            continue
+        name = str(inst.get("name") or iid)
+        tf = str(inst.get("timeframe") or "1m")
+        iv = instance_storage.timeframe_to_minutes(tf)
+        strat = str(inst.get("strategy_type") or "").strip().lower()
+        st = dict(inst.get("state") or {})
+        buf = kline_buffer(sym_u, iv)
+        df_closed = _closed_kline_dataframe(list(buf))
+
+        if strat == "ema_trap":
+            built = ema_trap.build_entry_checklists(
+                df_closed if len(df_closed) else None,
+                dict(inst.get("params") or {}),
+                st,
+            )
+            entry: dict[str, Any] = {
+                "name": name,
+                "interval": tf,
+                "strategy_type": strat,
+                "rules_long": built.get("rules_long") or [],
+                "rules_short": built.get("rules_short") or [],
+            }
+            if built.get("note"):
+                entry["note"] = built["note"]
+            checks[iid] = entry
+        elif strat == "weak_momentum_reversal":
+            built = weak_momentum_instance_entry_checklists(
+                df_closed,
+                dict(inst.get("params") or {}),
+                st,
+            )
+            entry = {
+                "name": name,
+                "interval": tf,
+                "strategy_type": strat,
+                "rules_long": built.get("rules_long") or [],
+                "rules_short": built.get("rules_short") or [],
+            }
+            if built.get("note"):
+                entry["note"] = built["note"]
+            checks[iid] = entry
+        else:
+            checks[iid] = {
+                "name": name,
+                "interval": tf,
+                "strategy_type": strat or "unknown",
+                "rules_long": [
+                    {
+                        "text": f"Unsupported strategy_type for checklist: {strat or '(empty)'}",
+                        "met": False,
+                    }
+                ],
+                "rules_short": [
+                    {
+                        "text": f"Unsupported strategy_type for checklist: {strat or '(empty)'}",
+                        "met": False,
+                    }
+                ],
+            }
+
+    with _live_state_lock:
+        live_strategy_state["checks"] = checks
+
+
 def _clear_active_instance_on_flat(*, sl_loss: bool) -> None:
     """When flat, release instance lock + optional cooldown after SL."""
     global _active_order_instance_id, _active_instance_monitor_params, _active_trade_strategy_name
@@ -3819,13 +3994,7 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
         live_strategy_state.clear()
         live_strategy_state.update(state)
         _apply_position_risk_to_state_dict(live_strategy_state)
-        snapshot = dict(live_strategy_state)
-        _merge_sl_tp_tracker_into_dict(snapshot)
-    try:
-        with open(_LIVE_STATE_PATH, "w", encoding="utf-8") as f:
-            _json.dump(snapshot, f, indent=2)
-    except Exception:
-        pass
+    # Disk write: use _flush_live_state_file_with_tracker() after _rebuild_instance_checks_live_state
 
 
 def handle_kline_message(message: dict, interval_minutes: int = 1) -> None:
@@ -3845,34 +4014,33 @@ def handle_kline_message(message: dict, interval_minutes: int = 1) -> None:
     except Exception as e:
         logging.debug("[candle_cache] WS persist skip: %s", e)
     _run_strategy_instances_for_kline(sym_u, iv)
-    if iv != 1:
-        return
-    df = pd.DataFrame(KLINES)
-    if df.empty:
-        return
-    df = compute_indicators(df)
-    _update_live_strategy_state(df)
-    last3 = df.tail(3)
-    cols = [c for c in DISPLAY_COLUMNS if c in last3.columns]
-    if not cols:
-        return
-    print("\n--- Last 3 klines (1m " + SYMBOL + ") – Weak Momentum Reversal ---")
-    print(last3[cols].to_string())
-    if len(df) >= 2:
-        sig = df.iloc[-2]
-        rsi_raw = sig.get("RSI")
-        rsi_ma = sig.get("RSI_SMA")
-        if rsi_raw is not None and not pd.isna(rsi_raw):
-            ma_s = (
-                f"{float(rsi_ma):.2f}"
-                if rsi_ma is not None and not pd.isna(rsi_ma)
-                else "—"
-            )
-            print(
-                f"[RSI vs TradingView MA] signal candle (closed): "
-                f"RSI={float(rsi_raw):.2f}  RSI_SMA({RSI_SMA_LENGTH})={ma_s}  "
-                f"(strategy entries use raw RSI only)\n"
-            )
+    if iv == 1:
+        df = pd.DataFrame(KLINES)
+        if not df.empty:
+            df = compute_indicators(df)
+            _update_live_strategy_state(df)
+            last3 = df.tail(3)
+            cols = [c for c in DISPLAY_COLUMNS if c in last3.columns]
+            if cols:
+                print("\n--- Last 3 klines (1m " + SYMBOL + ") – Weak Momentum Reversal ---")
+                print(last3[cols].to_string())
+            if len(df) >= 2:
+                sig = df.iloc[-2]
+                rsi_raw = sig.get("RSI")
+                rsi_ma = sig.get("RSI_SMA")
+                if rsi_raw is not None and not pd.isna(rsi_raw):
+                    ma_s = (
+                        f"{float(rsi_ma):.2f}"
+                        if rsi_ma is not None and not pd.isna(rsi_ma)
+                        else "—"
+                    )
+                    print(
+                        f"[RSI vs TradingView MA] signal candle (closed): "
+                        f"RSI={float(rsi_raw):.2f}  RSI_SMA({RSI_SMA_LENGTH})={ma_s}  "
+                        f"(strategy entries use raw RSI only)\n"
+                    )
+    _rebuild_instance_checks_live_state(sym_u)
+    _flush_live_state_file_with_tracker()
 
 
 async def _signal_consumer() -> None:
@@ -4196,6 +4364,7 @@ async def main_async() -> None:
             "price": 0.0,
             "indicators": {},
             "conditions": {"long": [], "short": []},
+            "checks": {},
             "status": "Waiting",
         })
 
@@ -4216,18 +4385,12 @@ async def main_async() -> None:
         df_init = pd.DataFrame(KLINES)
         df_init = compute_indicators(df_init)
         _update_live_strategy_state(df_init)
+    _rebuild_instance_checks_live_state(_norm_sym(SYMBOL))
     live_stream = None
 
-    # Write initial live strategy state so dashboard can show symbol/status before first kline
+    # Write initial live strategy state so dashboard can show symbol/status + instance checks before first kline
     try:
-        init_snap = {
-            "symbol": SYMBOL,
-            "price": 0.0,
-            "indicators": {},
-            "conditions": {"long": [], "short": []},
-            "status": "Waiting",
-        }
-        merged = {**_read_live_state_json_safe(), **init_snap}
+        merged = {**_read_live_state_json_safe(), **dict(live_strategy_state)}
         _merge_sl_tp_tracker_into_dict(merged)
         with open(_LIVE_STATE_PATH, "w", encoding="utf-8") as f:
             _json.dump(merged, f, indent=2)

@@ -279,6 +279,192 @@ def evaluate(
     return out
 
 
+def build_entry_checklists(
+    df: pd.DataFrame | None,
+    params: dict[str, Any],
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Live-monitor LONG/SHORT rule rows aligned with :func:`evaluate` (read-only; no state mutation).
+
+    Returns:
+        ``{"rules_long": [{"text", "met"}, ...], "rules_short": [...], "note": str | None}``
+    """
+    p = {**DEFAULT_PARAMS, **(params or {})}
+    ema_len = int(_f(p, "emaLength", 20))
+    rsi_len = int(_f(p, "rsiLength", 14))
+    rng_len = int(_f(p, "rangeLength", 14))
+    rng_mult = float(_f(p, "rangeMultiplier", 1.1))
+    rsi_ob = float(_f(p, "rsiOverbought", 60))
+    rsi_os = float(_f(p, "rsiOversold", 40))
+    sl_m = float(_f(p, "slMultiplier", 1.25))
+    tp_m = float(_f(p, "tpMultiplier", 1.5))
+    min_profit = float(_f(p, "minProfitPerc", 0.09))
+    max_c_atr = float(_f(p, "maxCandleAtrMult", 3.0))
+    min_vol_atr = float(_f(p, "minVolatilityAtrMult", 0.15))
+    trend_f = bool(_f(p, "trendFilter", False))
+    cd_n = max(0, int(_f(p, "cooldownCandles", 0)))
+    need = max(ema_len, rsi_len, rng_len, 5) + 5
+
+    def R(text: str, met: bool) -> dict[str, Any]:
+        return {"text": text, "met": bool(met)}
+
+    long_rules: list[dict[str, Any]] = []
+    short_rules: list[dict[str, Any]] = []
+
+    if df is None or len(df) < 2:
+        msg = f"Need ≥{need} closed bars"
+        return {
+            "rules_long": [R(msg, False)],
+            "rules_short": [R(msg, False)],
+            "note": "insufficient_bars",
+        }
+
+    in_pos = bool(state.get("in_position"))
+    long_rules.append(R("Instance not marked in_position (flat)", not in_pos))
+    short_rules.append(R("Instance not marked in_position (flat)", not in_pos))
+
+    bar_seq = int(state.get("bar_seq") or 0)
+    cooldown_until = int(state.get("cooldown_until_bar") or 0)
+    cd_ok = cd_n <= 0 or bar_seq >= cooldown_until
+    long_rules.append(R("Cooldown clear" if cd_n > 0 else "No cooldown configured", cd_ok))
+    short_rules.append(R("Cooldown clear" if cd_n > 0 else "No cooldown configured", cd_ok))
+
+    if len(df) < need:
+        long_rules.append(R(f"Warmup: need {need} bars (have {len(df)})", False))
+        short_rules.append(R(f"Warmup: need {need} bars (have {len(df)})", False))
+        return {"rules_long": long_rules, "rules_short": short_rules, "note": "warming_up"}
+
+    if in_pos or not cd_ok:
+        return {"rules_long": long_rules, "rules_short": short_rules, "note": "blocked"}
+
+    d = df.sort_values("start").reset_index(drop=True)
+    conf_i = len(d) - 1
+    sig_i = len(d) - 2
+    high = d["high"].astype(float)
+    low = d["low"].astype(float)
+    close = d["close"].astype(float)
+    ema_hi = ta.ema(high, length=ema_len)
+    ema_lo = ta.ema(low, length=ema_len)
+    rsi = ta.rsi(close, length=rsi_len)
+    atr = ta.atr(high, low, close, length=rng_len)
+    rf, rf_up, rf_down = _compute_range_filter(close.values, atr.values, rng_mult)
+    for col, series in (
+        ("emaHigh", ema_hi),
+        ("emaLow", ema_lo),
+        ("RSI", rsi),
+        ("ATR", atr),
+    ):
+        d[col] = series
+    d["rf"] = rf
+    d["rfTrendUp"] = rf_up
+    d["rfTrendDown"] = rf_down
+
+    ema_ok = True
+    rsi_ok = True
+    atr_ok = True
+    for idx, label in (sig_i, "signal"), (conf_i, "confirm"):
+        eh = d.at[idx, "emaHigh"]
+        el = d.at[idx, "emaLow"]
+        r = d.at[idx, "RSI"]
+        a = d.at[idx, "ATR"]
+        eok = not (np.isnan(eh) or np.isnan(el))
+        rok = not np.isnan(r)
+        aok = not (np.isnan(a) or a <= 0)
+        ema_ok = ema_ok and eok
+        rsi_ok = rsi_ok and rok
+        atr_ok = atr_ok and aok
+        long_rules.append(R(f"EMA bands valid ({label} bar)", eok))
+        short_rules.append(R(f"EMA bands valid ({label} bar)", eok))
+        long_rules.append(R(f"RSI valid ({label} bar)", rok))
+        short_rules.append(R(f"RSI valid ({label} bar)", rok))
+        long_rules.append(R(f"ATR > 0 ({label} bar)", aok))
+        short_rules.append(R(f"ATR > 0 ({label} bar)", aok))
+
+    if not (ema_ok and rsi_ok and atr_ok):
+        return {"rules_long": long_rules, "rules_short": short_rules, "note": "indicator_nan"}
+
+    sig_close = float(d.at[sig_i, "close"])
+    conf_close = float(d.at[conf_i, "close"])
+    sig_high = float(d.at[sig_i, "high"])
+    sig_low = float(d.at[sig_i, "low"])
+    ema_lo_sig = float(d.at[sig_i, "emaLow"])
+    ema_hi_sig = float(d.at[sig_i, "emaHigh"])
+    ema_lo_conf = float(d.at[conf_i, "emaLow"])
+    ema_hi_conf = float(d.at[conf_i, "emaHigh"])
+    rsi_sig = float(d.at[sig_i, "RSI"])
+    rsi_conf = float(d.at[conf_i, "RSI"])
+    atr_sig = float(d.at[sig_i, "ATR"])
+    atr_conf = float(d.at[conf_i, "ATR"])
+
+    from_i = max(0, conf_i - 4)
+    win_high = float(d.loc[from_i:conf_i, "high"].max())
+    win_low = float(d.loc[from_i:conf_i, "low"].min())
+    range5 = win_high - win_low
+    vol_ok = range5 >= min_vol_atr * atr_conf
+    long_rules.append(
+        R(f"5-bar range ≥ {min_vol_atr}×ATR (confirm)", vol_ok),
+    )
+    short_rules.append(
+        R(f"5-bar range ≥ {min_vol_atr}×ATR (confirm)", vol_ok),
+    )
+
+    sig_range = sig_high - sig_low
+    spike_ok = sig_range <= max_c_atr * atr_sig
+    long_rules.append(R(f"Signal candle range ≤ {max_c_atr}×ATR (signal)", spike_ok))
+    short_rules.append(R(f"Signal candle range ≤ {max_c_atr}×ATR (signal)", spike_ok))
+
+    long_sig = sig_close < ema_lo_sig and rsi_sig < rsi_os
+    long_conf = conf_close > ema_lo_conf and bool(d.at[conf_i, "rfTrendUp"])
+    short_sig = sig_close > ema_hi_sig and rsi_sig > rsi_ob
+    short_conf = conf_close < ema_hi_conf and bool(d.at[conf_i, "rfTrendDown"])
+
+    long_rules.append(R(f"Signal: close < EMA low ({sig_close:.4g} < {ema_lo_sig:.4g})", sig_close < ema_lo_sig))
+    long_rules.append(R(f"Signal: RSI < oversold ({rsi_sig:.2f} < {rsi_os})", rsi_sig < rsi_os))
+    long_rules.append(R(f"Confirm: close > EMA low & rf↑", long_conf))
+    trend_long_ok = (ema_lo_conf > ema_lo_sig) if trend_f else True
+    long_rules.append(
+        R("Trend filter: EMA low rising" if trend_f else "Trend filter (off)", trend_long_ok),
+    )
+
+    short_rules.append(R(f"Signal: close > EMA high ({sig_close:.4g} > {ema_hi_sig:.4g})", sig_close > ema_hi_sig))
+    short_rules.append(R(f"Signal: RSI > overbought ({rsi_sig:.2f} > {rsi_ob})", rsi_sig > rsi_ob))
+    short_rules.append(R(f"Confirm: close < EMA high & rf↓", short_conf))
+    trend_short_ok = (ema_hi_conf < ema_hi_sig) if trend_f else True
+    short_rules.append(
+        R("Trend filter: EMA high falling" if trend_f else "Trend filter (off)", trend_short_ok),
+    )
+
+    entry_price = float(conf_close)
+    min_long_ok = False
+    min_short_ok = False
+    if entry_price > 0:
+        if long_sig and long_conf and trend_long_ok:
+            base_risk = entry_price - float(sig_low)
+            if base_risk > 0:
+                tp_p = entry_price + base_risk * tp_m
+                exp_pct = ((tp_p - entry_price) / entry_price) * 100.0
+                min_long_ok = exp_pct >= min_profit
+                long_rules.append(R(f"Expected TP move ≥ {min_profit}% (long)", min_long_ok))
+        else:
+            long_rules.append(R(f"Expected TP move ≥ {min_profit}% (long)", False))
+
+        if short_sig and short_conf and trend_short_ok:
+            base_risk = float(sig_high) - entry_price
+            if base_risk > 0:
+                tp_p = entry_price - base_risk * tp_m
+                exp_pct = ((entry_price - tp_p) / entry_price) * 100.0
+                min_short_ok = exp_pct >= min_profit
+                short_rules.append(R(f"Expected TP move ≥ {min_profit}% (short)", min_short_ok))
+        else:
+            short_rules.append(R(f"Expected TP move ≥ {min_profit}% (short)", False))
+    else:
+        long_rules.append(R(f"Expected TP move ≥ {min_profit}% (long)", False))
+        short_rules.append(R(f"Expected TP move ≥ {min_profit}% (short)", False))
+
+    return {"rules_long": long_rules, "rules_short": short_rules, "note": None}
+
+
 def prepare_dataframe(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:
     """Pre-compute columns for dashboard / debugging (optional)."""
     p = {**DEFAULT_PARAMS, **(params or {})}

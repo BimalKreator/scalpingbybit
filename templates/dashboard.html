@@ -212,16 +212,8 @@
           </div>
           <div>
             <p class="text-xs font-medium text-slate-400 mb-2">Entry Rules Checklist</p>
-            <div class="grid grid-cols-2 gap-3">
-              <div class="rounded-xl bg-slate-800/80 border border-slate-700 p-3">
-                <p class="text-xs text-emerald-400 font-medium mb-2">LONG</p>
-                <ul id="liveRulesLong" class="space-y-1 text-xs text-slate-300"></ul>
-              </div>
-              <div class="rounded-xl bg-slate-800/80 border border-slate-700 p-3">
-                <p class="text-xs text-red-400 font-medium mb-2">SHORT</p>
-                <ul id="liveRulesShort" class="space-y-1 text-xs text-slate-300"></ul>
-              </div>
-            </div>
+            <p class="text-[11px] text-slate-500 mb-2">One card per enabled Strategy Hub instance (same symbol). Updates on each closed candle for that timeframe.</p>
+            <div id="instance-checks-container" class="mt-4 space-y-3"></div>
           </div>
           <div>
             <p class="text-xs text-slate-500">Status</p>
@@ -791,38 +783,135 @@
     });
 
     function updateLiveStrategyPanel(data) {
-      document.getElementById('liveToken').textContent = data.symbol || '–';
-      document.getElementById('livePrice').textContent = (data.price != null && data.price !== '') ? formatNum(data.price) : '–';
-      document.getElementById('liveStatus').textContent = data.status || 'Waiting';
+      data = data || {};
+
+      function escapeHtml(s) {
+        if (s == null) return '';
+        return String(s)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+
+      // Legacy flat indicator fields (if present in payload / future API)
+      var elRsi = document.getElementById('liveRsi');
+      if (elRsi && data.rsi !== undefined && data.rsi !== null) {
+        var n = Number(data.rsi);
+        elRsi.textContent = isNaN(n) ? String(data.rsi) : n.toFixed(2);
+      }
+      var elOpen = document.getElementById('liveOpen');
+      if (elOpen && data.open !== undefined && data.open !== null) {
+        var no = Number(data.open);
+        elOpen.textContent = isNaN(no) ? String(data.open) : no.toFixed(2);
+      }
+      var elClose = document.getElementById('liveClose');
+      if (elClose && data.close !== undefined && data.close !== null) {
+        var nc = Number(data.close);
+        elClose.textContent = isNaN(nc) ? String(data.close) : nc.toFixed(2);
+      }
+      var elBody = document.getElementById('liveBodySize');
+      if (elBody && data.body_size !== undefined && data.body_size !== null) {
+        var nb = Number(data.body_size);
+        elBody.textContent = isNaN(nb) ? String(data.body_size) : nb.toFixed(2);
+      }
+      var elVol = document.getElementById('liveVolume');
+      if (elVol && data.volume !== undefined && data.volume !== null) {
+        var nv = Number(data.volume);
+        elVol.textContent = isNaN(nv) ? String(data.volume) : nv.toFixed(2);
+      }
+      var elVolInc = document.getElementById('liveVolumeDec');
+      if (elVolInc && data.volume_increasing !== undefined) {
+        elVolInc.textContent = data.volume_increasing ? 'Yes' : 'No';
+      }
+
+      var liveToken = document.getElementById('liveToken');
+      if (liveToken) liveToken.textContent = data.symbol || '–';
+      var livePrice = document.getElementById('livePrice');
+      if (livePrice) {
+        livePrice.textContent = (data.price != null && data.price !== '') ? formatNum(data.price) : '–';
+      }
       var statusEl = document.getElementById('liveStatus');
-      statusEl.classList.remove('text-amber-400', 'text-emerald-400', 'text-red-400', 'text-slate-400');
-      if (data.status === 'Long Signal') statusEl.classList.add('text-emerald-400');
-      else if (data.status === 'Short Signal') statusEl.classList.add('text-red-400');
-      else if (data.status === 'Position Open') statusEl.classList.add('text-amber-400');
-      else statusEl.classList.add('text-slate-400');
-
-      var ind = data.indicators || {};
-      if (Object.keys(ind).length === 0) {
-        document.getElementById('liveIndicators').innerHTML = '<p class="text-slate-500">No data. Start the bot (main.py) to see live values.</p>';
-      } else {
-        var lines = [];
-        if (ind.RSI != null) lines.push('RSI: ' + formatNum(ind.RSI));
-        if (ind.open != null) lines.push('Open: ' + formatNum(ind.open));
-        if (ind.close != null) lines.push('Close: ' + formatNum(ind.close));
-        if (ind.body_size != null) lines.push('Body size: ' + formatNum(ind.body_size));
-        if (ind.volume != null) lines.push('Volume: ' + formatNum(ind.volume));
-        lines.push('Volume (signal > prev): ' + (ind.volume_signal_vs_prev ? 'Yes' : 'No'));
-        document.getElementById('liveIndicators').innerHTML = lines.map(function (l) { return '<p class="leading-tight">' + l + '</p>'; }).join('');
+      if (statusEl) {
+        statusEl.textContent = data.status || 'Waiting';
+        statusEl.classList.remove('text-amber-400', 'text-emerald-400', 'text-red-400', 'text-slate-400');
+        if (data.status === 'Long Signal') statusEl.classList.add('text-emerald-400');
+        else if (data.status === 'Short Signal') statusEl.classList.add('text-red-400');
+        else if (data.status === 'Position Open') statusEl.classList.add('text-amber-400');
+        else statusEl.classList.add('text-slate-400');
       }
 
-      function ruleLi(r) {
-        var icon = (r.met ? '🟢' : '🔴');
-        return '<li class="flex items-center gap-2"><span>' + icon + '</span> ' + (r.name || '') + '</li>';
+      var liveInd = document.getElementById('liveIndicators');
+      if (liveInd) {
+        var ind = data.indicators || {};
+        if (Object.keys(ind).length === 0) {
+          liveInd.innerHTML = '<p class="text-slate-500">No data. Start the bot (main.py) to see live values.</p>';
+        } else {
+          var lines = [];
+          if (ind.RSI != null) lines.push('RSI: ' + formatNum(ind.RSI));
+          if (ind.open != null) lines.push('Open: ' + formatNum(ind.open));
+          if (ind.close != null) lines.push('Close: ' + formatNum(ind.close));
+          if (ind.body_size != null) lines.push('Body size: ' + formatNum(ind.body_size));
+          if (ind.volume != null) lines.push('Volume: ' + formatNum(ind.volume));
+          lines.push('Volume (signal > prev): ' + (ind.volume_signal_vs_prev ? 'Yes' : 'No'));
+          liveInd.innerHTML = lines.map(function (l) { return '<p class="leading-tight">' + l + '</p>'; }).join('');
+        }
       }
-      var longRules = (data.conditions && data.conditions.long) || [];
-      var shortRules = (data.conditions && data.conditions.short) || [];
-      document.getElementById('liveRulesLong').innerHTML = longRules.length ? longRules.map(ruleLi).join('') : '<li class="text-slate-500">No rules yet</li>';
-      document.getElementById('liveRulesShort').innerHTML = shortRules.length ? shortRules.map(ruleLi).join('') : '<li class="text-slate-500">No rules yet</li>';
+
+      // Dynamic instance checklists: data.checks is an object keyed by instance id (not an array)
+      var container = document.getElementById('instance-checks-container');
+      if (container) {
+        container.innerHTML = '';
+        var rawChecks = data.checks;
+        var checksDict = {};
+        if (rawChecks != null && typeof rawChecks === 'object' && !Array.isArray(rawChecks)) {
+          checksDict = rawChecks;
+        }
+        var instanceList = Object.values(checksDict);
+        if (instanceList.length === 0) {
+          container.innerHTML = '<div class="text-slate-400 text-sm p-4 bg-slate-800/80 border border-slate-700 rounded-xl">No active strategy instances for this symbol. Enable one in the Strategy Hub.</div>';
+        } else {
+          function buildRules(rules) {
+            if (!rules || !rules.length) {
+              return '<p class="text-xs text-slate-500">No rules defined</p>';
+            }
+            return rules.map(function (r) {
+              var met = !!(r && r.met);
+              var label = (r && (r.text != null ? r.text : r.name)) ? String(r.text != null ? r.text : r.name) : '';
+              var textCls = met ? 'text-slate-100' : 'text-slate-400';
+              return '<div class="flex items-start mb-1.5 gap-2">' +
+                '<span class="mt-1.5 w-2.5 h-2.5 shrink-0 rounded-full ' + (met ? 'bg-emerald-500' : 'bg-red-500') + '" aria-hidden="true"></span>' +
+                '<span class="text-xs ' + textCls + '">' + escapeHtml(label) + '</span></div>';
+            }).join('');
+          }
+          instanceList.forEach(function (instance) {
+            if (!instance || typeof instance !== 'object') return;
+            var name = instance.name || 'Unnamed instance';
+            var interval = instance.interval || '';
+            var stype = instance.strategy_type || '';
+            var noteBlock = instance.note
+              ? '<p class="text-xs text-amber-400/90 mb-3">' + escapeHtml(String(instance.note)) + '</p>'
+              : '';
+            var cardHtml = '<div class="rounded-xl bg-slate-800/80 border border-slate-700 p-4 mb-3">' +
+              '<div class="flex flex-wrap justify-between items-center gap-2 mb-3">' +
+              '<h5 class="text-sm font-semibold text-sky-400">' + escapeHtml(name) +
+              (interval ? ' <span class="text-xs bg-slate-700 text-slate-300 px-2 py-0.5 rounded ml-1 font-mono">' + escapeHtml(interval) + '</span>' : '') +
+              '</h5>' +
+              '<span class="text-[11px] text-slate-500 uppercase tracking-wide">' + escapeHtml(stype) + '</span></div>' +
+              noteBlock +
+              '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">' +
+              '<div class="bg-slate-900/80 p-3 rounded-lg border border-slate-800">' +
+              '<h6 class="text-emerald-400 text-xs font-bold mb-2 uppercase tracking-wider">Long conditions</h6>' +
+              buildRules(instance.rules_long) +
+              '</div>' +
+              '<div class="bg-slate-900/80 p-3 rounded-lg border border-slate-800">' +
+              '<h6 class="text-red-400 text-xs font-bold mb-2 uppercase tracking-wider">Short conditions</h6>' +
+              buildRules(instance.rules_short) +
+              '</div></div></div>';
+            container.insertAdjacentHTML('beforeend', cardHtml);
+          });
+        }
+      }
 
       var pr = data.position_risk || {};
       var card = document.getElementById('activePositionCard');

@@ -793,6 +793,7 @@ except ImportError:
         "price": 0.0,
         "indicators": {},
         "conditions": {"long": [], "short": []},
+        "checks": {},
         "status": "No data",
         "sl_price": None,
         "tp_price": None,
@@ -808,6 +809,7 @@ _DEFAULT_STRATEGY_STATE = {
     "price": 0.0,
     "indicators": {},
     "conditions": {"long": [], "short": []},
+    "checks": {},
     "status": "No data",
     "position_risk": {"open": False},
 }
@@ -816,7 +818,11 @@ _DEFAULT_STRATEGY_STATE = {
 @app.get("/api/strategy/status")
 async def api_strategy_status():
     """Return live strategy state from bot (same process: main.live_strategy_state)."""
-    return dict(live_strategy_state)
+    out = dict(live_strategy_state)
+    ch = out.get("checks")
+    if ch is None or not isinstance(ch, dict):
+        out["checks"] = {}
+    return out
 
 
 @app.get("/api/bot/status")
