@@ -259,7 +259,7 @@ def load_backtest_df_from_candle_cache(
             f"({path.name})."
         )
 
-    candles, file_sym, _file_ex = read_candle_cache_file(path)
+    candles, file_sym, file_ex = read_candle_cache_file(path)
     if not candles:
         return None, "Candle cache is empty or unreadable. Run the live bot to populate logs/market_data_1m.json."
 
