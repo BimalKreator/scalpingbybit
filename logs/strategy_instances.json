@@ -6,12 +6,26 @@
     "enabled": true,
     "symbol": "BTCUSDT",
     "timeframe": "1m",
-    "params": {},
+    "params": {
+      "rsiLength": 2,
+      "rsiOversold": 40,
+      "rsiOverbought": 60,
+      "tpMultiplier": 2,
+      "minProfitPerc": 0.5,
+      "tradeCapitalUsd": 10,
+      "leverage": 5,
+      "slMultiplierMax": 3,
+      "slMultiplierMin": 0.03,
+      "slDecaySeconds": 10,
+      "breakevenBufferPct": 0.05,
+      "trailingSlEnabled": true,
+      "partialTpEnabled": true
+    },
     "state": {
       "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 179,
-      "last_evaluated_start": 1774122300000,
+      "bar_seq": 313,
+      "last_evaluated_start": 1774130340000,
       "last_signal_start": null
     }
   },
@@ -49,8 +63,8 @@
     "state": {
       "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 53,
-      "last_evaluated_start": 1774122300000,
+      "bar_seq": 97,
+      "last_evaluated_start": 1774130220000,
       "last_signal_start": null
     }
   }

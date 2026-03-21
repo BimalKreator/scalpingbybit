@@ -1,12 +1,9 @@
 """
-EMA Trap + Confirmation + Range Filter (institutional-style rules).
+EMA Trap + confirmation + range filter (minimal rules).
 
-Aligned with the bot's Weak Momentum convention: pass a dataframe of **fully closed**
-candles only, where:
-  - confirmation bar = last row (iloc[-1])
-  - signal bar       = previous row (iloc[-2])
-
-(`main.py` strips any in-progress tail before calling evaluate.)
+Closed candles only:
+  - Previous bar (iloc[-2]) = signal / “prev”
+  - Last bar (iloc[-1]) = confirmation / “curr”
 """
 
 from __future__ import annotations
@@ -27,11 +24,6 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "minProfitPerc": 0.09,
     "rangeLength": 14,
     "rangeMultiplier": 1.1,
-    "enableReverse": False,
-    "cooldownCandles": 0,
-    "trendFilter": False,
-    "maxCandleAtrMult": 3.0,
-    "minVolatilityAtrMult": 0.15,
     "tradeCapitalUsd": 100.0,
     "leverage": 5.0,
     "slMultiplierMax": 3.0,
@@ -82,19 +74,19 @@ def evaluate(
     state: dict[str, Any],
 ) -> dict[str, Any]:
     """
-    Evaluate the strategy on a dataframe whose **last two rows** are [signal, confirmation].
+    LONG (prev = signal bar, curr = confirmation bar):
+      1. prev_close < prev_ema_low
+      2. prev_rsi < rsiOversold
+      3. curr_close > curr_ema_low
+      4. curr_rfTrendUp
 
-    Returns:
-      {
-        "signal": "Buy" | "Sell" | None,
-        "reason": str,
-        "signal_row": dict | None,   # confirmation bar as dict (for journaling)
-        "sl_price": float | None,
-        "tp_price": float | None,
-        "entry_reference": float | None,
-        "confirmation_start": int | None,
-        "state_updates": dict,       # merge into instance state
-      }
+    SHORT:
+      1. prev_close > prev_ema_high
+      2. prev_rsi > rsiOverbought
+      3. curr_close < curr_ema_high
+      4. curr_rfTrendDown
+
+    Plus SL/TP from signal-candle extreme and minProfitPerc on expected TP move.
     """
     p = {**DEFAULT_PARAMS, **(params or {})}
     ema_len = int(_f(p, "emaLength", 20))
@@ -106,10 +98,6 @@ def evaluate(
     sl_m = float(_f(p, "slMultiplier", 1.25))
     tp_m = float(_f(p, "tpMultiplier", 1.5))
     min_profit = float(_f(p, "minProfitPerc", 0.09))
-    max_c_atr = float(_f(p, "maxCandleAtrMult", 3.0))
-    min_vol_atr = float(_f(p, "minVolatilityAtrMult", 0.15))
-    trend_f = bool(_f(p, "trendFilter", False))
-    cd_n = max(0, int(_f(p, "cooldownCandles", 0)))
 
     state_updates: dict[str, Any] = {}
     out: dict[str, Any] = {
@@ -123,19 +111,13 @@ def evaluate(
         "state_updates": state_updates,
     }
 
-    need = max(ema_len, rsi_len, rng_len, 5) + 5
+    need = max(ema_len, rsi_len, rng_len) + 2
     if df is None or len(df) < need:
         out["reason"] = "insufficient_bars"
         return out
 
     if bool(state.get("in_position")):
         out["reason"] = "instance_already_in_position"
-        return out
-
-    bar_seq = int(state.get("bar_seq") or 0)
-    cooldown_until = int(state.get("cooldown_until_bar") or 0)
-    if cd_n > 0 and bar_seq < cooldown_until:
-        out["reason"] = f"cooldown_until_bar_seq_{cooldown_until}"
         return out
 
     d = df.sort_values("start").reset_index(drop=True)
@@ -168,16 +150,12 @@ def evaluate(
     d["rfTrendUp"] = rf_up
     d["rfTrendDown"] = rf_down
 
-    # Validity at both indices
     for idx in (sig_i, conf_i):
         if np.isnan(d.at[idx, "emaHigh"]) or np.isnan(d.at[idx, "emaLow"]):
             out["reason"] = "ema_nan"
             return out
         if np.isnan(d.at[idx, "RSI"]):
             out["reason"] = "rsi_nan"
-            return out
-        if np.isnan(d.at[idx, "ATR"]) or d.at[idx, "ATR"] <= 0:
-            out["reason"] = "atr_nan"
             return out
 
     sig_close = float(d.at[sig_i, "close"])
@@ -190,58 +168,42 @@ def evaluate(
     ema_hi_conf = float(d.at[conf_i, "emaHigh"])
     rsi_sig = float(d.at[sig_i, "RSI"])
     rsi_conf = float(d.at[conf_i, "RSI"])
-    atr_sig = float(d.at[sig_i, "ATR"])
-    atr_conf = float(d.at[conf_i, "ATR"])
-
-    # --- Mandatory: last 5 bars range vs ATR (confirmation window) ---
-    from_i = max(0, conf_i - 4)
-    win_high = float(d.loc[from_i:conf_i, "high"].max())
-    win_low = float(d.loc[from_i:conf_i, "low"].min())
-    range5 = win_high - win_low
-    if range5 < min_vol_atr * atr_conf:
-        out["reason"] = "low_volatility_5bar_range"
-        return out
-
-    # --- Mandatory: signal candle not too large vs ATR ---
-    sig_range = sig_high - sig_low
-    if sig_range > max_c_atr * atr_sig:
-        out["reason"] = "signal_candle_too_large_vs_atr"
-        return out
 
     conf_start = int(d.at[conf_i, "start"])
     out["confirmation_start"] = conf_start
     out["entry_reference"] = conf_close
 
-    long_sig = sig_close < ema_lo_sig and rsi_sig < rsi_os
-    long_conf = conf_close > ema_lo_conf and bool(d.at[conf_i, "rfTrendUp"])
-
-    short_sig = sig_close > ema_hi_sig and rsi_sig > rsi_ob
-    short_conf = conf_close < ema_hi_conf and bool(d.at[conf_i, "rfTrendDown"])
+    long_ok = (
+        sig_close < ema_lo_sig
+        and rsi_sig < rsi_os
+        and conf_close > ema_lo_conf
+        and bool(d.at[conf_i, "rfTrendUp"])
+    )
+    short_ok = (
+        sig_close > ema_hi_sig
+        and rsi_sig > rsi_ob
+        and conf_close < ema_hi_conf
+        and bool(d.at[conf_i, "rfTrendDown"])
+    )
 
     side: str | None = None
-
-    if long_sig and long_conf:
-        if trend_f and not (ema_lo_conf > ema_lo_sig):
-            out["reason"] = "trend_filter_reject_long"
-            return out
+    if long_ok and not short_ok:
         side = "Buy"
-    elif short_sig and short_conf:
-        if trend_f and not (ema_hi_conf < ema_hi_sig):
-            out["reason"] = "trend_filter_reject_short"
-            return out
+    elif short_ok and not long_ok:
         side = "Sell"
+    elif long_ok and short_ok:
+        out["reason"] = "ambiguous_long_and_short"
+        return out
     else:
         out["reason"] = "no_setup"
         return out
 
-    # --- SL / TP: risk anchored to signal-candle extreme; entry = confirmation close ---
     entry_price = float(conf_close)
     if entry_price <= 0:
         out["reason"] = "invalid_entry_price"
         return out
 
     if side == "Buy":
-        # SL anchor: signal low. base_risk = distance from entry down to that anchor.
         exact_sig_sl = float(sig_low)
         base_risk = entry_price - exact_sig_sl
         if base_risk <= 0:
@@ -251,7 +213,6 @@ def evaluate(
         tp_price = entry_price + (base_risk * tp_m)
         expected_profit_pct = ((tp_price - entry_price) / entry_price) * 100.0
     else:
-        # SL anchor: signal high. base_risk = distance from anchor down to entry.
         exact_sig_sl = float(sig_high)
         base_risk = exact_sig_sl - entry_price
         if base_risk <= 0:
@@ -284,12 +245,7 @@ def build_entry_checklists(
     params: dict[str, Any],
     state: dict[str, Any],
 ) -> dict[str, Any]:
-    """
-    Live-monitor LONG/SHORT rule rows aligned with :func:`evaluate` (read-only; no state mutation).
-
-    Returns:
-        ``{"rules_long": [{"text", "met"}, ...], "rules_short": [...], "note": str | None}``
-    """
+    """Live monitor: exactly five long and five short rows (plus optional note)."""
     p = {**DEFAULT_PARAMS, **(params or {})}
     ema_len = int(_f(p, "emaLength", 20))
     rsi_len = int(_f(p, "rsiLength", 14))
@@ -297,46 +253,34 @@ def build_entry_checklists(
     rng_mult = float(_f(p, "rangeMultiplier", 1.1))
     rsi_ob = float(_f(p, "rsiOverbought", 60))
     rsi_os = float(_f(p, "rsiOversold", 40))
-    sl_m = float(_f(p, "slMultiplier", 1.25))
     tp_m = float(_f(p, "tpMultiplier", 1.5))
     min_profit = float(_f(p, "minProfitPerc", 0.09))
-    max_c_atr = float(_f(p, "maxCandleAtrMult", 3.0))
-    min_vol_atr = float(_f(p, "minVolatilityAtrMult", 0.15))
-    trend_f = bool(_f(p, "trendFilter", False))
-    cd_n = max(0, int(_f(p, "cooldownCandles", 0)))
-    need = max(ema_len, rsi_len, rng_len, 5) + 5
+    need = max(ema_len, rsi_len, rng_len) + 2
 
     def R(text: str, met: bool) -> dict[str, Any]:
         return {"text": text, "met": bool(met)}
 
-    long_rules: list[dict[str, Any]] = []
-    short_rules: list[dict[str, Any]] = []
-
-    if df is None or len(df) < 2:
-        msg = f"Need ≥{need} closed bars"
+    def insufficient() -> dict[str, Any]:
         return {
-            "rules_long": [R(msg, False)],
-            "rules_short": [R(msg, False)],
+            "rules_long": [
+                R("Prev Close < EMA Low", False),
+                R(f"Prev RSI < {rsi_os}", False),
+                R("Curr Close > EMA Low", False),
+                R("Range Filter Uptrend", False),
+                R(f"Expected Profit >= {min_profit}%", False),
+            ],
+            "rules_short": [
+                R("Prev Close > EMA High", False),
+                R(f"Prev RSI > {rsi_ob}", False),
+                R("Curr Close < EMA High", False),
+                R("Range Filter Downtrend", False),
+                R(f"Expected Profit >= {min_profit}%", False),
+            ],
             "note": "insufficient_bars",
         }
 
-    in_pos = bool(state.get("in_position"))
-    long_rules.append(R("Instance not marked in_position (flat)", not in_pos))
-    short_rules.append(R("Instance not marked in_position (flat)", not in_pos))
-
-    bar_seq = int(state.get("bar_seq") or 0)
-    cooldown_until = int(state.get("cooldown_until_bar") or 0)
-    cd_ok = cd_n <= 0 or bar_seq >= cooldown_until
-    long_rules.append(R("Cooldown clear" if cd_n > 0 else "No cooldown configured", cd_ok))
-    short_rules.append(R("Cooldown clear" if cd_n > 0 else "No cooldown configured", cd_ok))
-
-    if len(df) < need:
-        long_rules.append(R(f"Warmup: need {need} bars (have {len(df)})", False))
-        short_rules.append(R(f"Warmup: need {need} bars (have {len(df)})", False))
-        return {"rules_long": long_rules, "rules_short": short_rules, "note": "warming_up"}
-
-    if in_pos or not cd_ok:
-        return {"rules_long": long_rules, "rules_short": short_rules, "note": "blocked"}
+    if df is None or len(df) < need:
+        return insufficient()
 
     d = df.sort_values("start").reset_index(drop=True)
     conf_i = len(d) - 1
@@ -356,33 +300,16 @@ def build_entry_checklists(
         ("ATR", atr),
     ):
         d[col] = series
-    d["rf"] = rf
     d["rfTrendUp"] = rf_up
     d["rfTrendDown"] = rf_down
 
-    ema_ok = True
-    rsi_ok = True
-    atr_ok = True
-    for idx, label in (sig_i, "signal"), (conf_i, "confirm"):
-        eh = d.at[idx, "emaHigh"]
-        el = d.at[idx, "emaLow"]
-        r = d.at[idx, "RSI"]
-        a = d.at[idx, "ATR"]
-        eok = not (np.isnan(eh) or np.isnan(el))
-        rok = not np.isnan(r)
-        aok = not (np.isnan(a) or a <= 0)
-        ema_ok = ema_ok and eok
-        rsi_ok = rsi_ok and rok
-        atr_ok = atr_ok and aok
-        long_rules.append(R(f"EMA bands valid ({label} bar)", eok))
-        short_rules.append(R(f"EMA bands valid ({label} bar)", eok))
-        long_rules.append(R(f"RSI valid ({label} bar)", rok))
-        short_rules.append(R(f"RSI valid ({label} bar)", rok))
-        long_rules.append(R(f"ATR > 0 ({label} bar)", aok))
-        short_rules.append(R(f"ATR > 0 ({label} bar)", aok))
-
-    if not (ema_ok and rsi_ok and atr_ok):
-        return {"rules_long": long_rules, "rules_short": short_rules, "note": "indicator_nan"}
+    if any(
+        np.isnan(d.at[i, "emaHigh"]) or np.isnan(d.at[i, "emaLow"]) or np.isnan(d.at[i, "RSI"])
+        for i in (sig_i, conf_i)
+    ):
+        out = insufficient()
+        out["note"] = "indicator_nan"
+        return out
 
     sig_close = float(d.at[sig_i, "close"])
     conf_close = float(d.at[conf_i, "close"])
@@ -393,76 +320,47 @@ def build_entry_checklists(
     ema_lo_conf = float(d.at[conf_i, "emaLow"])
     ema_hi_conf = float(d.at[conf_i, "emaHigh"])
     rsi_sig = float(d.at[sig_i, "RSI"])
-    rsi_conf = float(d.at[conf_i, "RSI"])
-    atr_sig = float(d.at[sig_i, "ATR"])
-    atr_conf = float(d.at[conf_i, "ATR"])
 
-    from_i = max(0, conf_i - 4)
-    win_high = float(d.loc[from_i:conf_i, "high"].max())
-    win_low = float(d.loc[from_i:conf_i, "low"].min())
-    range5 = win_high - win_low
-    vol_ok = range5 >= min_vol_atr * atr_conf
-    long_rules.append(
-        R(f"5-bar range ≥ {min_vol_atr}×ATR (confirm)", vol_ok),
-    )
-    short_rules.append(
-        R(f"5-bar range ≥ {min_vol_atr}×ATR (confirm)", vol_ok),
-    )
+    long_r1 = sig_close < ema_lo_sig
+    long_r2 = rsi_sig < rsi_os
+    long_r3 = conf_close > ema_lo_conf
+    long_r4 = bool(d.at[conf_i, "rfTrendUp"])
+    short_r1 = sig_close > ema_hi_sig
+    short_r2 = rsi_sig > rsi_ob
+    short_r3 = conf_close < ema_hi_conf
+    short_r4 = bool(d.at[conf_i, "rfTrendDown"])
 
-    sig_range = sig_high - sig_low
-    spike_ok = sig_range <= max_c_atr * atr_sig
-    long_rules.append(R(f"Signal candle range ≤ {max_c_atr}×ATR (signal)", spike_ok))
-    short_rules.append(R(f"Signal candle range ≤ {max_c_atr}×ATR (signal)", spike_ok))
+    min_long = False
+    if long_r1 and long_r2 and long_r3 and long_r4 and conf_close > 0:
+        base_risk = conf_close - float(sig_low)
+        if base_risk > 0:
+            tp_p = conf_close + base_risk * tp_m
+            exp_pct = ((tp_p - conf_close) / conf_close) * 100.0
+            min_long = exp_pct >= min_profit
 
-    long_sig = sig_close < ema_lo_sig and rsi_sig < rsi_os
-    long_conf = conf_close > ema_lo_conf and bool(d.at[conf_i, "rfTrendUp"])
-    short_sig = sig_close > ema_hi_sig and rsi_sig > rsi_ob
-    short_conf = conf_close < ema_hi_conf and bool(d.at[conf_i, "rfTrendDown"])
+    min_short = False
+    if short_r1 and short_r2 and short_r3 and short_r4 and conf_close > 0:
+        base_risk = float(sig_high) - conf_close
+        if base_risk > 0:
+            tp_p = conf_close - base_risk * tp_m
+            exp_pct = ((conf_close - tp_p) / conf_close) * 100.0
+            min_short = exp_pct >= min_profit
 
-    long_rules.append(R(f"Signal: close < EMA low ({sig_close:.4g} < {ema_lo_sig:.4g})", sig_close < ema_lo_sig))
-    long_rules.append(R(f"Signal: RSI < oversold ({rsi_sig:.2f} < {rsi_os})", rsi_sig < rsi_os))
-    long_rules.append(R(f"Confirm: close > EMA low & rf↑", long_conf))
-    trend_long_ok = (ema_lo_conf > ema_lo_sig) if trend_f else True
-    long_rules.append(
-        R("Trend filter: EMA low rising" if trend_f else "Trend filter (off)", trend_long_ok),
-    )
-
-    short_rules.append(R(f"Signal: close > EMA high ({sig_close:.4g} > {ema_hi_sig:.4g})", sig_close > ema_hi_sig))
-    short_rules.append(R(f"Signal: RSI > overbought ({rsi_sig:.2f} > {rsi_ob})", rsi_sig > rsi_ob))
-    short_rules.append(R(f"Confirm: close < EMA high & rf↓", short_conf))
-    trend_short_ok = (ema_hi_conf < ema_hi_sig) if trend_f else True
-    short_rules.append(
-        R("Trend filter: EMA high falling" if trend_f else "Trend filter (off)", trend_short_ok),
-    )
-
-    entry_price = float(conf_close)
-    min_long_ok = False
-    min_short_ok = False
-    if entry_price > 0:
-        if long_sig and long_conf and trend_long_ok:
-            base_risk = entry_price - float(sig_low)
-            if base_risk > 0:
-                tp_p = entry_price + base_risk * tp_m
-                exp_pct = ((tp_p - entry_price) / entry_price) * 100.0
-                min_long_ok = exp_pct >= min_profit
-                long_rules.append(R(f"Expected TP move ≥ {min_profit}% (long)", min_long_ok))
-        else:
-            long_rules.append(R(f"Expected TP move ≥ {min_profit}% (long)", False))
-
-        if short_sig and short_conf and trend_short_ok:
-            base_risk = float(sig_high) - entry_price
-            if base_risk > 0:
-                tp_p = entry_price - base_risk * tp_m
-                exp_pct = ((entry_price - tp_p) / entry_price) * 100.0
-                min_short_ok = exp_pct >= min_profit
-                short_rules.append(R(f"Expected TP move ≥ {min_profit}% (short)", min_short_ok))
-        else:
-            short_rules.append(R(f"Expected TP move ≥ {min_profit}% (short)", False))
-    else:
-        long_rules.append(R(f"Expected TP move ≥ {min_profit}% (long)", False))
-        short_rules.append(R(f"Expected TP move ≥ {min_profit}% (short)", False))
-
-    return {"rules_long": long_rules, "rules_short": short_rules, "note": None}
+    rules_long = [
+        R("Prev Close < EMA Low", long_r1),
+        R(f"Prev RSI < {rsi_os}", long_r2),
+        R("Curr Close > EMA Low", long_r3),
+        R("Range Filter Uptrend", long_r4),
+        R(f"Expected Profit >= {min_profit}%", min_long),
+    ]
+    rules_short = [
+        R("Prev Close > EMA High", short_r1),
+        R(f"Prev RSI > {rsi_ob}", short_r2),
+        R("Curr Close < EMA High", short_r3),
+        R("Range Filter Downtrend", short_r4),
+        R(f"Expected Profit >= {min_profit}%", min_short),
+    ]
+    return {"rules_long": rules_long, "rules_short": rules_short, "note": None}
 
 
 def prepare_dataframe(df: pd.DataFrame, params: dict[str, Any]) -> pd.DataFrame:

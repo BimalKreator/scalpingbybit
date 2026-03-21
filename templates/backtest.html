@@ -174,18 +174,6 @@
             <input type="number" id="ema_minProfitPerc" value="0.09" min="0" step="any" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
           </div>
           <div>
-            <label class="block text-xs font-medium text-slate-400 mb-1">Max candle × ATR</label>
-            <input type="number" id="ema_maxCandleAtrMult" value="3" step="any" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
-          </div>
-          <div>
-            <label class="block text-xs font-medium text-slate-400 mb-1">Min vol (5-bar × ATR)</label>
-            <input type="number" id="ema_minVolatilityAtrMult" value="0.15" step="any" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
-          </div>
-          <div>
-            <label class="block text-xs font-medium text-slate-400 mb-1">Cooldown candles</label>
-            <input type="number" id="ema_cooldownCandles" value="0" min="0" step="1" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
-          </div>
-          <div>
             <label class="block text-xs font-medium text-slate-400 mb-1">Trade capital (USD)</label>
             <input type="number" id="ema_tradeCapitalUsd" value="100" min="1" step="any" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
           </div>
@@ -203,12 +191,6 @@
         </div>
         <div class="flex flex-wrap gap-4">
           <label class="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
-            <input type="checkbox" id="ema_enableReverse" class="rounded border-slate-600 bg-slate-800 text-emerald-500" /> enableReverse
-          </label>
-          <label class="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
-            <input type="checkbox" id="ema_trendFilter" class="rounded border-slate-600 bg-slate-800 text-emerald-500" /> trendFilter
-          </label>
-          <label class="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
             <input type="checkbox" id="ema_trailingSlEnabled" checked class="rounded border-slate-600 bg-slate-800 text-emerald-500" /> Breakeven at half-TP
           </label>
         </div>
@@ -216,10 +198,7 @@
           <label class="block text-xs font-medium text-slate-400 mb-1">Breakeven buffer %</label>
           <input type="number" id="ema_breakevenBufferPct" value="0.05" min="0" step="any" class="w-full max-w-xs rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
         </div>
-        <div class="flex items-center gap-2">
-          <input type="checkbox" id="ema_allow_reversal" checked class="rounded border-slate-600 bg-slate-800 text-emerald-500" />
-          <label for="ema_allow_reversal" class="text-xs font-medium text-slate-400">Allow reversal after SL (requires enableReverse)</label>
-        </div>
+        <p class="text-xs text-slate-500">EMA Trap backtests do not apply post-SL reversals (same as live).</p>
       </div>
 
       <div id="optimizeSection" class="bg-slate-900/80 rounded-2xl p-5 border border-slate-800 space-y-4">
@@ -372,21 +351,16 @@
             slMultiplier: numEl(document.getElementById('ema_slMultiplier'), 1.25),
             tpMultiplier: numEl(document.getElementById('ema_tpMultiplier'), 1.5),
             minProfitPerc: numEl(document.getElementById('ema_minProfitPerc'), 0.09),
-            maxCandleAtrMult: numEl(document.getElementById('ema_maxCandleAtrMult'), 3),
-            minVolatilityAtrMult: numEl(document.getElementById('ema_minVolatilityAtrMult'), 0.15),
-            cooldownCandles: parseInt(document.getElementById('ema_cooldownCandles').value, 10) || 0,
             tradeCapitalUsd: numEl(document.getElementById('ema_tradeCapitalUsd'), 100),
             leverage: numEl(document.getElementById('ema_leverage'), 5),
             slMultiplierMax: numEl(document.getElementById('ema_slMultiplierMax'), 3),
             slMultiplierMin: numEl(document.getElementById('ema_slMultiplierMin'), 0.5),
-            enableReverse: document.getElementById('ema_enableReverse').checked,
-            trendFilter: document.getElementById('ema_trendFilter').checked,
             trailingSlEnabled: document.getElementById('ema_trailingSlEnabled').checked,
             breakevenBufferPct: numEl(document.getElementById('ema_breakevenBufferPct'), 0.05)
           };
           trade_amount_usd = params.tradeCapitalUsd;
           leverage = params.leverage;
-          allow_reversal = document.getElementById('ema_allow_reversal').checked;
+          allow_reversal = false;
         }
         const payload = {
           strategy_type: strategy_type,

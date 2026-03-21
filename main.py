@@ -3575,6 +3575,9 @@ def on_position_closed(current_price: float) -> None:
     iid = _active_order_instance_id
     if iid:
         inst = next((x for x in get_strategy_instances() if x.get("id") == iid), None)
+        if inst and str(inst.get("strategy_type") or "").strip().lower() == "ema_trap":
+            print("EMA Trap: post-SL reversal disabled — position closed only.")
+            return
         if inst and not bool((inst.get("params") or {}).get("enableReverse")):
             print("Strategy instance: enableReverse OFF — skipping post-SL reversal.")
             return
@@ -3785,11 +3788,13 @@ def _clear_active_instance_on_flat(*, sl_loss: bool) -> None:
     inst = next((x for x in get_strategy_instances() if x.get("id") == iid), None)
     patch: dict = {"in_position": False}
     if sl_loss and inst:
-        cd = int((inst.get("params") or {}).get("cooldownCandles") or 0)
-        if cd > 0:
-            st = dict(inst.get("state") or {})
-            seq = int(st.get("bar_seq") or 0)
-            patch["cooldown_until_bar"] = seq + cd
+        strat = str(inst.get("strategy_type") or "").strip().lower()
+        if strat != "ema_trap":
+            cd = int((inst.get("params") or {}).get("cooldownCandles") or 0)
+            if cd > 0:
+                st = dict(inst.get("state") or {})
+                seq = int(st.get("bar_seq") or 0)
+                patch["cooldown_until_bar"] = seq + cd
     instance_storage.merge_instance_state(iid, patch)
     _patch_instance_state_cache(iid, patch)
     _active_order_instance_id = None

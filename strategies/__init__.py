@@ -8,7 +8,7 @@ appropriate to that strategy (see ema_trap.evaluate).
 from . import ema_trap
 
 STRATEGY_TYPE_LABELS: dict[str, str] = {
-    "ema_trap": "EMA Trap + Confirmation + Range Filter",
+    "ema_trap": "EMA Trap + Range Filter",
     "weak_momentum_reversal": "Weak Momentum Reversal",
 }
 

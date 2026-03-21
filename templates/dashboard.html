@@ -628,19 +628,12 @@
           numField('rsiLength', p.rsiLength, 14) +
           numField('rsiOversold', p.rsiOversold, 40) +
           numField('rsiOverbought', p.rsiOverbought, 60) +
+          numField('rangeLength', p.rangeLength, 14) +
+          numField('rangeMultiplier', p.rangeMultiplier, 1.1) +
           numField('slMultiplier', p.slMultiplier, 1.25) +
           numField('tpMultiplier', p.tpMultiplier, 1.5) +
           numField('minProfitPerc', p.minProfitPerc, 0.09) +
-          numField('rangeLength', p.rangeLength, 14) +
-          numField('rangeMultiplier', p.rangeMultiplier, 1.1) +
-          numField('maxCandleAtrMult', p.maxCandleAtrMult, 3) +
-          numField('minVolatilityAtrMult', p.minVolatilityAtrMult, 0.15) +
           '</div>' +
-          '<div class="flex flex-wrap gap-4 text-xs text-slate-300">' +
-          chkField('enableReverse', p.enableReverse, false) +
-          chkField('trendFilter', p.trendFilter, false) +
-          '</div>' +
-          '<label class="block text-xs text-slate-400">Cooldown candles (after loss)<input data-p="cooldownCandles" type="number" step="1" value="' + escAttr(p.cooldownCandles != null ? p.cooldownCandles : 0) + '" class="mt-1 w-full max-w-xs rounded-lg bg-slate-900 border border-slate-600 px-3 py-2 text-sm text-white"/></label>' +
           executionBlock(p);
       } else {
         adv =

@@ -447,8 +447,9 @@ def _run_backtest_ema_trap(
     sl_mx = float(p.get("slMultiplierMax") or 3.0)
     sl_mn = float(p.get("slMultiplierMin") or 0.5)
     tp_m = float(p.get("tpMultiplier") or 1.5)
-    enable_rev = bool(p.get("enableReverse", False)) and allow_reversal
-    cd_n = max(0, int(p.get("cooldownCandles") or 0))
+    # EMA Trap: no post-SL reversal in backtest (matches live main.py).
+    enable_rev = False
+    cd_n = 0
 
     empty = {
         "total_pnl": 0.0,
@@ -464,7 +465,7 @@ def _run_backtest_ema_trap(
     }
 
     df2 = _df_with_start_column(df)
-    need = max(int(p["emaLength"]), int(p["rsiLength"]), int(p["rangeLength"]), 5) + 5
+    need = max(int(p["emaLength"]), int(p["rsiLength"]), int(p["rangeLength"])) + 2
     if df2.empty or len(df2) < need:
         print(f"[backtest ema_trap] skip: len={len(df2)} need={need}")
         return empty
