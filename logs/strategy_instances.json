@@ -11,21 +11,22 @@
       "rsiOversold": 40,
       "rsiOverbought": 60,
       "tpMultiplier": 2,
-      "minProfitPerc": 0.5,
+      "minProfitPerc": 0.03,
       "tradeCapitalUsd": 10,
-      "leverage": 5,
-      "slMultiplierMax": 3,
-      "slMultiplierMin": 0.03,
+      "leverage": 10,
+      "slMultiplierMax": 2,
+      "slMultiplierMin": 0.5,
       "slDecaySeconds": 10,
-      "breakevenBufferPct": 0.05,
+      "breakevenBufferPct": 0.02,
       "trailingSlEnabled": true,
-      "partialTpEnabled": true
+      "partialTpEnabled": true,
+      "enableReverse": true
     },
     "state": {
       "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 342,
-      "last_evaluated_start": 1774132080000,
+      "bar_seq": 355,
+      "last_evaluated_start": 1774132860000,
       "last_signal_start": null
     }
   },
@@ -63,8 +64,8 @@
     "state": {
       "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 107,
-      "last_evaluated_start": 1774132020000,
+      "bar_seq": 111,
+      "last_evaluated_start": 1774132740000,
       "last_signal_start": null
     }
   }

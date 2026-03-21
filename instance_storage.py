@@ -36,7 +36,6 @@ WEAK_MOMENTUM_DEFAULT_PARAMS: dict = {
     "rsiOverbought": 60,
     "tpMultiplier": 2.0,
     "minProfitPerc": 0.5,
-    "enableReverse": True,
 }
 
 ALLOWED_MINUTES = frozenset({1, 3, 5, 15, 30, 60, 120, 240})
@@ -177,6 +176,16 @@ def create_instance(strategy_type: str, symbol: str | None = None) -> dict:
     return inst
 
 
+def _strip_params_unused_by_strategy(strategy_type: str, params: dict) -> dict:
+    """Remove keys the Strategy Hub no longer edits for that type (avoids stale overrides)."""
+    st = (strategy_type or "").strip().lower()
+    p = dict(params)
+    if st == "ema_trap":
+        for k in ("slMultiplierMax", "slMultiplierMin", "slDecaySeconds"):
+            p.pop(k, None)
+    return p
+
+
 def update_instance(instance_id: str, updates: dict) -> dict | None:
     with _lock:
         all_i = load_instances_raw()
@@ -184,10 +193,13 @@ def update_instance(instance_id: str, updates: dict) -> dict | None:
             if row.get("id") != instance_id:
                 continue
             merged = dict(row)
+            eff_strategy = str(updates.get("strategy_type") or merged.get("strategy_type") or "").strip().lower()
             for k, v in updates.items():
                 if k in ("params", "state") and isinstance(v, dict):
                     inner = dict(merged.get(k) or {})
                     inner.update(v)
+                    if k == "params":
+                        inner = _strip_params_unused_by_strategy(eff_strategy, inner)
                     merged[k] = inner
                 elif k in ("name", "enabled", "symbol", "timeframe", "strategy_type"):
                     merged[k] = v

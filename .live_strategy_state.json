@@ -1,66 +1,50 @@
 {
   "symbol": "BTCUSDT",
-  "price": 70256.5,
+  "price": 70339.0,
   "indicators": {
-    "RSI": 28.11,
-    "RSI_SMA": 41.28,
-    "volume_signal_vs_prev": false,
-    "body_size": 2.5,
-    "open": 70259.0,
-    "close": 70256.5,
-    "volume": 534.0,
-    "Expected_Profit_Pct": 0.01
+    "RSI": 46.45,
+    "RSI_SMA": 58.44,
+    "volume_signal_vs_prev": null,
+    "body_size": 13.0,
+    "open": 70326.0,
+    "close": 70339.0,
+    "volume": 124.0,
+    "Expected_Profit_Pct": 0.02
   },
   "conditions": {
     "long": [
       {
-        "name": "Signal Candle Bearish (open > close)",
+        "name": "Instance & Exchange Flat",
         "met": true
       },
       {
-        "name": "Previous Candle Bearish",
-        "met": true
-      },
-      {
-        "name": "Both Bearish",
-        "met": true
-      },
-      {
-        "name": "Volume: signal > previous",
+        "name": "Prev RSI < 40.0",
         "met": false
       },
       {
-        "name": "RSI < 40.0",
-        "met": true
+        "name": "Prev Bar Bearish (Red)",
+        "met": false
       },
       {
-        "name": "Expected Profit >= 0.02%",
-        "met": false
+        "name": "Curr Close > Prev High",
+        "met": true
       }
     ],
     "short": [
       {
-        "name": "Signal Candle Bullish (close > open)",
+        "name": "Instance & Exchange Flat",
+        "met": true
+      },
+      {
+        "name": "Prev RSI > 60.0",
         "met": false
       },
       {
-        "name": "Previous Candle Bullish",
-        "met": false
+        "name": "Prev Bar Bullish (Green)",
+        "met": true
       },
       {
-        "name": "Both Bullish",
-        "met": false
-      },
-      {
-        "name": "Volume: signal > previous",
-        "met": false
-      },
-      {
-        "name": "RSI > 60.0",
-        "met": false
-      },
-      {
-        "name": "Expected Profit >= 0.02%",
+        "name": "Curr Close < Prev Low",
         "met": false
       }
     ]
@@ -83,85 +67,37 @@
       "strategy_type": "weak_momentum_reversal",
       "rules_long": [
         {
-          "text": "Instance flat (not in_position)",
+          "text": "Instance & Exchange Flat",
           "met": true
         },
         {
-          "text": "No open exchange position (allows new entries)",
+          "text": "Prev RSI < 40.0",
           "met": true
         },
         {
-          "text": "RSI computed (latest closed bar)",
-          "met": true
-        },
-        {
-          "text": "Volume valid (signal & prev)",
-          "met": true
-        },
-        {
-          "text": "Volume: latest bar > previous",
+          "text": "Prev Bar Bearish (Red)",
           "met": false
         },
         {
-          "text": "Expected move \u2265 0.5% (latest bar range \u00d7 TP mult)",
-          "met": false
-        },
-        {
-          "text": "Latest bar bearish (open > close)",
-          "met": true
-        },
-        {
-          "text": "Previous bar bearish",
-          "met": true
-        },
-        {
-          "text": "Two consecutive bearish bars",
-          "met": true
-        },
-        {
-          "text": "RSI < oversold (22.58 < 40.0)",
+          "text": "Curr Close > Prev High",
           "met": true
         }
       ],
       "rules_short": [
         {
-          "text": "Instance flat (not in_position)",
+          "text": "Instance & Exchange Flat",
           "met": true
         },
         {
-          "text": "No open exchange position (allows new entries)",
+          "text": "Prev RSI > 60.0",
+          "met": false
+        },
+        {
+          "text": "Prev Bar Bullish (Green)",
           "met": true
         },
         {
-          "text": "RSI computed (latest closed bar)",
-          "met": true
-        },
-        {
-          "text": "Volume valid (signal & prev)",
-          "met": true
-        },
-        {
-          "text": "Volume: latest bar > previous",
-          "met": false
-        },
-        {
-          "text": "Expected move \u2265 0.5% (latest bar range \u00d7 TP mult)",
-          "met": false
-        },
-        {
-          "text": "Confirm bar bullish (close > open)",
-          "met": false
-        },
-        {
-          "text": "Previous bar bullish",
-          "met": false
-        },
-        {
-          "text": "Two consecutive bullish bars",
-          "met": false
-        },
-        {
-          "text": "RSI > overbought (22.58 > 60.0)",
+          "text": "Curr Close < Prev Low",
           "met": false
         }
       ]
@@ -173,19 +109,19 @@
       "rules_long": [
         {
           "text": "Prev Close < EMA Low",
-          "met": true
+          "met": false
         },
         {
           "text": "Prev RSI < 40.0",
-          "met": true
+          "met": false
         },
         {
           "text": "Curr Close > EMA Low",
-          "met": false
+          "met": true
         },
         {
           "text": "Range Filter Uptrend",
-          "met": false
+          "met": true
         },
         {
           "text": "Expected Profit >= 0.08%",
@@ -203,11 +139,11 @@
         },
         {
           "text": "Curr Close < EMA High",
-          "met": true
+          "met": false
         },
         {
           "text": "Range Filter Downtrend",
-          "met": true
+          "met": false
         },
         {
           "text": "Expected Profit >= 0.08%",

@@ -48,11 +48,8 @@ from main import (
     SYMBOL as BOT_SYMBOL,
     USE_DELTA as BOT_USE_DELTA,
     _cancel_protective_orders_after_flat_sync,
-    _flush_live_state_file_with_tracker,
     _get_orderbook_l1,
     _initial_sl_setting_guard,
-    _norm_sym,
-    _rebuild_instance_checks_live_state,
     apply_dynamic_env_updates,
     execute_strategy_signal,
     get_active_strategies_from_env,
@@ -933,11 +930,6 @@ async def api_instances_create(body: InstanceCreateBody):
     inst = instance_storage.create_instance(st, BOT_SYMBOL)
     reload_strategy_instances_cache()
     try:
-        _rebuild_instance_checks_live_state(_norm_sym(BOT_SYMBOL))
-        _flush_live_state_file_with_tracker()
-    except Exception as e:
-        logging.warning("[api/instances POST] refresh live checks: %s", e)
-    try:
         asyncio.create_task(apply_dynamic_env_updates())
     except Exception as e:
         logging.warning("[api/instances POST] apply_dynamic_env_updates: %s", e)
@@ -956,11 +948,6 @@ async def api_instances_update(instance_id: str, body: InstanceUpdateBody):
         raise HTTPException(status_code=404, detail="Instance not found")
     reload_strategy_instances_cache()
     try:
-        _rebuild_instance_checks_live_state(_norm_sym(BOT_SYMBOL))
-        _flush_live_state_file_with_tracker()
-    except Exception as e:
-        logging.warning("[api/instances PUT] refresh live checks: %s", e)
-    try:
         asyncio.create_task(apply_dynamic_env_updates())
     except Exception as e:
         logging.warning("[api/instances PUT] apply_dynamic_env_updates: %s", e)
@@ -972,11 +959,6 @@ async def api_instances_delete(instance_id: str):
     if not instance_storage.delete_instance(instance_id):
         raise HTTPException(status_code=404, detail="Instance not found")
     reload_strategy_instances_cache()
-    try:
-        _rebuild_instance_checks_live_state(_norm_sym(BOT_SYMBOL))
-        _flush_live_state_file_with_tracker()
-    except Exception as e:
-        logging.warning("[api/instances DELETE] refresh live checks: %s", e)
     try:
         asyncio.create_task(apply_dynamic_env_updates())
     except Exception as e:

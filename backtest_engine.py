@@ -736,11 +736,16 @@ def _run_backtest_weak_momentum(
     require_equity_for_entry: bool = True,
 ) -> dict:
     """
-    Aligns with live Weak Momentum (main.py):
-    - Signal bar = iloc[-2], confirmation = iloc[-1]: RSI on signal bar, bearish/bullish signal bar,
-      breakout (long: conf close > sig high; short: conf close < sig low).
-    - SL/TP from signal-candle range × sl_multiplier_max/min and tp_multiplier.
-    - Half-TP breakeven + one reversal after SL when allow_reversal (same signal_range as live).
+    Aligns with live auto-trade (main.py):
+    - Same entry rules: LONG two bearish + vol(signal)>vol(prev) + RSI<oversold; SHORT two bullish + same vol + RSI>overbought; min-profit.
+    - LONG entry at ask proxy (open * (1+spread)); SHORT at bid proxy (open * (1-spread)).
+    - Dynamic SL: entry candle uses sl_multiplier_max; later candles sl_multiplier_min; optional half-TP breakeven
+      with breakeven_buffer_pct (SL past entry to cover fees).
+    - Delta: position size = (TRADE_AMOUNT*LEVERAGE)/(contract_value*price), floored to qty_step.
+    - Bybit: size = (TRADE_AMOUNT*LEVERAGE)/price, same stepping.
+    - One reversal after SL only, same signal_range (like on_position_closed path).
+    - Fees: entry taker 0.055%; Bybit exit taker, Delta exit 0%.
+    Differences from live: exits use bar high/low vs L1 mid; no partial fills/chunk orders.
     """
     empty = {
         "total_pnl": 0.0,
@@ -932,34 +937,41 @@ def _run_backtest_weak_momentum(
             i += 1
             continue
 
-        if i < max(3, rsi_length + 1):
+        if i < 3:
             i += 1
             continue
-        conf_row = df.iloc[i]
-        sig_row = df.iloc[i - 1]
-        rsi = sig_row.get("RSI")
-        if pd.isna(rsi):
+        row_sig = df.iloc[i - 1]
+        row_prev2 = df.iloc[i - 2]
+        rsi = row_sig.get("RSI")
+        v_sig = row_sig.get("volume")
+        v_p2 = row_prev2.get("volume")
+        if pd.isna(rsi) or pd.isna(v_sig) or pd.isna(v_p2):
             i += 1
             continue
-        rsi_f = float(rsi)
-        sh = float(sig_row["high"])
-        slv = float(sig_row["low"])
-        sig_range = max(sh - slv, 1e-12)
-        sig_bearish = float(sig_row["close"]) < float(sig_row["open"])
-        sig_bullish = float(sig_row["close"]) > float(sig_row["open"])
-        conf_close = float(conf_row["close"])
-        long_ok = rsi_f < rsi_oversold and sig_bearish and conf_close > sh
-        short_ok = rsi_f > rsi_overbought and sig_bullish and conf_close < slv
-        if long_ok and short_ok:
+        vd = float(v_sig) > float(v_p2)
+        close_s = float(row_sig["close"])
+        open_s = float(row_sig["open"])
+        high_prev = float(row_sig["high"])
+        low_prev = float(row_sig["low"])
+        close_p2 = float(row_prev2["close"])
+        open_p2 = float(row_prev2["open"])
+        range_ = max(high_prev - low_prev, 1e-12)
+        tp_dist = range_ * tp_multiplier
+        ref_mid = (high_prev + low_prev) / 2 if high_prev > 0 and low_prev > 0 else close_s
+        expected_profit_pct = (tp_dist / ref_mid) * 100 if ref_mid > 0 else 0.0
+        if expected_profit_pct < min_profit_pct:
             i += 1
             continue
 
+        rsi_f = float(rsi)
+        both_bull = close_s > open_s and close_p2 > open_p2
+        both_bear = open_s > close_s and open_p2 > close_p2
         entered = False
-        o_entry = float(conf_row["open"])
+        o_entry = float(row["open"])
         if require_equity_for_entry and equity < trade_amount_usd:
             i += 1
             continue
-        if short_ok:
+        if both_bull and vd and rsi_f > rsi_overbought:
             base = o_entry * (1.0 - _SPREAD_HALF)
             entry_price = base
             qty = _qty_like_live(
@@ -973,14 +985,14 @@ def _run_backtest_weak_momentum(
             if qty < min_order_qty:
                 i += 1
                 continue
-            sl_wide = base + sig_range * sl_multiplier_max
-            sl_tight = base + sig_range * sl_multiplier_min
-            tp_price_pos = base - sig_range * tp_multiplier
+            sl_wide = base + range_ * sl_multiplier_max
+            sl_tight = base + range_ * sl_multiplier_min
+            tp_price_pos = base - range_ * tp_multiplier
             side = "Sell"
-            signal_range = sig_range
+            signal_range = range_
             reversal_count = 0
             entered = True
-        elif long_ok:
+        elif both_bear and vd and rsi_f < rsi_oversold:
             base = o_entry * (1.0 + _SPREAD_HALF)
             entry_price = base
             qty = _qty_like_live(
@@ -994,17 +1006,17 @@ def _run_backtest_weak_momentum(
             if qty < min_order_qty:
                 i += 1
                 continue
-            sl_wide = base - sig_range * sl_multiplier_max
-            sl_tight = base - sig_range * sl_multiplier_min
-            tp_price_pos = base + sig_range * tp_multiplier
+            sl_wide = base - range_ * sl_multiplier_max
+            sl_tight = base - range_ * sl_multiplier_min
+            tp_price_pos = base + range_ * tp_multiplier
             side = "Buy"
-            signal_range = sig_range
+            signal_range = range_
             reversal_count = 0
             entered = True
 
         if entered:
             in_position = True
-            entry_time = int(conf_row["timestamp"])
+            entry_time = int(row["timestamp"])
             entry_bar_idx = i
             trade_breakeven = False
             continue
