@@ -2,6 +2,9 @@
 """
 Heavy long-term grid backtest from the terminal (no browser timeout).
 Edit the CONFIG section below, then:  python run_heavy_backtest.py
+
+Note: The web dashboard backtest API reads only logs/market_data_1m.json (local cache).
+This script still uses exchange/API + CSV cache (data_manager) for arbitrary date ranges.
 """
 from __future__ import annotations
 

@@ -140,6 +140,82 @@ def fetch_historical_klines_bybit(
         return False
 
 
+def fetch_incremental_klines_bybit(
+    http_client: HTTP,
+    symbol: str,
+    since_start_ms_exclusive: int,
+    end_ms: int | None = None,
+    max_bars: int = 20_000,
+) -> list[dict]:
+    """
+    Fetch 1m candles whose open time is strictly after since_start_ms_exclusive (next bar = exclusive + 60_000).
+    Paginates forward until end_ms (default: now). Returns rows sorted by start ascending.
+    """
+    get_kline = getattr(http_client, "get_kline", None) or getattr(http_client, "get_kline_list", None)
+    if get_kline is None:
+        print("[Bybit] HTTP client has no get_kline (incremental fetch skipped).")
+        return []
+    if end_ms is None:
+        end_ms = int(time.time() * 1000)
+    next_start = int(since_start_ms_exclusive) + 60_000
+    if next_start > end_ms:
+        return []
+    max_bars = max(1, min(int(max_bars), 50_000))
+    out_by_start: dict[int, dict] = {}
+    cur = next_start
+    try:
+        page = 0
+        while cur <= end_ms and len(out_by_start) < max_bars:
+            page += 1
+            if page > 500:
+                print("[Bybit] incremental kline pagination safety stop (500 pages).")
+                break
+            lim = min(1000, max_bars - len(out_by_start))
+            kw: dict[str, Any] = {
+                "category": "linear",
+                "symbol": symbol,
+                "interval": "1",
+                "limit": lim,
+                "start": cur,
+            }
+            resp = get_kline(**kw)
+            if resp.get("retCode") != 0:
+                print("[Bybit] incremental get_kline failed:", resp.get("retMsg", "unknown"))
+                break
+            lst = (resp.get("result") or {}).get("list", [])
+            if not lst:
+                break
+            batch: list[dict] = []
+            for item in lst:
+                if isinstance(item, (list, tuple)) and len(item) >= 6:
+                    batch.append(_kline_rest_row_to_dict(list(item)))
+            if not batch:
+                break
+            batch.sort(key=lambda r: r["start"])
+            added_any = False
+            for r in batch:
+                st = r["start"]
+                if st <= since_start_ms_exclusive or st > end_ms:
+                    continue
+                out_by_start[st] = r
+                added_any = True
+            newest = batch[-1]["start"]
+            oldest = batch[0]["start"]
+            if not added_any:
+                # Advance past this window to avoid infinite loop
+                cur = newest + 60_000
+            else:
+                cur = newest + 60_000
+            if len(lst) < lim:
+                break
+            if newest < next_start:
+                break
+        return sorted(out_by_start.values(), key=lambda r: r["start"])
+    except Exception as e:
+        print(f"[Bybit] fetch_incremental_klines: {e}")
+        return []
+
+
 def fetch_instrument_info(symbol: str, http_client: HTTP) -> tuple[bool, float | None, float | None, float | None]:
     """
     Fetch qty_step, minOrderQty and minNotionalValue for symbol via REST.

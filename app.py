@@ -1473,7 +1473,7 @@ def _run_backtest_sync(req: BacktestRequest):
     if ex_id not in ("bybit", "delta_india"):
         ex_id = "bybit"
 
-    from backtest_engine import fetch_klines_bybit, fetch_klines_delta, run_backtest_grid
+    from backtest_engine import load_backtest_df_from_candle_cache, run_backtest_grid
 
     start = req.start_date
     end = req.end_date
@@ -1481,14 +1481,12 @@ def _run_backtest_sync(req: BacktestRequest):
         start = start + "T00:00:00"
     if "T" not in end:
         end = end + "T23:59:59"
-    try:
-        if ex_id == "delta_india":
-            df = fetch_klines_delta(req.symbol, start, end)
-        else:
-            df = fetch_klines_bybit(req.symbol, start, end)
-    except Exception as e:
-        return None, f"Fetch klines failed: {e}"
-    if df.empty:
+    df, cache_err = load_backtest_df_from_candle_cache(
+        req.symbol, start, end, exchange_id=ex_id
+    )
+    if cache_err is not None:
+        return None, cache_err
+    if df is None or df.empty:
         return None, "No data returned for the given symbol and date range."
     result = run_backtest_grid(
         df,

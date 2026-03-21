@@ -195,6 +195,7 @@ if USE_DELTA:
         DeltaLiveStream,
         execute_chunk_order_ws,
         fetch_historical_klines_delta,
+        fetch_incremental_klines_delta,
         fetch_instrument_info as _delta_fetch_instrument_info,
         _set_position_sl_tp_sync,
         _verify_open_stop_order,
@@ -217,6 +218,7 @@ else:
         BybitLiveStream,
         execute_chunk_order_ws,
         fetch_historical_klines_bybit,
+        fetch_incremental_klines_bybit,
         fetch_instrument_info,
         _set_position_sl_tp_sync,
     )
@@ -230,6 +232,18 @@ try:
 except ValueError:
     KLINES_MAX = 1000
 KLINES = []
+
+from backtest_engine import CANDLE_CACHE_PATH, read_candle_cache_file
+
+try:
+    CANDLE_CACHE_MAX_BARS = max(10_000, min(2_000_000, int(os.getenv("CANDLE_CACHE_MAX_BARS", "300000"))))
+except ValueError:
+    CANDLE_CACHE_MAX_BARS = 300_000
+
+_candle_cache_lock = threading.Lock()
+_cache_high_water_ms: int = 0
+_pending_cache_writes: list[dict] = []
+_last_candle_cache_flush_ts: float = 0.0
 
 # Track last candle we signaled on (start timestamp) so we only print once per closed candle
 LAST_SIGNAL_CANDLE_START: int | None = None
@@ -950,11 +964,129 @@ def _kline_api_row_to_dict(arr: list) -> dict:
     }
 
 
+def _exchange_id_for_cache() -> str:
+    return "delta_india" if USE_DELTA else "bybit"
+
+
+def _normalize_candle_dict_for_cache(c: dict) -> dict:
+    st = int(c["start"])
+    return {
+        "start": st,
+        "end": int(c.get("end", st + 60_000)),
+        "interval": str(c.get("interval", "1")),
+        "open": float(c["open"]),
+        "high": float(c["high"]),
+        "low": float(c["low"]),
+        "close": float(c["close"]),
+        "volume": float(c.get("volume", 0)),
+        "turnover": float(c.get("turnover", 0) or 0),
+        "confirm": bool(c.get("confirm", True)),
+        "timestamp": int(c.get("timestamp", st)),
+    }
+
+
+def _write_candle_cache_payload(candles: list[dict], symbol: str, exchange_id: str) -> None:
+    CANDLE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": 1,
+        "symbol": (symbol or "").strip().upper(),
+        "exchange_id": (exchange_id or "bybit").strip().lower(),
+        "candles": candles,
+    }
+    tmp = CANDLE_CACHE_PATH.with_suffix(".tmp.json")
+    with open(tmp, "w", encoding="utf-8") as f:
+        _json.dump(payload, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, CANDLE_CACHE_PATH)
+
+
+def _is_ws_kline_fully_closed(row: dict) -> bool:
+    c = row.get("confirm")
+    if c is True:
+        return True
+    if c is False:
+        return False
+    s = str(c).strip().lower()
+    return s in ("1", "true", "yes")
+
+
+def _flush_pending_candle_cache_writes(force: bool = False) -> None:
+    global _pending_cache_writes, _last_candle_cache_flush_ts, _cache_high_water_ms
+    if not _pending_cache_writes:
+        return
+    now = time.time()
+    if not force and len(_pending_cache_writes) < 5 and (now - _last_candle_cache_flush_ts) < 45.0:
+        return
+    with _candle_cache_lock:
+        pending = list(_pending_cache_writes)
+        _pending_cache_writes.clear()
+    disk, fsym, fex = read_candle_cache_file(CANDLE_CACHE_PATH)
+    by_start: dict[int, dict] = {}
+    for c in disk:
+        if isinstance(c, dict) and c.get("start") is not None:
+            try:
+                st = int(c["start"])
+                by_start[st] = _normalize_candle_dict_for_cache(c)
+            except Exception:
+                continue
+    for nw in pending:
+        try:
+            by_start[int(nw["start"])] = nw
+        except Exception:
+            continue
+    merged = sorted(by_start.values(), key=lambda r: r["start"])
+    if len(merged) > CANDLE_CACHE_MAX_BARS:
+        merged = merged[-CANDLE_CACHE_MAX_BARS:]
+    sym = (fsym or SYMBOL).strip().upper()
+    ex = (fex or _exchange_id_for_cache()).strip().lower()
+    try:
+        _write_candle_cache_payload(merged, sym, ex)
+        _last_candle_cache_flush_ts = time.time()
+        if merged:
+            _cache_high_water_ms = merged[-1]["start"]
+        logging.info(
+            "[candle_cache] Flushed %s WS candle row(s) → %s (total bars=%s)",
+            len(pending),
+            CANDLE_CACHE_PATH.name,
+            len(merged),
+        )
+    except Exception as e:
+        logging.error("[candle_cache] Flush failed: %s", e, exc_info=True)
+        with _candle_cache_lock:
+            _pending_cache_writes = pending + _pending_cache_writes
+
+
+def _queue_closed_candle_rows_for_cache(rows: list[dict]) -> None:
+    """Persist fully closed 1m candles from WS into logs/market_data_1m.json (batched)."""
+    global _cache_high_water_ms
+    new_norm: list[dict] = []
+    for r in rows:
+        if not _is_ws_kline_fully_closed(r) or r.get("start") is None:
+            continue
+        try:
+            st = int(r["start"])
+        except (TypeError, ValueError):
+            continue
+        if st <= _cache_high_water_ms:
+            continue
+        try:
+            new_norm.append(_normalize_candle_dict_for_cache(r))
+        except Exception:
+            continue
+    if not new_norm:
+        return
+    new_norm.sort(key=lambda x: x["start"])
+    with _candle_cache_lock:
+        _pending_cache_writes.extend(new_norm)
+        _cache_high_water_ms = max(_cache_high_water_ms, new_norm[-1]["start"])
+    _flush_pending_candle_cache_writes(force=False)
+
+
 def fetch_historical_klines() -> bool:
     """
-    Fetch historical 1m klines (500–5000 bars via HISTORICAL_KLINES, default 1000) for RSI warm-up.
+    Load 1m history from local cache (logs/market_data_1m.json), incrementally refresh from the
+    exchange since the last cached bar, then trim RAM to KLINES_MAX / MEMORY caps.
     """
-    global KLINES, KLINES_MAX, RSI_SMA_LENGTH
+    global KLINES, KLINES_MAX, RSI_SMA_LENGTH, _cache_high_water_ms
     load_dotenv(override=True)
     load_dotenv("env", override=True)
     try:
@@ -965,22 +1097,100 @@ def fetch_historical_klines() -> bool:
         RSI_SMA_LENGTH = max(1, int(os.getenv("RSI_SMA_LENGTH", "14")))
     except ValueError:
         RSI_SMA_LENGTH = 14
-    if USE_DELTA:
-        ok = fetch_historical_klines_delta(SYMBOL, KLINES, KLINES_MAX)
+
+    ex_id = _exchange_id_for_cache()
+    sym_u = (SYMBOL or "").strip().upper()
+    disk_rows, file_sym, file_ex = read_candle_cache_file(CANDLE_CACHE_PATH)
+
+    merged_by_start: dict[int, dict] = {}
+    for c in disk_rows:
+        if isinstance(c, dict) and c.get("start") is not None:
+            try:
+                st = int(c["start"])
+                merged_by_start[st] = _normalize_candle_dict_for_cache(c)
+            except Exception:
+                continue
+
+    stale = False
+    if file_sym and file_sym.strip().upper() != sym_u:
+        stale = True
+    if file_ex and file_ex.strip().lower() != ex_id.lower():
+        stale = True
+    if stale:
+        logging.info(
+            "[candle_cache] Cache symbol/exchange mismatch (file %s/%s vs %s/%s); re-seeding from API.",
+            file_sym,
+            file_ex,
+            sym_u,
+            ex_id,
+        )
+        merged_by_start.clear()
+
+    last_ms: int | None = None
+    if merged_by_start:
+        last_ms = max(merged_by_start.keys())
+
+    incremental: list[dict] = []
+    if last_ms is not None:
+        if USE_DELTA:
+            incremental = fetch_incremental_klines_delta(SYMBOL, last_ms)
+        else:
+            incremental = fetch_incremental_klines_bybit(HTTP_CLIENT, SYMBOL, last_ms)
+        for r in incremental:
+            try:
+                merged_by_start[int(r["start"])] = _normalize_candle_dict_for_cache(r)
+            except Exception:
+                continue
+        if incremental:
+            logging.info(
+                "[candle_cache] Merged %s new bar(s) from exchange after %s",
+                len(incremental),
+                last_ms,
+            )
     else:
-        ok = fetch_historical_klines_bybit(HTTP_CLIENT, SYMBOL, KLINES, KLINES_MAX)
-    # Enforce hard cap immediately after the initial load.
+        seed: list = []
+        if USE_DELTA:
+            ok_seed = fetch_historical_klines_delta(SYMBOL, seed, KLINES_MAX)
+        else:
+            ok_seed = fetch_historical_klines_bybit(HTTP_CLIENT, SYMBOL, seed, KLINES_MAX)
+        if not ok_seed and not merged_by_start:
+            KLINES.clear()
+            print(
+                "Warning: historical kline load failed; RSI may diverge until buffer fills "
+                f"(set HISTORICAL_KLINES 500–5000, default 1000)."
+            )
+            return False
+        for r in seed:
+            try:
+                merged_by_start[int(r["start"])] = _normalize_candle_dict_for_cache(r)
+            except Exception:
+                continue
+
+    merged_list = sorted(merged_by_start.values(), key=lambda r: r["start"])
+    if len(merged_list) > CANDLE_CACHE_MAX_BARS:
+        merged_list = merged_list[-CANDLE_CACHE_MAX_BARS:]
+
+    if merged_list:
+        try:
+            _write_candle_cache_payload(merged_list, SYMBOL, ex_id)
+            _cache_high_water_ms = merged_list[-1]["start"]
+        except Exception as e:
+            logging.error("[candle_cache] Could not write %s: %s", CANDLE_CACHE_PATH, e)
+
+    KLINES.clear()
+    KLINES.extend(merged_list[-KLINES_MAX:] if merged_list else [])
     if len(KLINES) > MEMORY_CAP_ROWS:
-        KLINES = KLINES[-MEMORY_KEEP_ROWS:]
+        KLINES[:] = KLINES[-MEMORY_KEEP_ROWS:]
+
+    ok = len(KLINES) > 0
     if ok:
         print(
-            f"Loaded {len(KLINES)} historical klines for {SYMBOL} "
-            f"(RSI warm-up; RSI_SMA length={RSI_SMA_LENGTH})."
+            f"Loaded {len(KLINES)} klines in RAM for {SYMBOL} "
+            f"(disk cache {len(merged_list)} bars; RSI_SMA length={RSI_SMA_LENGTH})."
         )
     else:
         print(
-            "Warning: historical kline load failed; RSI may diverge until buffer fills "
-            f"(set HISTORICAL_KLINES 500–5000, default 1000)."
+            "Warning: no klines in memory after cache/API merge; RSI may diverge until buffer fills."
         )
     return ok
 
@@ -3108,6 +3318,10 @@ def handle_kline_message(message: dict) -> None:
         return
     rows = [kline_to_row(d) for d in message["data"]]
     ensure_updated(rows)
+    try:
+        _queue_closed_candle_rows_for_cache(rows)
+    except Exception as e:
+        logging.debug("[candle_cache] WS persist skip: %s", e)
     df = pd.DataFrame(KLINES)
     if df.empty:
         return

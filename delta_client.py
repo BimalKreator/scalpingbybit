@@ -224,6 +224,90 @@ def fetch_historical_klines_delta(symbol: str, klines_out: list, max_n: int = 10
         return False
 
 
+def fetch_incremental_klines_delta(
+    symbol: str,
+    since_start_ms_exclusive: int,
+    end_ms: int | None = None,
+    max_bars: int = 20_000,
+) -> list[dict]:
+    """
+    1m candles with open time strictly after since_start_ms_exclusive, up to end_ms (default: now).
+    Same row shape as fetch_historical_klines_delta / Bybit.
+    """
+    dsym = normalize_delta_symbol(symbol)
+    if end_ms is None:
+        end_ms = int(time.time() * 1000)
+    start_sec = (int(since_start_ms_exclusive) // 1000) + 60
+    end_sec = int(end_ms) // 1000
+    if start_sec >= end_sec:
+        return []
+    max_bars = max(1, min(int(max_bars), 50_000))
+    by_start: dict[int, dict] = {}
+    base = f"{_REST_BASE_INDIA}/v2/history/candles"
+    cur = start_sec
+    try:
+        for _ in range(600):
+            if len(by_start) >= max_bars or cur >= end_sec:
+                break
+            chunk_end = min(cur + 1000 * 60, end_sec)
+            r = requests.get(
+                base,
+                params={
+                    "resolution": "1m",
+                    "symbol": dsym,
+                    "start": str(cur),
+                    "end": str(chunk_end),
+                },
+                headers={"Accept": "application/json"},
+                timeout=45,
+            )
+            data = r.json()
+            if not data.get("success"):
+                if not by_start:
+                    print("[Delta] incremental candles API error:", data.get("error") or data)
+                break
+            batch_raw = data.get("result") or []
+            if not batch_raw:
+                cur = chunk_end + 1
+                time.sleep(0.1)
+                continue
+            n_before = len(by_start)
+            for c in batch_raw:
+                t = int(c.get("time") or 0)
+                if t > 10_000_000_000:
+                    t = t // 1000
+                start_ms = t * 1000
+                if start_ms <= since_start_ms_exclusive or start_ms > end_ms:
+                    continue
+                by_start[start_ms] = {
+                    "start": start_ms,
+                    "end": start_ms + 60000,
+                    "interval": "1",
+                    "open": float(c.get("open") or 0),
+                    "high": float(c.get("high") or 0),
+                    "low": float(c.get("low") or 0),
+                    "close": float(c.get("close") or 0),
+                    "volume": float(c.get("volume") or 0),
+                    "turnover": 0.0,
+                    "confirm": True,
+                    "timestamp": start_ms,
+                }
+            last = batch_raw[-1]
+            lt = int(last.get("time") or 0)
+            if lt > 10_000_000_000:
+                lt = lt // 1000
+            cur = lt + 60
+            if len(by_start) == n_before:
+                cur = chunk_end + 1
+            if len(batch_raw) < 10:
+                time.sleep(0.1)
+            time.sleep(0.1)
+        return sorted(by_start.values(), key=lambda x: x["start"])
+    except Exception as e:
+        print(f"[Delta] fetch_incremental_klines: {e}")
+        return []
+
+
 def fetch_signal_candle_high_low_delta(symbol: str) -> tuple[float, float]:
     """High/low of the last fully closed 1m candle (Signal_Range = high - low)."""
     dsym = normalize_delta_symbol(symbol)

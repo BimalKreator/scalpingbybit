@@ -13,11 +13,16 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+import json
+
 import numpy as np
 import pandas as pd
 import pandas_ta as ta
 import requests
 import ccxt
+
+# Persistent 1m candle store (shared with live bot in main.py)
+CANDLE_CACHE_PATH = Path(__file__).resolve().parent / "logs" / "market_data_1m.json"
 
 TAKER_ENTRY_FEE = 0.00055  # 0.055%
 TAKER_EXIT_FEE_BYBIT = 0.00055
@@ -198,6 +203,144 @@ def fetch_klines_bybit(
         end_date,
         lambda s, a, b: _fetch_klines_bybit_uncached(s, a, b, timeframe),
     )
+
+
+def _parse_candle_cache_json(raw: object) -> tuple[list[dict], str | None, str | None]:
+    """
+    Normalize file payload to (candles, symbol_meta, exchange_meta).
+    Supports legacy bare JSON array or wrapped { "candles": [...], "symbol": "...", "exchange_id": "..." }.
+    """
+    if isinstance(raw, list):
+        return raw, None, None
+    if isinstance(raw, dict):
+        candles = raw.get("candles")
+        if candles is None and isinstance(raw.get("data"), list):
+            candles = raw.get("data")
+        if not isinstance(candles, list):
+            return [], raw.get("symbol"), raw.get("exchange_id")
+        sym = raw.get("symbol")
+        ex = raw.get("exchange_id") or raw.get("exchange")
+        return candles, str(sym) if sym else None, str(ex) if ex else None
+    return [], None, None
+
+
+def read_candle_cache_file(
+    path: Path | None = None,
+) -> tuple[list[dict], str | None, str | None]:
+    """Read and parse logs/market_data_1m.json (or given path). Returns (candles, symbol, exchange_id)."""
+    p = path or CANDLE_CACHE_PATH
+    if not p.is_file():
+        return [], None, None
+    try:
+        text = p.read_text(encoding="utf-8").strip()
+        if not text:
+            return [], None, None
+        raw = json.loads(text)
+    except (OSError, json.JSONDecodeError):
+        return [], None, None
+    return _parse_candle_cache_json(raw)
+
+
+def load_backtest_df_from_candle_cache(
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    *,
+    exchange_id: str | None = None,
+) -> tuple[pd.DataFrame | None, str | None]:
+    """
+    Load 1m OHLCV strictly from CANDLE_CACHE_PATH (no exchange HTTP).
+    Returns (df, None) on success, or (None, error_message).
+    """
+    path = CANDLE_CACHE_PATH
+    if not path.is_file():
+        return None, (
+            "No local candle database found. Start the live bot first to build the historical database "
+            f"({path.name})."
+        )
+
+    candles, file_sym, _file_ex = read_candle_cache_file(path)
+    if not candles:
+        return None, "Candle cache is empty or unreadable. Run the live bot to populate logs/market_data_1m.json."
+
+    sym_u = (symbol or "").strip().upper()
+    if file_sym and file_sym.strip().upper() != sym_u:
+        return None, (
+            f"Cached symbol ({file_sym}) does not match requested symbol ({sym_u}). "
+            "Use the same symbol as the live bot or remove the cache file."
+        )
+
+    ex_l = (exchange_id or "").strip().lower()
+    if file_ex and ex_l and file_ex.strip().lower() != ex_l:
+        return None, (
+            f"Candle cache was built for exchange '{file_ex}' but current EXCHANGE_ID is '{ex_l}'. "
+            "Match the dashboard exchange to the bot that built the cache, or delete the cache file."
+        )
+
+    start_ts, end_ts = _parse_range_to_ts(start_date, end_date)
+    start_ms = int(start_ts) * 1000
+    end_ms = int(end_ts) * 1000
+    if start_ms >= end_ms:
+        return None, "Invalid backtest date range (start must be before end)."
+
+    rows: list[dict] = []
+    for c in candles:
+        if not isinstance(c, dict):
+            continue
+        st = c.get("start")
+        if st is None:
+            st = c.get("timestamp")
+        try:
+            st_i = int(st)
+        except (TypeError, ValueError):
+            continue
+        try:
+            o = float(c.get("open") or 0)
+            h = float(c.get("high") or 0)
+            lo = float(c.get("low") or 0)
+            cl = float(c.get("close") or 0)
+            vol = float(c.get("volume") or 0)
+        except (TypeError, ValueError):
+            continue
+        rows.append(
+            {
+                "timestamp": st_i,
+                "open": o,
+                "high": h,
+                "low": lo,
+                "close": cl,
+                "volume": vol,
+            }
+        )
+
+    if not rows:
+        return None, "No valid candle rows in cache."
+
+    df = pd.DataFrame(rows)
+    df = df.drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+    df = df[(df["timestamp"] >= start_ms) & (df["timestamp"] <= end_ms)]
+    if df.empty:
+        df_all = (
+            pd.DataFrame(rows)
+            .drop_duplicates(subset=["timestamp"])
+            .sort_values("timestamp")
+        )
+        if df_all.empty:
+            return None, "No valid candle rows in cache."
+        lo_t = int(df_all["timestamp"].iloc[0])
+        hi_t = int(df_all["timestamp"].iloc[-1])
+        return None, (
+            "Requested date range is not covered by the local cache. "
+            f"Cached window (UTC ms): {lo_t} – {hi_t}. "
+            "Run the live bot longer or choose dates inside the cached interval."
+        )
+
+    for col in ["open", "high", "low", "close", "volume"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=["open", "high", "low", "close"])
+    if df.empty:
+        return None, "No usable OHLC rows after filtering for the requested range."
+    return df, None
 
 
 def compute_indicators(
