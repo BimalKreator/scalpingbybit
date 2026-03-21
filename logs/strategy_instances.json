@@ -25,8 +25,8 @@
     "state": {
       "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 355,
-      "last_evaluated_start": 1774132860000,
+      "bar_seq": 363,
+      "last_evaluated_start": 1774133340000,
       "last_signal_start": null
     }
   },
@@ -52,20 +52,17 @@
       "trendFilter": false,
       "maxCandleAtrMult": 3,
       "minVolatilityAtrMult": 0.15,
-      "tradeCapitalUsd": 100,
-      "leverage": 5,
-      "slMultiplierMax": 3,
-      "slMultiplierMin": 0.5,
-      "slDecaySeconds": 10,
-      "breakevenBufferPct": 0.05,
+      "tradeCapitalUsd": 10,
+      "leverage": 10,
+      "breakevenBufferPct": 0.02,
       "trailingSlEnabled": true,
       "partialTpEnabled": true
     },
     "state": {
       "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 111,
-      "last_evaluated_start": 1774132740000,
+      "bar_seq": 114,
+      "last_evaluated_start": 1774133280000,
       "last_signal_start": null
     }
   }

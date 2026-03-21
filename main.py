@@ -2756,7 +2756,7 @@ async def _place_order_async(
             base = b_bid
         current_price = base
         sl_wide = float(meta.get("sl_price"))
-        sl_tight = sl_wide
+        sl_tight = float(meta.get("sl_min_price", sl_wide))
         tp = float(meta.get("tp_price"))
         sl = sl_wide
         range_ = max(abs(float(base) - float(sl_wide)), 1e-12)
@@ -3071,59 +3071,44 @@ async def _place_order_async(
         _is_setting_initial_sl = False
 
 
-def strategy_weak_momentum_reversal(klines: pd.DataFrame) -> tuple[str | None, str]:
-    """
-    Weak Momentum Reversal: evaluate latest CLOSED 1m candle (klines.iloc[-2]).
-    LONG: two bearish; volume(signal) > volume(prev); RSI < oversold; min expected TP %.
-    SHORT: two bullish; same volume; RSI > overbought; min expected TP %.
-    Returns ("Buy"|"Sell", reason) or (None, "").
-    """
+def _weak_momentum_params_from_env() -> dict[str, Any]:
+    """Legacy / check_signals path: build instance-style params from .env + globals."""
     load_dotenv(override=True)
     load_dotenv("env", override=True)
-    if len(klines) < 3:
-        return (None, "")
-    row = klines.iloc[-2]
-    row_prev = klines.iloc[-3]
-    rsi = row.get("RSI")
-    if pd.isna(rsi):
-        return (None, "")
-    v_sig, v_prev = row.get("volume"), row_prev.get("volume")
-    if pd.isna(v_sig) or pd.isna(v_prev):
-        return (None, "")
-    vd = float(v_sig) > float(v_prev)
-    close, open_ = float(row["close"]), float(row["open"])
-    high, low = float(row["high"]), float(row["low"])
-    close_prev, open_prev = float(row_prev["close"]), float(row_prev["open"])
-    range_ = high - low
-    tp_mult = float(os.getenv("TP_MULTIPLIER", "2.0"))
-    tp_dist = range_ * tp_mult
-    min_profit_pct = float(os.getenv("MIN_PROFIT_PCT", "0.5"))
-    ref_mid = (high + low) / 2 if high > 0 and low > 0 else close
-    expected_profit_pct = (tp_dist / ref_mid) * 100 if ref_mid > 0 else 0.0
-    if expected_profit_pct < min_profit_pct:
-        return (None, "")
-    rf = float(rsi)
-    current_bullish = close > open_
-    prev_bullish = close_prev > open_prev
-    current_bearish = open_ > close
-    prev_bearish = open_prev > close_prev
-    if current_bullish and prev_bullish and vd and rf > RSI_OVERBOUGHT:
-        return (
-            "Sell",
-            f"RSI>{RSI_OVERBOUGHT} two bullish candles, vol↑ vs prev, exp_profit_pct={expected_profit_pct:.3f}",
-        )
-    if current_bearish and prev_bearish and vd and rf < RSI_OVERSOLD:
-        return (
-            "Buy",
-            f"RSI<{RSI_OVERSOLD} two bearish candles, vol↑ vs prev, exp_profit_pct={expected_profit_pct:.3f}",
-        )
-    return (None, "")
+    emx, emn = _sl_multipliers_from_env()
+    try:
+        tpm = float(os.getenv("TP_MULTIPLIER", "2.0"))
+    except (TypeError, ValueError):
+        tpm = 2.0
+    return {
+        "rsiLength": RSI_LENGTH,
+        "rsiOverbought": RSI_OVERBOUGHT,
+        "rsiOversold": RSI_OVERSOLD,
+        "slMultiplierMax": emx,
+        "slMultiplierMin": emn,
+        "tpMultiplier": tpm,
+    }
 
 
-def evaluate_weak_momentum_instance(klines: pd.DataFrame, params: dict | None) -> tuple[str | None, str]:
+def strategy_weak_momentum_reversal(klines: pd.DataFrame) -> tuple[str | None, str, dict[str, Any] | None]:
     """
-    Weak Momentum on a dataframe of **closed** candles only: signal = last row, prev = iloc[-2].
-    Params override .env when keys are present.
+    Legacy ACTIVE_STRATEGIES path: same pure price-action + RSI rules as instance engine.
+    Returns (signal, reason, meta) where meta carries fixed SL/TP from signal-bar range.
+    """
+    return evaluate_weak_momentum_instance(klines, _weak_momentum_params_from_env())
+
+
+def evaluate_weak_momentum_instance(
+    klines: pd.DataFrame, params: dict | None
+) -> tuple[str | None, str, dict[str, Any] | None]:
+    """
+    Pure Weak Momentum (closed bars only):
+      sig_bar = iloc[-2], conf_bar = iloc[-1].
+
+    LONG: sig RSI < oversold, sig bearish, conf close > sig high.
+    SHORT: sig RSI > overbought, sig bullish, conf close < sig low.
+
+    SL/TP from signal bar range only: base_risk = sig_high - sig_low, anchored to conf close.
     """
     p = params or {}
     load_dotenv(override=True)
@@ -3135,50 +3120,79 @@ def evaluate_weak_momentum_instance(klines: pd.DataFrame, params: dict | None) -
     rsi_os = float(
         p["rsiOversold"] if "rsiOversold" in p and p["rsiOversold"] is not None else RSI_OVERSOLD
     )
-    _wm_tp_default = 2.0
     tp_mult = float(
-        p["tpMultiplier"] if "tpMultiplier" in p and p["tpMultiplier"] is not None else _wm_tp_default
+        p["tpMultiplier"] if "tpMultiplier" in p and p["tpMultiplier"] is not None else 2.0
     )
-    min_profit_pct = float(
-        p["minProfitPerc"] if "minProfitPerc" in p and p["minProfitPerc"] is not None else MIN_PROFIT_PCT
+    sl_mx = float(
+        p["slMultiplierMax"] if "slMultiplierMax" in p and p["slMultiplierMax"] is not None else 3.0
     )
+    sl_mn = float(
+        p["slMultiplierMin"] if "slMultiplierMin" in p and p["slMultiplierMin"] is not None else 0.5
+    )
+
     if len(klines) < 3:
-        return (None, "")
+        return (None, "", None)
+
     df = compute_indicators(klines.copy(), rsi_length=rsi_len)
-    row = df.iloc[-1]
-    row_prev = df.iloc[-2]
-    rsi = row.get("RSI")
-    if pd.isna(rsi):
-        return (None, "")
-    v_sig, v_prev = row.get("volume"), row_prev.get("volume")
-    if pd.isna(v_sig) or pd.isna(v_prev):
-        return (None, "")
-    vd = float(v_sig) > float(v_prev)
-    close, open_ = float(row["close"]), float(row["open"])
-    high, low = float(row["high"]), float(row["low"])
-    close_prev, open_prev = float(row_prev["close"]), float(row_prev["open"])
-    range_ = high - low
-    tp_dist = range_ * tp_mult
-    ref_mid = (high + low) / 2 if high > 0 and low > 0 else close
-    expected_profit_pct = (tp_dist / ref_mid) * 100 if ref_mid > 0 else 0.0
-    if expected_profit_pct < min_profit_pct:
-        return (None, "")
-    rf = float(rsi)
-    current_bullish = close > open_
-    prev_bullish = close_prev > open_prev
-    current_bearish = open_ > close
-    prev_bearish = open_prev > close_prev
-    if current_bullish and prev_bullish and vd and rf > rsi_ob:
-        return (
-            "Sell",
-            f"RSI>{rsi_ob} two bullish candles, vol↑ vs prev, exp_profit_pct={expected_profit_pct:.3f}",
+    sig_bar = df.iloc[-2]
+    conf_bar = df.iloc[-1]
+
+    sig_rsi = sig_bar.get("RSI")
+    if sig_rsi is None or pd.isna(sig_rsi):
+        return (None, "", None)
+
+    sig_high = float(sig_bar["high"])
+    sig_low = float(sig_bar["low"])
+    sig_open = float(sig_bar["open"])
+    sig_close = float(sig_bar["close"])
+    conf_close = float(conf_bar["close"])
+
+    sig_range = max(sig_high - sig_low, 1e-12)
+    sig_is_bearish = sig_close < sig_open
+    sig_is_bullish = sig_close > sig_open
+
+    long_ok = float(sig_rsi) < rsi_os and sig_is_bearish and conf_close > sig_high
+    short_ok = float(sig_rsi) > rsi_ob and sig_is_bullish and conf_close < sig_low
+
+    if long_ok and short_ok:
+        return (None, "ambiguous_long_and_short", None)
+    if not long_ok and not short_ok:
+        return (None, "", None)
+
+    entry_ref = conf_close
+    if entry_ref <= 0:
+        return (None, "invalid_entry_ref", None)
+
+    base_risk = sig_range
+
+    if long_ok:
+        side = "Buy"
+        sl_wide = entry_ref - (base_risk * sl_mx)
+        sl_tight = entry_ref - (base_risk * sl_mn)
+        tp_price = entry_ref + (base_risk * tp_mult)
+        reason = (
+            f"WM LONG rsi_sig={float(sig_rsi):.2f}<{rsi_os} bearish_sig breakout "
+            f"base_risk={base_risk:.6f} sl_lo={sl_wide:.4f}/{sl_tight:.4f} tp={tp_price:.4f}"
         )
-    if current_bearish and prev_bearish and vd and rf < rsi_os:
-        return (
-            "Buy",
-            f"RSI<{rsi_os} two bearish candles, vol↑ vs prev, exp_profit_pct={expected_profit_pct:.3f}",
+    else:
+        side = "Sell"
+        sl_wide = entry_ref + (base_risk * sl_mx)
+        sl_tight = entry_ref + (base_risk * sl_mn)
+        tp_price = entry_ref - (base_risk * tp_mult)
+        reason = (
+            f"WM SHORT rsi_sig={float(sig_rsi):.2f}>{rsi_ob} bullish_sig breakdown "
+            f"base_risk={base_risk:.6f} sl_hi={sl_wide:.4f}/{sl_tight:.4f} tp={tp_price:.4f}"
         )
-    return (None, "")
+
+    conf_row = conf_bar.to_dict() if hasattr(conf_bar, "to_dict") else dict(conf_bar)
+    meta: dict[str, Any] = {
+        "use_fixed_sl_tp": True,
+        "sl_price": float(sl_wide),
+        "sl_min_price": float(sl_tight),
+        "tp_price": float(tp_price),
+        "signal_row": conf_row,
+    }
+    return (side, reason, meta)
 
 
 def weak_momentum_instance_entry_checklists(
@@ -3186,10 +3200,7 @@ def weak_momentum_instance_entry_checklists(
     params: dict | None,
     state: dict | None = None,
 ) -> dict[str, Any]:
-    """
-    LONG/SHORT rule rows aligned with :func:`evaluate_weak_momentum_instance` (read-only).
-    Returns ``rules_long``, ``rules_short`` as list of ``{"text", "met"}``.
-    """
+    """Four core rules per side + flat gate; matches :func:`evaluate_weak_momentum_instance`."""
     p = params or {}
     st = state or {}
 
@@ -3205,78 +3216,65 @@ def weak_momentum_instance_entry_checklists(
     rsi_os = float(
         p["rsiOversold"] if "rsiOversold" in p and p["rsiOversold"] is not None else RSI_OVERSOLD
     )
-    _wm_tp_default = 2.0
-    tp_mult = float(
-        p["tpMultiplier"] if "tpMultiplier" in p and p["tpMultiplier"] is not None else _wm_tp_default
-    )
-    min_profit_pct = float(
-        p["minProfitPerc"] if "minProfitPerc" in p and p["minProfitPerc"] is not None else MIN_PROFIT_PCT
-    )
 
-    long_rules: list[dict[str, Any]] = []
-    short_rules: list[dict[str, Any]] = []
-    long_rules.append(R("Instance flat (not in_position)", not bool(st.get("in_position"))))
-    short_rules.append(R("Instance flat (not in_position)", not bool(st.get("in_position"))))
-    exch_ok = not get_open_position()
-    long_rules.append(R("No open exchange position (allows new entries)", exch_ok))
-    short_rules.append(R("No open exchange position (allows new entries)", exch_ok))
+    flat_ok = not bool(st.get("in_position")) and not get_open_position()
+
+    def blank_four() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        return (
+            [
+                R("Instance & Exchange Flat", flat_ok),
+                R(f"Prev RSI < {rsi_os} (was —)", False),
+                R("Prev Bar Bearish (Red)", False),
+                R("Curr Close > Prev High", False),
+            ],
+            [
+                R("Instance & Exchange Flat", flat_ok),
+                R(f"Prev RSI > {rsi_ob} (was —)", False),
+                R("Prev Bar Bullish (Green)", False),
+                R("Curr Close < Prev Low", False),
+            ],
+        )
 
     if len(klines) < 3:
-        msg = "Need ≥3 closed bars"
-        long_rules.append(R(msg, False))
-        short_rules.append(R(msg, False))
-        return {"rules_long": long_rules, "rules_short": short_rules, "note": "insufficient_bars"}
+        lo, sh = blank_four()
+        return {"rules_long": lo, "rules_short": sh, "note": "insufficient_bars"}
 
     df = compute_indicators(klines.copy(), rsi_length=rsi_len)
-    row = df.iloc[-1]
-    row_prev = df.iloc[-2]
-    rsi = row.get("RSI")
-    rsi_valid = rsi is not None and not pd.isna(rsi)
-    long_rules.append(R("RSI computed (latest closed bar)", rsi_valid))
-    short_rules.append(R("RSI computed (latest closed bar)", rsi_valid))
+    sig_bar = df.iloc[-2]
+    conf_bar = df.iloc[-1]
 
-    v_sig, v_prev = row.get("volume"), row_prev.get("volume")
-    vol_valid = not pd.isna(v_sig) and not pd.isna(v_prev)
-    vd = vol_valid and float(v_sig) > float(v_prev)
-    long_rules.append(R("Volume valid (signal & prev)", vol_valid))
-    short_rules.append(R("Volume valid (signal & prev)", vol_valid))
-    long_rules.append(R("Volume: latest bar > previous", vd))
-    short_rules.append(R("Volume: latest bar > previous", vd))
+    sig_rsi = sig_bar.get("RSI")
+    rsi_ok = sig_rsi is not None and not pd.isna(sig_rsi)
+    sig_rsi_f = float(sig_rsi) if rsi_ok else float("nan")
 
-    close, open_ = float(row["close"]), float(row["open"])
-    high, low = float(row["high"]), float(row["low"])
-    close_prev, open_prev = float(row_prev["close"]), float(row_prev["open"])
-    range_ = high - low
-    tp_dist = range_ * tp_mult
-    ref_mid = (high + low) / 2 if high > 0 and low > 0 else close
-    expected_profit_pct = (tp_dist / ref_mid) * 100 if ref_mid > 0 else 0.0
-    exp_ok = expected_profit_pct >= min_profit_pct
-    long_rules.append(R(f"Expected move ≥ {min_profit_pct}% (latest bar range × TP mult)", exp_ok))
-    short_rules.append(R(f"Expected move ≥ {min_profit_pct}% (latest bar range × TP mult)", exp_ok))
+    sig_open = float(sig_bar["open"])
+    sig_close = float(sig_bar["close"])
+    sig_high = float(sig_bar["high"])
+    sig_low = float(sig_bar["low"])
+    conf_close = float(conf_bar["close"])
 
-    current_bullish = close > open_
-    prev_bullish = close_prev > open_prev
-    current_bearish = open_ > close
-    prev_bearish = open_prev > close_prev
-    both_bearish = current_bearish and prev_bearish
-    both_bullish = current_bullish and prev_bullish
+    sig_is_bearish = sig_close < sig_open
+    sig_is_bullish = sig_close > sig_open
+    long_break = conf_close > sig_high
+    short_break = conf_close < sig_low
 
-    long_rules.append(R("Latest bar bearish (open > close)", current_bearish))
-    long_rules.append(R("Previous bar bearish", prev_bearish))
-    long_rules.append(R("Two consecutive bearish bars", both_bearish))
-
-    short_rules.append(R("Confirm bar bullish (close > open)", current_bullish))
-    short_rules.append(R("Previous bar bullish", prev_bullish))
-    short_rules.append(R("Two consecutive bullish bars", both_bullish))
-
-    rf = float(rsi) if rsi_valid else float("nan")
-    long_rules.append(R(f"RSI < oversold ({rf:.2f} < {rsi_os})", rsi_valid and rf < rsi_os))
-    short_rules.append(R(f"RSI > overbought ({rf:.2f} > {rsi_ob})", rsi_valid and rf > rsi_ob))
-
-    return {"rules_long": long_rules, "rules_short": short_rules, "note": None}
+    rsi_disp = f"{sig_rsi_f:.2f}" if rsi_ok else "—"
+    rules_long = [
+        R("Instance & Exchange Flat", flat_ok),
+        R(f"Prev RSI < {rsi_os} (was {rsi_disp})", rsi_ok and sig_rsi_f < rsi_os),
+        R("Prev Bar Bearish (Red)", sig_is_bearish),
+        R("Curr Close > Prev High", long_break),
+    ]
+    rules_short = [
+        R("Instance & Exchange Flat", flat_ok),
+        R(f"Prev RSI > {rsi_ob} (was {rsi_disp})", rsi_ok and sig_rsi_f > rsi_ob),
+        R("Prev Bar Bullish (Green)", sig_is_bullish),
+        R("Curr Close < Prev Low", short_break),
+    ]
+    return {"rules_long": rules_long, "rules_short": rules_short, "note": None}
 
 
-STRATEGY_REGISTRY: dict[str, Callable[[pd.DataFrame], tuple[str | None, str]]] = {
+STRATEGY_REGISTRY: dict[str, Callable[[pd.DataFrame], tuple[str | None, str, dict[str, Any] | None]]] = {
     "weak_momentum_reversal": strategy_weak_momentum_reversal,
 }
 
@@ -3289,12 +3287,12 @@ def has_valid_entry_signal_now(df: pd.DataFrame) -> tuple[str | None, pd.Series 
     reload_active_strategies_from_env()
     if len(df) < 3:
         return (None, None)
-    row_signal = df.iloc[-2]
+    row_signal = df.iloc[-1]
     for key in ACTIVE_STRATEGIES:
         fn = STRATEGY_REGISTRY.get(key)
         if fn is None:
             continue
-        signal, _reason = fn(df)
+        signal, _reason, _meta = fn(df)
         if signal in ("Buy", "Sell"):
             return (signal, row_signal)
     return (None, None)
@@ -3835,6 +3833,7 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
         row_dict: dict | None = None
         use_fixed = False
         sl_p = tp_p = None
+        sl_min_p: float | None = None
 
         if strat == "ema_trap":
             ev = ema_trap.evaluate(df_closed, dict(inst.get("params") or {}), st)
@@ -3846,9 +3845,17 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
                 sl_p = float(ev["sl_price"])
                 tp_p = float(ev["tp_price"])
         elif strat == "weak_momentum_reversal":
-            signal, reason = evaluate_weak_momentum_instance(df_closed, dict(inst.get("params") or {}))
-            if signal in ("Buy", "Sell"):
-                row_dict = df_closed.iloc[-1].to_dict()
+            wm_sig, wm_reason, wm_meta = evaluate_weak_momentum_instance(
+                df_closed, dict(inst.get("params") or {})
+            )
+            signal = wm_sig
+            reason = str(wm_reason or "")
+            if signal in ("Buy", "Sell") and wm_meta:
+                use_fixed = bool(wm_meta.get("use_fixed_sl_tp"))
+                sl_p = float(wm_meta["sl_price"])
+                tp_p = float(wm_meta["tp_price"])
+                sl_min_p = float(wm_meta.get("sl_min_price", sl_p))
+                row_dict = wm_meta.get("signal_row") or df_closed.iloc[-1].to_dict()
         else:
             continue
 
@@ -3882,6 +3889,8 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             "sl_price": sl_p,
             "tp_price": tp_p,
         }
+        if use_fixed and sl_min_p is not None:
+            meta["sl_min_price"] = float(sl_min_p)
         _loop.call_soon_threadsafe(
             _signal_queue.put_nowait,
             ("entry", signal, row_dict, False, meta),
@@ -3896,19 +3905,19 @@ def check_signals(df: pd.DataFrame) -> None:
     if len(df) < 3 or _loop is None or _signal_queue is None:
         return
     reload_active_strategies_from_env()
-    row = df.iloc[-2]
-    candle_start = int(row["start"])
+    row_conf = df.iloc[-1]
+    candle_start = int(row_conf["start"])
     if LAST_SIGNAL_CANDLE_START == candle_start:
         return
 
-    row_dict = row.to_dict() if hasattr(row, "to_dict") else dict(row)
+    row_dict = row_conf.to_dict() if hasattr(row_conf, "to_dict") else dict(row_conf)
 
     for strat_key in ACTIVE_STRATEGIES:
         fn = STRATEGY_REGISTRY.get(strat_key)
         if fn is None:
             logging.warning("[strategies] Unknown strategy key in ACTIVE_STRATEGIES: %s", strat_key)
             continue
-        signal, reason = fn(df)
+        signal, reason, sig_meta = fn(df)
         if signal not in ("Buy", "Sell"):
             continue
         label = AVAILABLE_STRATEGIES.get(strat_key, strat_key)
@@ -3922,8 +3931,14 @@ def check_signals(df: pd.DataFrame) -> None:
         if not _is_autotrade_enabled():
             print("Signal detected but Auto Trade is OFF. Skipping execution.")
             return
+        queue_meta = None
+        if isinstance(sig_meta, dict):
+            queue_meta = {k: v for k, v in sig_meta.items() if k != "signal_row"}
+            sr = sig_meta.get("signal_row")
+            if isinstance(sr, dict):
+                row_dict = sr
         _loop.call_soon_threadsafe(
-            _signal_queue.put_nowait, ("entry", signal, row_dict, False, None)
+            _signal_queue.put_nowait, ("entry", signal, row_dict, False, queue_meta)
         )
         return
 
