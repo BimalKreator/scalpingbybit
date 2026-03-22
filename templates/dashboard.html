@@ -791,8 +791,19 @@
       setInterval(pollLiveStrategy, 1000);
     });
 
+    /** Monotonic guard: detect stuck / empty strategy payloads from cache or bot-down states */
+    window.__lastStrategyChecksTs = window.__lastStrategyChecksTs || 0;
+
     function updateLiveStrategyPanel(data) {
-      data = data || {};
+      if (data == null || typeof data !== 'object') {
+        var stBad = document.getElementById('liveStatus');
+        if (stBad) { stBad.textContent = 'No data'; stBad.classList.add('text-slate-400'); }
+        var indBad = document.getElementById('liveIndicators');
+        if (indBad) indBad.innerHTML = '<p class="text-slate-500">Invalid strategy payload — waiting for bot.</p>';
+        var cc = document.getElementById('instance-checks-container');
+        if (cc) cc.innerHTML = '<div class="text-amber-400/90 text-sm p-4 bg-slate-800/80 border border-amber-900/50 rounded-xl">Live Monitor reset: no valid JSON from /api/strategy/status.</div>';
+        return;
+      }
 
       function escapeHtml(s) {
         if (s == null) return '';
@@ -853,16 +864,19 @@
       var liveInd = document.getElementById('liveIndicators');
       if (liveInd) {
         var ind = data.indicators || {};
-        if (Object.keys(ind).length === 0) {
-          liveInd.innerHTML = '<p class="text-slate-500">No data. Start the bot (main.py) to see live values.</p>';
+        if (Object.keys(ind).length === 0 && !(data.symbol && String(data.symbol).trim())) {
+          liveInd.innerHTML = '<p class="text-slate-500">No data. Start the bot to see live values.</p>';
         } else {
           var lines = [];
-          if (ind.RSI != null) lines.push('RSI: ' + formatNum(ind.RSI));
+          if (ind.RSI != null) lines.push('RSI (1m legacy row): ' + formatNum(ind.RSI));
           if (ind.open != null) lines.push('Open: ' + formatNum(ind.open));
           if (ind.close != null) lines.push('Close: ' + formatNum(ind.close));
           if (ind.body_size != null) lines.push('Body size: ' + formatNum(ind.body_size));
           if (ind.volume != null) lines.push('Volume: ' + formatNum(ind.volume));
           lines.push('Volume (signal > prev): ' + (ind.volume_signal_vs_prev ? 'Yes' : 'No'));
+          if (data.indicators_note) {
+            lines.push('<span class="text-amber-400/90 text-[11px]">' + escapeHtml(String(data.indicators_note)) + '</span>');
+          }
           liveInd.innerHTML = lines.map(function (l) { return '<p class="leading-tight">' + l + '</p>'; }).join('');
         }
       }
@@ -877,8 +891,13 @@
           checksDict = rawChecks;
         }
         var instanceList = Object.values(checksDict);
+        var ts = Number(data.checks_updated_unix);
+        if (isFinite(ts) && ts > 0) window.__lastStrategyChecksTs = Math.max(window.__lastStrategyChecksTs, ts);
         if (instanceList.length === 0) {
-          container.innerHTML = '<div class="text-slate-400 text-sm p-4 bg-slate-800/80 border border-slate-700 rounded-xl">No active strategy instances for this symbol. Enable one in the Strategy Hub.</div>';
+          var staleHint = (!data.symbol || !String(data.symbol).trim())
+            ? ' (Bot may be off — last file merge also empty.)'
+            : '';
+          container.innerHTML = '<div class="text-slate-400 text-sm p-4 bg-slate-800/80 border border-slate-700 rounded-xl">No active strategy instances for this symbol. Enable one in the Strategy Hub.' + staleHint + '</div>';
         } else {
           function buildRules(rules) {
             if (!rules || !rules.length) {
@@ -901,13 +920,22 @@
             var noteBlock = instance.note
               ? '<p class="text-xs text-amber-400/90 mb-3">' + escapeHtml(String(instance.note)) + '</p>'
               : '';
+            var ms = instance.monitor_sync;
+            var syncBlock = '';
+            if (ms && typeof ms === 'object') {
+              var sr = ms.sig_rsi != null ? formatNum(ms.sig_rsi) : '—';
+              syncBlock = '<p class="text-[11px] text-slate-400 mb-2 font-mono">Engine sync: sig_rsi=' + escapeHtml(sr) +
+                ' · conf_start=' + escapeHtml(ms.conf_bar_start != null ? String(ms.conf_bar_start) : '—') +
+                ' · buf_rows=' + escapeHtml(ms.rows_in_buffer != null ? String(ms.rows_in_buffer) : '—') +
+                '</p>';
+            }
             var cardHtml = '<div class="rounded-xl bg-slate-800/80 border border-slate-700 p-4 mb-3">' +
               '<div class="flex flex-wrap justify-between items-center gap-2 mb-3">' +
               '<h5 class="text-sm font-semibold text-sky-400">' + escapeHtml(name) +
               (interval ? ' <span class="text-xs bg-slate-700 text-slate-300 px-2 py-0.5 rounded ml-1 font-mono">' + escapeHtml(interval) + '</span>' : '') +
               '</h5>' +
               '<span class="text-[11px] text-slate-500 uppercase tracking-wide">' + escapeHtml(stype) + '</span></div>' +
-              noteBlock +
+              noteBlock + syncBlock +
               '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">' +
               '<div class="bg-slate-900/80 p-3 rounded-lg border border-slate-800">' +
               '<h6 class="text-emerald-400 text-xs font-bold mb-2 uppercase tracking-wider">Long conditions</h6>' +
@@ -966,7 +994,7 @@
     }
 
     function pollLiveStrategy() {
-      fetch('/api/strategy/status')
+      fetch('/api/strategy/status?ts=' + Date.now(), { cache: 'no-store' })
         .then(function (res) { return res.json(); })
         .then(updateLiveStrategyPanel)
         .catch(function () {

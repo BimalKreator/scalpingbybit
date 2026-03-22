@@ -518,8 +518,10 @@ live_strategy_state = {
     "symbol": "",
     "price": 0.0,
     "indicators": {},
+    "indicators_note": "",
     "conditions": {"long": [], "short": []},
     "checks": {},
+    "checks_updated_unix": 0.0,
     "status": "Waiting",
     "sl_price": None,
     "tp_price": None,
@@ -3130,16 +3132,29 @@ def evaluate_weak_momentum_instance(
         p["slMultiplierMin"] if "slMultiplierMin" in p and p["slMultiplierMin"] is not None else 0.5
     )
 
-    if len(klines) < 3:
+    df, _ = _weak_momentum_prepare_eval_df(klines, rsi_len)
+    if df is None:
         return (None, "", None)
 
-    df = compute_indicators(klines.copy(), rsi_length=rsi_len)
     sig_bar = df.iloc[-2]
     conf_bar = df.iloc[-1]
 
     sig_rsi = sig_bar.get("RSI")
     if sig_rsi is None or pd.isna(sig_rsi):
         return (None, "", None)
+
+    try:
+        sig_start = int(sig_bar["start"]) if "start" in sig_bar else None
+        conf_start = int(conf_bar["start"]) if "start" in conf_bar else None
+        logging.debug(
+            "[WM eval] rows=%s sig_start=%s conf_start=%s rsi_sig=%.4f",
+            len(df),
+            sig_start,
+            conf_start,
+            float(sig_rsi),
+        )
+    except (TypeError, ValueError, KeyError):
+        pass
 
     sig_high = float(sig_bar["high"])
     sig_low = float(sig_bar["low"])
@@ -3200,7 +3215,10 @@ def weak_momentum_instance_entry_checklists(
     params: dict | None,
     state: dict | None = None,
 ) -> dict[str, Any]:
-    """Four core rules per side + flat gate; matches :func:`evaluate_weak_momentum_instance`."""
+    """
+    Four core rules per side + flat gate; uses the same prep as :func:`evaluate_weak_momentum_instance`.
+    RSI label uses ``df.iloc[-2]['RSI']`` immediately after the shared ``compute_indicators`` pass.
+    """
     p = params or {}
     st = state or {}
 
@@ -3219,33 +3237,51 @@ def weak_momentum_instance_entry_checklists(
 
     flat_ok = not bool(st.get("in_position")) and not get_open_position()
 
-    def blank_four() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    def blank_four(rsi_placeholder: str = "—") -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         return (
             [
                 R("Instance & Exchange Flat", flat_ok),
-                R(f"Prev RSI < {rsi_os} (was —)", False),
-                R("Prev Bar Bearish (Red)", False),
-                R("Curr Close > Prev High", False),
+                R(f"Sig bar RSI < {rsi_os} (was {rsi_placeholder})", False),
+                R("Sig bar Bearish (close < open)", False),
+                R("Conf close > Sig high", False),
             ],
             [
                 R("Instance & Exchange Flat", flat_ok),
-                R(f"Prev RSI > {rsi_ob} (was —)", False),
-                R("Prev Bar Bullish (Green)", False),
-                R("Curr Close < Prev Low", False),
+                R(f"Sig bar RSI > {rsi_ob} (was {rsi_placeholder})", False),
+                R("Sig bar Bullish (close > open)", False),
+                R("Conf close < Sig low", False),
             ],
         )
 
-    if len(klines) < 3:
+    df, wm_pre = _weak_momentum_prepare_eval_df(klines, rsi_len)
+    if df is None:
         lo, sh = blank_four()
-        return {"rules_long": lo, "rules_short": sh, "note": "insufficient_bars"}
+        note = (
+            "Initializing — need at least 2 closed bars in this timeframe buffer."
+            if wm_pre == "initializing"
+            else "Need ≥3 closed bars (same requirement as the trade engine)."
+        )
+        return {
+            "rules_long": lo,
+            "rules_short": sh,
+            "note": note,
+            "sync": {
+                "engine": "weak_momentum_reversal",
+                "prep": wm_pre,
+                "rows_in_buffer": 0 if klines is None else int(len(klines)),
+                "sig_rsi": None,
+                "sig_bar_start": None,
+                "conf_bar_start": None,
+                "updated_at_unix": time.time(),
+            },
+        }
 
-    df = compute_indicators(klines.copy(), rsi_length=rsi_len)
     sig_bar = df.iloc[-2]
     conf_bar = df.iloc[-1]
-
-    sig_rsi = sig_bar.get("RSI")
-    rsi_ok = sig_rsi is not None and not pd.isna(sig_rsi)
-    sig_rsi_f = float(sig_rsi) if rsi_ok else float("nan")
+    # Same field the engine uses for decisions (not conf bar RSI).
+    raw_rsi = sig_bar.get("RSI")
+    rsi_ok = raw_rsi is not None and not pd.isna(raw_rsi)
+    sig_rsi_f = float(raw_rsi) if rsi_ok else float("nan")
 
     sig_open = float(sig_bar["open"])
     sig_close = float(sig_bar["close"])
@@ -3261,17 +3297,32 @@ def weak_momentum_instance_entry_checklists(
     rsi_disp = f"{sig_rsi_f:.2f}" if rsi_ok else "—"
     rules_long = [
         R("Instance & Exchange Flat", flat_ok),
-        R(f"Prev RSI < {rsi_os} (was {rsi_disp})", rsi_ok and sig_rsi_f < rsi_os),
-        R("Prev Bar Bearish (Red)", sig_is_bearish),
-        R("Curr Close > Prev High", long_break),
+        R(f"Sig bar RSI < {rsi_os} (was {rsi_disp})", rsi_ok and sig_rsi_f < rsi_os),
+        R("Sig bar Bearish (close < open)", sig_is_bearish),
+        R("Conf close > Sig high", long_break),
     ]
     rules_short = [
         R("Instance & Exchange Flat", flat_ok),
-        R(f"Prev RSI > {rsi_ob} (was {rsi_disp})", rsi_ok and sig_rsi_f > rsi_ob),
-        R("Prev Bar Bullish (Green)", sig_is_bullish),
-        R("Curr Close < Prev Low", short_break),
+        R(f"Sig bar RSI > {rsi_ob} (was {rsi_disp})", rsi_ok and sig_rsi_f > rsi_ob),
+        R("Sig bar Bullish (close > open)", sig_is_bullish),
+        R("Conf close < Sig low", short_break),
     ]
-    return {"rules_long": rules_long, "rules_short": rules_short, "note": None}
+    try:
+        sig_start = int(sig_bar["start"]) if "start" in sig_bar else None
+        conf_start = int(conf_bar["start"]) if "start" in conf_bar else None
+    except (TypeError, ValueError, KeyError):
+        sig_start = conf_start = None
+    sync: dict[str, Any] = {
+        "engine": "weak_momentum_reversal",
+        "prep": "ok",
+        "rows_in_buffer": int(len(klines)) if klines is not None else 0,
+        "rows_after_indicator_drop": int(len(df)),
+        "sig_rsi": round(float(sig_rsi_f), 4) if rsi_ok else None,
+        "sig_bar_start": sig_start,
+        "conf_bar_start": conf_start,
+        "updated_at_unix": time.time(),
+    }
+    return {"rules_long": rules_long, "rules_short": rules_short, "note": None, "sync": sync}
 
 
 STRATEGY_REGISTRY: dict[str, Callable[[pd.DataFrame], tuple[str | None, str, dict[str, Any] | None]]] = {
@@ -3698,6 +3749,31 @@ def _closed_kline_dataframe(buf: list) -> pd.DataFrame:
     return df
 
 
+def _instance_closed_kline_df(symbol_normalized: str, interval_minutes: int) -> pd.DataFrame:
+    """
+    Same closed-bar slice used by instance evaluation and Live Monitor checklists.
+    Must stay in sync with _run_strategy_instances_for_kline / evaluate_weak_momentum_instance.
+    """
+    sym_u = _norm_sym(symbol_normalized)
+    buf = kline_buffer(sym_u, max(1, int(interval_minutes)))
+    return _closed_kline_dataframe(list(buf))
+
+
+def _weak_momentum_prepare_eval_df(
+    klines: pd.DataFrame, rsi_len: int
+) -> tuple[pd.DataFrame | None, str]:
+    """
+    Single path for WM engine + checklists: closed klines → compute_indicators
+    with sig_bar=iloc[-2], conf_bar=iloc[-1] (same as evaluate_weak_momentum_instance).
+    """
+    if klines is None or len(klines) < 2:
+        return None, "initializing"
+    if len(klines) < 3:
+        return None, "insufficient_bars"
+    df = compute_indicators(klines.copy(), rsi_length=rsi_len)
+    return df, ""
+
+
 def _rebuild_instance_checks_live_state(symbol_normalized: str) -> None:
     """
     Build per-instance entry rule checklists for the Live Monitor (``live_strategy_state["checks"]``).
@@ -3719,8 +3795,7 @@ def _rebuild_instance_checks_live_state(symbol_normalized: str) -> None:
         iv = instance_storage.timeframe_to_minutes(tf)
         strat = str(inst.get("strategy_type") or "").strip().lower()
         st = dict(inst.get("state") or {})
-        buf = kline_buffer(sym_u, iv)
-        df_closed = _closed_kline_dataframe(list(buf))
+        df_closed = _instance_closed_kline_df(sym_u, iv)
 
         if strat == "ema_trap":
             built = ema_trap.build_entry_checklists(
@@ -3753,6 +3828,9 @@ def _rebuild_instance_checks_live_state(symbol_normalized: str) -> None:
             }
             if built.get("note"):
                 entry["note"] = built["note"]
+            sync = built.get("sync")
+            if isinstance(sync, dict):
+                entry["monitor_sync"] = sync
             checks[iid] = entry
         else:
             checks[iid] = {
@@ -3775,6 +3853,7 @@ def _rebuild_instance_checks_live_state(symbol_normalized: str) -> None:
 
     with _live_state_lock:
         live_strategy_state["checks"] = checks
+        live_strategy_state["checks_updated_unix"] = time.time()
 
 
 def _clear_active_instance_on_flat(*, sl_loss: bool) -> None:
@@ -3804,8 +3883,7 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
     """Evaluate all enabled instances for this (symbol, timeframe) on latest closed bars."""
     global _loop, _signal_queue
     sym_u = _norm_sym(symbol)
-    buf = kline_buffer(sym_u, interval_minutes)
-    df_closed = _closed_kline_dataframe(list(buf))
+    df_closed = _instance_closed_kline_df(sym_u, interval_minutes)
     if len(df_closed) < 3 or _loop is None or _signal_queue is None:
         return
     conf_start = int(df_closed.iloc[-1]["start"])
@@ -4059,10 +4137,22 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
         "conditions": {"long": long_rules, "short": short_rules},
         "status": status,
         "last_signal_candle_start": LAST_SIGNAL_CANDLE_START,
+        # Top-panel RSI is from 1m buffer row iloc[-2] using *legacy* rule display — do not
+        # confuse with instance cards, which use each instance's timeframe + pure WM sig bar RSI.
+        "indicators_note": (
+            "Top RSI/body rules are 1m legacy monitor fields only. "
+            "Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi)."
+        ),
     }
     with _live_state_lock:
+        prev_checks = live_strategy_state.get("checks")
+        prev_checks_ts = live_strategy_state.get("checks_updated_unix")
         live_strategy_state.clear()
         live_strategy_state.update(state)
+        if isinstance(prev_checks, dict):
+            live_strategy_state["checks"] = prev_checks
+        if prev_checks_ts is not None:
+            live_strategy_state["checks_updated_unix"] = prev_checks_ts
         _apply_position_risk_to_state_dict(live_strategy_state)
     # Disk write: use _flush_live_state_file_with_tracker() after _rebuild_instance_checks_live_state
 
@@ -4433,8 +4523,10 @@ async def main_async() -> None:
             "symbol": SYMBOL,
             "price": 0.0,
             "indicators": {},
+            "indicators_note": "",
             "conditions": {"long": [], "short": []},
             "checks": {},
+            "checks_updated_unix": 0.0,
             "status": "Waiting",
         })
 

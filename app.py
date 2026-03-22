@@ -792,8 +792,10 @@ except ImportError:
         "symbol": "",
         "price": 0.0,
         "indicators": {},
+        "indicators_note": "",
         "conditions": {"long": [], "short": []},
         "checks": {},
+        "checks_updated_unix": 0.0,
         "status": "No data",
         "sl_price": None,
         "tp_price": None,
@@ -808,8 +810,10 @@ _DEFAULT_STRATEGY_STATE = {
     "symbol": "",
     "price": 0.0,
     "indicators": {},
+    "indicators_note": "",
     "conditions": {"long": [], "short": []},
     "checks": {},
+    "checks_updated_unix": 0.0,
     "status": "No data",
     "position_risk": {"open": False},
 }
@@ -817,12 +821,41 @@ _DEFAULT_STRATEGY_STATE = {
 
 @app.get("/api/strategy/status")
 async def api_strategy_status():
-    """Return live strategy state from bot (same process: main.live_strategy_state)."""
+    """
+    Return live strategy state from bot (same process as main_async when started via app).
+    No HTTP caching — UI must not show stale RSI vs engine logs.
+    If in-memory symbol is empty (bot not started), merge checks from .live_strategy_state.json.
+    """
     out = dict(live_strategy_state)
+    sym = str(out.get("symbol") or "").strip()
+    if not sym:
+        try:
+            p = _LIVE_STATE_JSON_PATH
+            if p.is_file():
+                with open(p, "r", encoding="utf-8") as f:
+                    disk = json.load(f)
+                if isinstance(disk, dict):
+                    for k in (
+                        "checks",
+                        "checks_updated_unix",
+                        "indicators",
+                        "indicators_note",
+                        "status",
+                        "symbol",
+                        "price",
+                        "position_risk",
+                    ):
+                        if k in disk and disk[k] is not None:
+                            out[k] = disk[k]
+        except Exception as e:
+            logging.debug("[api/strategy/status] disk merge skip: %s", e)
     ch = out.get("checks")
     if ch is None or not isinstance(ch, dict):
         out["checks"] = {}
-    return out
+    resp = JSONResponse(content=out)
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
 
 
 @app.get("/api/bot/status")
