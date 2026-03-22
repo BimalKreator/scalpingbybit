@@ -43,5 +43,20 @@
     "fees": 0,
     "exitReason": "Stop Loss (paper)",
     "strategy_name": "Manual"
+  },
+  {
+    "exchange": "Virtual (Paper)",
+    "symbol": "BTCUSDT",
+    "side": "BUY",
+    "createdTime": "1774219956355",
+    "updatedTime": "1774219956355",
+    "avgEntryPrice": "67926.5",
+    "avgExitPrice": "68375",
+    "leverage": "5",
+    "marginUsed": "",
+    "closedPnl": "3.1395",
+    "fees": 0,
+    "exitReason": "Take Profit (paper)",
+    "strategy_name": "Manual"
   }
 ]

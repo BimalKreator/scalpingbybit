@@ -43,20 +43,24 @@
     }
     .risk-bar-zone-sl {
       position: absolute;
+      display: block;
       left: 0;
       top: 0;
       bottom: 0;
       border-radius: 10px 0 0 10px;
       background: linear-gradient(90deg, rgba(220, 38, 38, 0.55), rgba(220, 38, 38, 0.2));
       pointer-events: none;
+      box-sizing: border-box;
     }
     .risk-bar-zone-tp {
       position: absolute;
+      display: block;
       top: 0;
       bottom: 0;
       border-radius: 0 10px 10px 0;
       background: linear-gradient(90deg, rgba(22, 163, 74, 0.15), rgba(22, 163, 74, 0.5));
       pointer-events: none;
+      box-sizing: border-box;
     }
     .risk-bar-fill {
       position: absolute;
@@ -902,8 +906,7 @@
       var fg = container.querySelector('[data-rb="fill-green"]');
       var fr = container.querySelector('[data-rb="fill-red"]');
       if (!zSl || !zTp || !eline || !dot || !fg || !fr) return;
-      var slN = Number(sl), tpN = Number(tp), eN = Number(entry), mN = Number(mid);
-      if (!isFinite(slN) || !isFinite(tpN) || !isFinite(eN) || !isFinite(mN) || slN <= 0 || tpN <= 0 || eN <= 0 || mN <= 0) {
+      function resetBar() {
         zSl.style.width = '0%';
         zTp.style.width = '0%';
         zTp.style.left = '0%';
@@ -911,30 +914,41 @@
         dot.style.left = '50%';
         fg.style.display = 'none';
         fr.style.display = 'none';
+      }
+      var slF = parseFloat(sl);
+      var tpF = parseFloat(tp);
+      var entryF = parseFloat(entry);
+      var curF = parseFloat(mid);
+      if (!isFinite(slF) || !isFinite(tpF) || !isFinite(entryF) || !isFinite(curF) || slF <= 0 || tpF <= 0 || entryF <= 0 || curF <= 0) {
+        resetBar();
         return;
       }
-      var lo = Math.min(slN, tpN, eN, mN);
-      var hi = Math.max(slN, tpN, eN, mN);
-      var span = Math.max(hi - lo, 1e-12);
-      function pct(x) { return Math.max(0, Math.min(100, ((x - lo) / span) * 100)); }
-      var ep = pct(eN);
-      var lp = pct(mN);
-      zSl.style.width = ep + '%';
-      zTp.style.left = ep + '%';
-      zTp.style.width = (100 - ep) + '%';
-      eline.style.left = ep + '%';
-      dot.style.left = lp + '%';
+      var range = Math.abs(tpF - slF);
+      if (range < 1e-12) {
+        resetBar();
+        return;
+      }
+      /* Map SL → 0%, TP → 100% on the bar (linear in price distance from SL). */
+      var entryPct = (Math.abs(entryF - slF) / range) * 100;
+      var currentPct = (Math.abs(curF - slF) / range) * 100;
+      entryPct = Math.max(0, Math.min(100, entryPct));
+      currentPct = Math.max(0, Math.min(100, currentPct));
+      zSl.style.width = entryPct + '%';
+      zTp.style.left = entryPct + '%';
+      zTp.style.width = (100 - entryPct) + '%';
+      eline.style.left = entryPct + '%';
+      dot.style.left = currentPct + '%';
       var buy = String(side || '').toUpperCase() === 'BUY';
-      var favorable = buy ? (mN >= eN) : (mN <= eN);
+      var favorable = buy ? (curF >= entryF) : (curF <= entryF);
       if (favorable) {
         fg.style.display = 'block';
-        fg.style.left = Math.min(ep, lp) + '%';
-        fg.style.width = Math.abs(lp - ep) + '%';
+        fg.style.left = Math.min(entryPct, currentPct) + '%';
+        fg.style.width = Math.abs(currentPct - entryPct) + '%';
         fr.style.display = 'none';
       } else {
         fr.style.display = 'block';
-        fr.style.left = Math.min(ep, lp) + '%';
-        fr.style.width = Math.abs(ep - lp) + '%';
+        fr.style.left = Math.min(entryPct, currentPct) + '%';
+        fr.style.width = Math.abs(entryPct - currentPct) + '%';
         fg.style.display = 'none';
       }
     }
@@ -989,6 +1003,27 @@
       return null;
     }
 
+    /** Prefer nested position_risk.strategy_name (from /api/positions merge), then top-level strategy_name. */
+    function resolveStrategyNameForPosition(p) {
+      if (!p) return '';
+      var pr = p.position_risk || {};
+      var fromPr = String(pr.strategy_name != null ? pr.strategy_name : '').trim();
+      var fromP = String(p.strategy_name != null ? p.strategy_name : '').trim();
+      return fromPr || fromP;
+    }
+
+    /**
+     * Manual badge + 1%/2% disclaimer only when name is empty or clearly manual.
+     * EMA Trap / Weak Momentum (any casing or snake_case) never treated as manual.
+     */
+    function isManualStrategyBadge(stratName) {
+      var s = String(stratName || '').trim().toLowerCase();
+      if (!s) return true;
+      if (s.indexOf('ema trap') >= 0 || s.indexOf('ema_trap') >= 0) return false;
+      if (s.indexOf('weak momentum') >= 0 || s.indexOf('weak_momentum') >= 0) return false;
+      return s.indexOf('manual') >= 0;
+    }
+
     function renderPositionLeftHtml(sym, p) {
       if (!p) {
         return '<div class="flex flex-col items-center justify-center min-h-[140px] text-center px-2">' +
@@ -1001,10 +1036,9 @@
       var sideClass = (p.side || '').toUpperCase() === 'BUY' ? 'text-emerald-400' : 'text-red-400';
       var ct = p.createdTime;
       var entryTimeIST = (ct && ct !== '0') ? new Date(parseInt(ct, 10)).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '–';
-      var snFromPr = (p.position_risk && p.position_risk.strategy_name != null) ? String(p.position_risk.strategy_name).trim() : '';
-      var sn = snFromPr || (p.strategy_name != null ? String(p.strategy_name).trim() : '');
-      var isManualStrat = !sn || String(sn).toLowerCase() === 'manual';
-      var stratLabel = isManualStrat ? 'MANUAL (Default 1% Risk)' : sn;
+      var stratName = resolveStrategyNameForPosition(p);
+      var isManualStrat = isManualStrategyBadge(stratName);
+      var stratLabel = isManualStrat ? 'MANUAL (Default 1% Risk)' : stratName;
       var badgeClass = isManualStrat
         ? 'bg-emerald-500 text-slate-950 border-emerald-200 shadow-emerald-500/30'
         : 'bg-cyan-400 text-slate-950 border-cyan-200 shadow-cyan-500/30';
@@ -1019,7 +1053,10 @@
         '<div class="flex flex-wrap items-center gap-2">' +
         '<span class="text-lg font-bold text-white font-mono tracking-tight">' + escapeHtmlUnified(sym) + '</span>' +
         '<span class="text-xs font-bold uppercase px-2 py-0.5 rounded border ' + sideClass + ' border-current/40">' + escapeHtmlUnified(p.side || '') + '</span>' +
-        '<span class="text-[9px] sm:text-[10px] font-bold uppercase tracking-wide rounded-full px-2 py-1 border shadow leading-tight max-w-[min(100%,220px)] text-center ' + badgeClass + '" title="Naked manual trades use the bot default 1% stop / 2% take-profit, not Strategy Hub multipliers.">' + escapeHtmlStr(stratLabel) + '</span>' +
+        '<span class="text-[9px] sm:text-[10px] font-bold uppercase tracking-wide rounded-full px-2 py-1 border shadow leading-tight max-w-[min(100%,220px)] text-center ' + badgeClass + '" title="' +
+        (isManualStrat
+          ? 'Naked manual trades use the bot default 1% stop / 2% take-profit, not Strategy Hub multipliers.'
+          : escapeHtmlStr(stratName)) + '">' + escapeHtmlStr(stratLabel) + '</span>' +
         '</div>' +
         '<p class="text-xs text-slate-500">Opened <span class="text-slate-400">' + escapeHtmlUnified(entryTimeIST) + '</span> (IST)</p>' +
         '<div class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">' +

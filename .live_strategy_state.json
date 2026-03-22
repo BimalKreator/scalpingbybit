@@ -3,27 +3,27 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 68109.0,
+      "price": 68276.0,
       "indicators": {
-        "RSI": 25.55,
-        "RSI_SMA": 42.0,
+        "RSI": 63.4,
+        "RSI_SMA": 53.14,
         "volume_signal_vs_prev": false,
-        "body_size": 12.5,
-        "open": 68096.5,
-        "close": 68109.0,
-        "volume": 1858.0,
-        "Expected_Profit_Pct": 0.06
+        "body_size": 40.0,
+        "open": 68316.0,
+        "close": 68276.0,
+        "volume": 2172.0,
+        "Expected_Profit_Pct": 0.1
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
         "long": [
           {
             "name": "Signal Candle Bearish (open > close)",
-            "met": false
+            "met": true
           },
           {
             "name": "Previous Candle Bearish",
-            "met": true
+            "met": false
           },
           {
             "name": "Both Bearish",
@@ -35,7 +35,7 @@
           },
           {
             "name": "RSI < 40.0",
-            "met": true
+            "met": false
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -45,11 +45,11 @@
         "short": [
           {
             "name": "Signal Candle Bullish (close > open)",
-            "met": true
+            "met": false
           },
           {
             "name": "Previous Candle Bullish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bullish",
@@ -61,7 +61,7 @@
           },
           {
             "name": "RSI > 60.0",
-            "met": false
+            "met": true
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -120,56 +120,42 @@
           ]
         }
       },
-      "checks_updated_unix": 1774219549.6669793,
-      "status": "Position Open",
-      "sl_price": 67940.0853,
-      "tp_price": 68358.5,
-      "entry_price": 67926.5,
-      "position_size": 7.0,
-      "sl_amount_usd": 0.095097,
-      "tp_amount_usd": 3.024,
+      "checks_updated_unix": 1774220047.592929,
+      "status": "Waiting",
+      "sl_price": null,
+      "tp_price": null,
+      "entry_price": null,
+      "position_size": 0.0,
+      "sl_amount_usd": null,
+      "tp_amount_usd": null,
       "position_risk": {
-        "open": true,
-        "has_levels": true,
-        "side": "Buy",
-        "strategy_name": "Manual",
-        "entry_price": 67926.5,
-        "size": 7.0,
-        "sl_price": 67940.0853,
-        "tp_price": 68358.5,
-        "sl_amount_usd": 0.095097,
-        "tp_amount_usd": 3.024,
-        "position_value_usd": 95.1,
-        "live_mid": 68135.5,
-        "entry_pct": 3.14,
-        "live_mid_pct": 48.38,
-        "breakeven_buffer_active": true
+        "open": false
       },
       "last_signal_candle_start": null,
-      "strategy_name": "Manual",
-      "last_sl_price": 67940.08529999999,
-      "last_tp_price": 68358.5,
-      "last_position_side": "Buy",
-      "tracker_sl_max": 67494.5,
-      "tracker_sl_min": 67818.5,
-      "sl_entry_time_unix": 1774218057.86684,
-      "sl_breakeven_triggered": true,
-      "sl_half_target_exited": true,
-      "sl_half_target_reached": true,
-      "base_risk_dist": 216.0
+      "strategy_name": null,
+      "last_sl_price": 0.0,
+      "last_tp_price": 0.0,
+      "last_position_side": "",
+      "tracker_sl_max": 0.0,
+      "tracker_sl_min": 0.0,
+      "sl_entry_time_unix": 0.0,
+      "sl_breakeven_triggered": false,
+      "sl_half_target_exited": false,
+      "sl_half_target_reached": false,
+      "base_risk_dist": 0.0
     },
     "ETHUSDT": {
       "symbol": "ETHUSDT",
-      "price": 2054.5,
+      "price": 2060.35,
       "indicators": {
-        "RSI": 8.33,
+        "RSI": 62.93,
         "RSI_SMA": null,
         "volume_signal_vs_prev": false,
-        "body_size": 0.05,
-        "open": 2054.55,
-        "close": 2054.5,
-        "volume": 11015.0,
-        "Expected_Profit_Pct": 0.08
+        "body_size": 1.35,
+        "open": 2061.7,
+        "close": 2060.35,
+        "volume": 3513.0,
+        "Expected_Profit_Pct": 0.17
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -180,11 +166,11 @@
           },
           {
             "name": "Previous Candle Bearish",
-            "met": true
+            "met": false
           },
           {
             "name": "Both Bearish",
-            "met": true
+            "met": false
           },
           {
             "name": "Volume: signal > previous",
@@ -192,7 +178,7 @@
           },
           {
             "name": "RSI < 40.0",
-            "met": true
+            "met": false
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -206,7 +192,7 @@
           },
           {
             "name": "Previous Candle Bullish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bullish",
@@ -218,7 +204,7 @@
           },
           {
             "name": "RSI > 60.0",
-            "met": false
+            "met": true
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -256,15 +242,15 @@
           "rules_short": [
             {
               "text": "Prev Close > EMA High",
-              "met": false
+              "met": true
             },
             {
               "text": "Prev RSI > 60.0",
-              "met": false
+              "met": true
             },
             {
               "text": "Curr Close < EMA High",
-              "met": true
+              "met": false
             },
             {
               "text": "Range Filter Downtrend",
@@ -277,7 +263,7 @@
           ]
         }
       },
-      "checks_updated_unix": 1774219541.135881,
+      "checks_updated_unix": 1774220047.9447165,
       "status": "Position Open",
       "sl_price": 2046.4592,
       "tp_price": 2076.5,
@@ -297,9 +283,9 @@
         "sl_amount_usd": 0.09821,
         "tp_amount_usd": 7.308,
         "position_value_usd": 98.21,
-        "live_mid": 2055.0,
+        "live_mid": 2059.85,
         "entry_pct": 1.34,
-        "live_mid_pct": 29.39,
+        "live_mid_pct": 45.32,
         "breakeven_buffer_active": true
       },
       "last_signal_candle_start": null,

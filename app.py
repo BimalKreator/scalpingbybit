@@ -306,29 +306,38 @@ def _exchange_sl_tp_missing(stop_loss: str | None, take_profit: str | None) -> b
     return False
 
 
-def _load_local_sl_tp_for_position_symbol(pos_symbol: str) -> tuple[float | None, float | None, str]:
-    """Read last_sl_price / last_tp_price for a position symbol from multi-symbol live state file."""
+def _live_state_row_for_position_symbol(pos_symbol: str) -> dict | None:
+    """Single merged live-strategy row for ``pos_symbol`` (e.g. ETHUSDT), or None."""
     try:
-        if not _LIVE_STATE_JSON_PATH.is_file():
-            return None, None, ""
+        ps = (pos_symbol or "").strip()
+        if not ps or not _LIVE_STATE_JSON_PATH.is_file():
+            return None
         raw = _read_live_state_json_safe()
         mp = _live_state_symbols_from_disk_raw(raw)
         for state_sym, row in mp.items():
-            if not isinstance(row, dict):
-                continue
-            if not _symbol_matches_state(pos_symbol, state_sym):
-                continue
-            sl = row.get("last_sl_price")
-            tp = row.get("last_tp_price")
-            try:
-                slf = float(sl) if sl is not None else 0.0
-                tpf = float(tp) if tp is not None else 0.0
-            except (TypeError, ValueError):
-                return None, None, str(state_sym)
-            if slf <= 0 or tpf <= 0:
-                return None, None, str(state_sym)
-            return slf, tpf, str(state_sym)
-        return None, None, ""
+            if isinstance(row, dict) and _symbol_matches_state(ps, state_sym):
+                return row
+        return None
+    except Exception:
+        return None
+
+
+def _load_local_sl_tp_for_position_symbol(pos_symbol: str) -> tuple[float | None, float | None, str]:
+    """Read last_sl_price / last_tp_price for a position symbol from multi-symbol live state file."""
+    try:
+        row = _live_state_row_for_position_symbol(pos_symbol)
+        if not isinstance(row, dict):
+            return None, None, ""
+        sl = row.get("last_sl_price")
+        tp = row.get("last_tp_price")
+        try:
+            slf = float(sl) if sl is not None else 0.0
+            tpf = float(tp) if tp is not None else 0.0
+        except (TypeError, ValueError):
+            return None, None, ""
+        if slf <= 0 or tpf <= 0:
+            return None, None, ""
+        return slf, tpf, ""
     except Exception as e:
         print(f"[api/positions] local SL/TP state read skipped: {e}")
         return None, None, ""
@@ -336,41 +345,41 @@ def _load_local_sl_tp_for_position_symbol(pos_symbol: str) -> tuple[float | None
 
 def _strategy_name_from_live_state(pos_symbol: str) -> str:
     """Best-effort strategy label for positions card (from bot live_strategy JSON)."""
-    try:
-        if not _LIVE_STATE_JSON_PATH.is_file():
-            return ""
-        raw = _read_live_state_json_safe()
-        mp = _live_state_symbols_from_disk_raw(raw)
-        for state_sym, row in mp.items():
-            if not isinstance(row, dict):
-                continue
-            if not _symbol_matches_state(pos_symbol, state_sym):
-                continue
-            sn = row.get("strategy_name")
-            if sn is not None and str(sn).strip():
-                return str(sn).strip()
-            pr = row.get("position_risk") or {}
-            if isinstance(pr, dict):
-                sn2 = pr.get("strategy_name")
-                if sn2 is not None and str(sn2).strip():
-                    return str(sn2).strip()
+    row = _live_state_row_for_position_symbol(pos_symbol)
+    if not isinstance(row, dict):
         return ""
-    except Exception:
-        return ""
+    sn = row.get("strategy_name")
+    if sn is not None and str(sn).strip():
+        return str(sn).strip()
+    pr = row.get("position_risk") or {}
+    if isinstance(pr, dict):
+        sn2 = pr.get("strategy_name")
+        if sn2 is not None and str(sn2).strip():
+            return str(sn2).strip()
+    return ""
 
 
 def _inject_local_sl_tp_into_positions(positions: list, *, is_delta: bool) -> list:
-    """Override stop_loss / take_profit from bot-local tracker when appropriate (per symbol)."""
+    """Merge tracker/live-state SL/TP, strategy_name, and position_risk into exchange rows for /api/positions."""
     if not positions:
         return positions
     for p in positions:
         if not isinstance(p, dict):
             continue
         psym = str(p.get("symbol") or "")
-        sn = _strategy_name_from_live_state(psym)
-        if sn and not str(p.get("strategy_name") or "").strip():
-            p["strategy_name"] = sn
-        slf, tpf, _state_sym = _load_local_sl_tp_for_position_symbol(psym)
+        row = _live_state_row_for_position_symbol(psym)
+        if isinstance(row, dict):
+            pr = row.get("position_risk")
+            if isinstance(pr, dict):
+                p["position_risk"] = dict(pr)
+            sn_top = row.get("strategy_name")
+            if sn_top is not None and str(sn_top).strip():
+                p["strategy_name"] = str(sn_top).strip()
+            elif isinstance(pr, dict):
+                sn_pr = pr.get("strategy_name")
+                if sn_pr is not None and str(sn_pr).strip():
+                    p["strategy_name"] = str(sn_pr).strip()
+        slf, tpf, _ = _load_local_sl_tp_for_position_symbol(psym)
         if slf is None or tpf is None:
             continue
         sl_s = f"{slf:.4f}".rstrip("0").rstrip(".")
