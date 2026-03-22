@@ -464,7 +464,7 @@ def _run_backtest_ema_trap(
 ) -> dict:
     """
     Backtest EMA Trap + RF using ema_trap.evaluate() on each growing slice.
-    SL/TP are absolute prices from the strategy (base_risk = signal bar H−L, entry = conf close).
+    SL/TP: signal bar H−L × multipliers from synthetic bid/ask at entry bar (matches live geometry).
     """
     from strategies.ema_trap import DEFAULT_PARAMS as EMA_DEFAULTS
     from strategies.ema_trap import evaluate as ema_evaluate
@@ -473,8 +473,6 @@ def _run_backtest_ema_trap(
     tam = float(p.get("tradeCapitalUsd") or trade_amount_usd)
     lev = float(p.get("leverage") or leverage)
     sl_m = float(p.get("slMultiplier") or 1.25)
-    sl_mx = float(p.get("slMultiplierMax") or 3.0)
-    sl_mn = float(p.get("slMultiplierMin") or 0.5)
     tp_m = float(p.get("tpMultiplier") or 1.5)
     # EMA Trap: no post-SL reversal in backtest (matches live main.py).
     enable_rev = False
@@ -619,13 +617,13 @@ def _run_backtest_ema_trap(
                     side = "Sell"
                     base = x * (1.0 - _SPREAD_HALF)
                     entry_price = base
-                    sl_price_pos = base + rng * sl_mx
+                    sl_price_pos = base + rng * sl_m
                     tp_price_pos = base - rng * tp_m
                 else:
                     side = "Buy"
                     base = x * (1.0 + _SPREAD_HALF)
                     entry_price = base
-                    sl_price_pos = base - rng * sl_mx
+                    sl_price_pos = base - rng * sl_m
                     tp_price_pos = base + rng * tp_m
                 qty2 = _qty_like_live(
                     entry_price,
@@ -678,8 +676,20 @@ def _run_backtest_ema_trap(
         else:
             base = o * (1.0 - _SPREAD_HALF)
 
-        sl_abs = float(res["sl_price"])
-        tp_abs = float(res["tp_price"])
+        sig_row = res.get("signal_row") or {}
+        try:
+            sh = float(sig_row["high"])
+            slo = float(sig_row["low"])
+        except (KeyError, TypeError, ValueError):
+            i += 1
+            continue
+        rng = max(sh - slo, 1e-12)
+        if sig == "Buy":
+            sl_abs = base - rng * sl_m
+            tp_abs = base + rng * tp_m
+        else:
+            sl_abs = base + rng * sl_m
+            tp_abs = base - rng * tp_m
         qty = _qty_like_live(
             base,
             trade_amount_usd=tam,
@@ -770,7 +780,7 @@ def _run_backtest_weak_momentum(
     - sig_bar = df.iloc[i-1], conf_bar = df.iloc[i].
     - LONG: sig RSI < oversold, sig bearish, conf close > sig high.
     - SHORT: sig RSI > overbought, sig bullish, conf close < sig low.
-    - base_risk = sig high − sig low; SL wide/tight and TP from conf close anchor (same formulas as main.py).
+    - base_risk = sig high − sig low; SL/TP from synthetic bid/ask on conf bar open (same geometry as live `_place_order_async`).
     - SL decay: use wide SL until (bar_time − entry_time) >= sl_decay_seconds, then tight (matches main time decay).
     - Optional half-TP breakeven (trailing_sl_enabled) + buffer %.
     - One reversal after SL if allow_reversal, using stored base_risk (signal range).
@@ -999,14 +1009,15 @@ def _run_backtest_weak_momentum(
             i += 1
             continue
 
-        # Anchor SL/TP to conf close (same as main.evaluate_weak_momentum_instance).
-        entry_ref = conf_close
-        if entry_ref <= 0:
+        # Match live _place_order_async: signal range from sig bar; base = synthetic ask (long) / bid (short) on conf bar.
+        o_conf = float(conf_bar["open"])
+        if o_conf <= 0:
             i += 1
             continue
 
         if long_ok:
-            entry_price = entry_ref
+            base = o_conf * (1.0 + _SPREAD_HALF)
+            entry_price = base
             qty = _qty_like_live(
                 entry_price,
                 trade_amount_usd=trade_amount_usd,
@@ -1018,15 +1029,16 @@ def _run_backtest_weak_momentum(
             if qty < min_order_qty:
                 i += 1
                 continue
-            sl_wide = entry_ref - (base_risk * sl_multiplier_max)
-            sl_tight = entry_ref - (base_risk * sl_multiplier_min)
-            tp_price_pos = entry_ref + (base_risk * tp_multiplier)
+            sl_wide = base - (base_risk * sl_multiplier_max)
+            sl_tight = base - (base_risk * sl_multiplier_min)
+            tp_price_pos = base + (base_risk * tp_multiplier)
             side = "Buy"
             signal_range = base_risk
             reversal_count = 0
             entered = True
         elif short_ok:
-            entry_price = entry_ref
+            base = o_conf * (1.0 - _SPREAD_HALF)
+            entry_price = base
             qty = _qty_like_live(
                 entry_price,
                 trade_amount_usd=trade_amount_usd,
@@ -1038,9 +1050,9 @@ def _run_backtest_weak_momentum(
             if qty < min_order_qty:
                 i += 1
                 continue
-            sl_wide = entry_ref + (base_risk * sl_multiplier_max)
-            sl_tight = entry_ref + (base_risk * sl_multiplier_min)
-            tp_price_pos = entry_ref - (base_risk * tp_multiplier)
+            sl_wide = base + (base_risk * sl_multiplier_max)
+            sl_tight = base + (base_risk * sl_multiplier_min)
+            tp_price_pos = base - (base_risk * tp_multiplier)
             side = "Sell"
             signal_range = base_risk
             reversal_count = 0

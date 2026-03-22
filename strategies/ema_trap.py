@@ -53,7 +53,6 @@ def _resolved_ema_trap_risk_multipliers(
     """
     Parse slMultiplier / tpMultiplier from merged instance+defaults.
     Falls back to 0.5 / 2.0 when missing, non-finite, <= 0, or absurdly large.
-    Corrects legacy corrupted saves where both multipliers are exactly 1.0 (1:1 R:R).
     """
     raw_sl = merged_params.get("slMultiplier")
     raw_tp = merged_params.get("tpMultiplier")
@@ -78,16 +77,6 @@ def _resolved_ema_trap_risk_multipliers(
         sl_m = _to_positive_float(merged_params.get("slMultiplier"), 0.5)
         tp_m = _to_positive_float(merged_params.get("tpMultiplier"), 2.0)
     except Exception:
-        sl_m, tp_m = 0.5, 2.0
-
-    if abs(sl_m - tp_m) < 1e-12 and abs(sl_m - 1.0) < 1e-9:
-        msg = (
-            "[EMA Trap Risk] Correcting symmetric 1.0× multipliers → SL 0.5, TP 2.0 "
-            "(stale strategy_instances.json; re-save instance in Strategy Hub if needed)"
-        )
-        if log_risk:
-            print(msg)
-        _LOG.warning(msg)
         sl_m, tp_m = 0.5, 2.0
 
     if log_risk:
@@ -140,8 +129,9 @@ def evaluate(
       3. curr_close < curr_ema_high
       4. curr_rfTrendDown
 
-    Plus SL/TP: base_risk = signal bar (high − low), entry = confirmation close,
-    SL/TP = entry ± base_risk × multipliers; minProfitPerc gates expected TP % move.
+    Risk multipliers gate min expected TP % vs confirmation close (proxy for live bid/ask).
+    Actual SL/TP prices are computed at execution from signal-bar range × instance multipliers
+    and best bid/ask (see main._place_order_async).
     """
     p = {**DEFAULT_PARAMS, **(params or {})}
     ema_len = int(_f(p, "emaLength", 20))
@@ -161,7 +151,7 @@ def evaluate(
         "sl_price": None,
         "sl_min_price": None,
         "tp_price": None,
-        "use_fixed_sl_tp": False,
+        "use_fixed_sl_tp": False,  # execution always uses L1 + signal range
         "entry_reference": None,
         "confirmation_start": None,
         "state_updates": state_updates,
@@ -265,28 +255,9 @@ def evaluate(
         out["reason"] = "invalid_signal_bar_range"
         return out
 
-    if side == "Buy":
-        sl_price_max = entry_price - (base_risk * sl_mult)
-        sl_price_min = sl_price_max  # EMA trap: static SL band (no decay)
-        tp_price = entry_price + (base_risk * tp_mult)
-        if sl_price_max <= 0 or sl_price_max >= entry_price:
-            out["reason"] = "invalid_long_sl_geometry"
-            return out
-        if tp_price <= entry_price:
-            out["reason"] = "invalid_long_tp_geometry"
-            return out
-        expected_profit_pct = ((tp_price - entry_price) / entry_price) * 100.0
-    else:
-        sl_price_max = entry_price + (base_risk * sl_mult)
-        sl_price_min = sl_price_max
-        tp_price = entry_price - (base_risk * tp_mult)
-        if sl_price_max <= entry_price:
-            out["reason"] = "invalid_short_sl_geometry"
-            return out
-        if tp_price >= entry_price or tp_price <= 0:
-            out["reason"] = "invalid_short_tp_geometry"
-            return out
-        expected_profit_pct = ((entry_price - tp_price) / entry_price) * 100.0
+    # Min-profit gate only (conf close as proxy for entry; live fill uses best ask/bid).
+    expected_move = base_risk * tp_mult
+    expected_profit_pct = (expected_move / entry_price) * 100.0 if entry_price > 0 else 0.0
 
     if expected_profit_pct < min_profit:
         out["reason"] = (
@@ -301,10 +272,10 @@ def evaluate(
         f"exp_profit_pct={expected_profit_pct:.4f} rsi_sig={rsi_sig:.2f} rsi_conf={rsi_conf:.2f}"
     )
     out["signal_row"] = sig_bar.to_dict()
-    out["sl_price"] = float(sl_price_max)
-    out["sl_min_price"] = float(sl_price_min)
-    out["tp_price"] = float(tp_price)
-    out["use_fixed_sl_tp"] = True
+    out["sl_price"] = None
+    out["sl_min_price"] = None
+    out["tp_price"] = None
+    out["use_fixed_sl_tp"] = False
     return out
 
 

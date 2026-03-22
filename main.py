@@ -297,11 +297,12 @@ _active_instance_monitor_params: dict | None = None
 _active_trade_strategy_name: str | None = None
 
 
-def _monitor_snapshot_from_params(p: dict) -> dict:
+def _monitor_snapshot_from_params(p: dict, *, strategy_type: str | None = None) -> dict:
     """Build internal monitor dict from instance params (camelCase) with .env fallbacks."""
     load_dotenv(override=True)
     load_dotenv("env", override=True)
     emx, emn = _sl_multipliers_from_env()
+    st = (strategy_type or "").strip().lower()
 
     def _num(camel: str, env_key: str, default: float) -> float:
         if camel in p and p[camel] is not None and str(p[camel]).strip() != "":
@@ -331,6 +332,20 @@ def _monitor_snapshot_from_params(p: dict) -> dict:
             return True
         return default_true
 
+    # EMA Trap: single slMultiplier → wide=tight for range-based SL at execution.
+    if st == "ema_trap":
+        sl_one = max(_num("slMultiplier", "SL_MULTIPLIER_MIN", 0.5), 1e-12)
+        return {
+            "sl_mx": sl_one,
+            "sl_mn": sl_one,
+            "sl_decay_seconds": 0.0,
+            "partial_tp_enabled": _bool("partialTpEnabled", "PARTIAL_TP_ENABLED", True),
+            "trailing_sl_enabled": _bool("trailingSlEnabled", "TRAILING_SL_ENABLED", True),
+            "breakeven_buffer_pct": max(0.0, _num("breakevenBufferPct", "BREAKEVEN_BUFFER_PCT", 0.05)),
+            "trade_capital_usd": max(1e-12, _num("tradeCapitalUsd", "TRADE_AMOUNT_USD", 100.0)),
+            "leverage": max(1.0, _num("leverage", "LEVERAGE", 5.0)),
+        }
+
     return {
         "sl_mx": max(_num("slMultiplierMax", "SL_MULTIPLIER_MAX", emx), 1e-12),
         "sl_mn": max(_num("slMultiplierMin", "SL_MULTIPLIER_MIN", emn), 1e-12),
@@ -358,7 +373,10 @@ def load_active_instance_execution(instance_id: str | None, *, strategy_name: st
         _active_trade_strategy_name = strategy_name or str(instance_id)
         return
     _active_order_instance_id = str(inst.get("id") or instance_id).strip()
-    _active_instance_monitor_params = _monitor_snapshot_from_params(dict(inst.get("params") or {}))
+    _active_instance_monitor_params = _monitor_snapshot_from_params(
+        dict(inst.get("params") or {}),
+        strategy_type=str(inst.get("strategy_type") or "").strip().lower(),
+    )
     _active_trade_strategy_name = strategy_name or str(inst.get("name") or _active_order_instance_id)
 
 
@@ -1884,7 +1902,10 @@ def _trade_amount_and_leverage_for_order(meta: dict | None) -> tuple[float, floa
     if meta and meta.get("instance_id"):
         inst = instance_storage.get_instance_by_id(str(meta["instance_id"]))
         if inst:
-            snap = _monitor_snapshot_from_params(dict(inst.get("params") or {}))
+            snap = _monitor_snapshot_from_params(
+                dict(inst.get("params") or {}),
+                strategy_type=str(inst.get("strategy_type") or "").strip().lower(),
+            )
             return float(snap["trade_capital_usd"]), float(snap["leverage"])
     m = _active_instance_monitor_params
     if m is not None:
@@ -2083,6 +2104,9 @@ async def apply_dynamic_env_updates() -> None:
     """
     After dashboard .env save: recompute SL max/min, TP, and active SL from `_base_risk_dist`
     and new multipliers, then amend protective orders on the exchange.
+
+    Skipped when a Strategy Hub instance is attached to the current trade — those levels
+    must stay tied to the instance multipliers set at entry, not global .env.
     """
     global _last_tp_price, _last_sl_price, _last_active_sl_price
     global _sl_max_price, _sl_min_price, _exchange_sl_price
@@ -2090,6 +2114,12 @@ async def apply_dynamic_env_updates() -> None:
     load_dotenv("env", override=True)
     reload_active_strategies_from_env()
     reload_strategy_instances_cache()
+    if _active_order_instance_id:
+        logging.info(
+            "apply_dynamic_env_updates: skipped (active instance %s — keep instance SL/TP)",
+            _active_order_instance_id,
+        )
+        return
     br = float(_base_risk_dist)
     if not get_open_position() or br <= 0:
         return
@@ -3301,10 +3331,9 @@ async def _place_order_async(
     symbol: str | None = None,
 ) -> None:
     """
-    Chunk execution then SL/TP. Signal_Range = signal candle high − low.
+    Chunk execution then SL/TP. Signal range = signal candle high − low.
     LONG: base = best ask → SL = base − range×SL_MULT, TP = base + range×TP_MULT.
     SHORT: base = best bid → SL = base + range×SL_MULT, TP = base − range×TP_MULT.
-    If meta.use_fixed_sl_tp (EMA Trap), SL/TP prices come from the strategy meta dict.
     """
     global _is_setting_initial_sl
     order_sym = _norm_sym(symbol or str((meta or {}).get("symbol") or SYMBOL))
@@ -3353,7 +3382,6 @@ async def _place_order_async(
     )
     sl_mx, sl_mn = _sl_multipliers_for_position()
     tp_m = _tp_multiplier_for_order(meta)
-    use_fixed = bool(meta and meta.get("use_fixed_sl_tp") and not is_reverse)
 
     if is_reverse:
         if side == "Buy":
@@ -3367,23 +3395,6 @@ async def _place_order_async(
                 return
             base = b_bid
         current_price = base
-    elif use_fixed:
-        if side == "Buy":
-            if not b_ask or b_ask <= 0:
-                print("No best ask; cannot place LONG.")
-                return
-            base = b_ask
-        else:
-            if not b_bid or b_bid <= 0:
-                print("No best bid; cannot place SHORT.")
-                return
-            base = b_bid
-        current_price = base
-        sl_wide = float(meta.get("sl_price"))
-        sl_tight = float(meta.get("sl_min_price", sl_wide))
-        tp = float(meta.get("tp_price"))
-        sl = sl_wide
-        range_ = max(abs(float(base) - float(sl_wide)), 1e-12)
     elif side == "Buy":
         if not b_ask or b_ask <= 0:
             print("No best ask; cannot place LONG.")
@@ -3707,7 +3718,7 @@ def _weak_momentum_params_from_env() -> dict[str, Any]:
 def strategy_weak_momentum_reversal(klines: pd.DataFrame) -> tuple[str | None, str, dict[str, Any] | None]:
     """
     Legacy ACTIVE_STRATEGIES path: same pure price-action + RSI rules as instance engine.
-    Returns (signal, reason, meta) where meta carries fixed SL/TP from signal-bar range.
+    Meta carries ``signal_row`` (signal candle); SL/TP are applied at execution from range + L1.
     """
     return evaluate_weak_momentum_instance(klines, _weak_momentum_params_from_env())
 
@@ -3722,7 +3733,8 @@ def evaluate_weak_momentum_instance(
     LONG: sig RSI < oversold, sig bearish, conf close > sig high.
     SHORT: sig RSI > overbought, sig bullish, conf close < sig low.
 
-    SL/TP from signal bar range only: base_risk = sig_high - sig_low, anchored to conf close.
+    SL/TP are not set here; execution uses signal bar high/low range and live best bid/ask
+    with instance or .env multipliers (:func:`_place_order_async`).
     """
     p = params or {}
     load_dotenv(override=True)
@@ -3790,34 +3802,23 @@ def evaluate_weak_momentum_instance(
     if entry_ref <= 0:
         return (None, "invalid_entry_ref", None)
 
-    base_risk = sig_range
-
+    sig_row_dict = sig_bar.to_dict() if hasattr(sig_bar, "to_dict") else dict(sig_bar)
     if long_ok:
         side = "Buy"
-        sl_wide = entry_ref - (base_risk * sl_mx)
-        sl_tight = entry_ref - (base_risk * sl_mn)
-        tp_price = entry_ref + (base_risk * tp_mult)
         reason = (
             f"WM LONG rsi_sig={float(sig_rsi):.2f}<{rsi_os} bearish_sig breakout "
-            f"base_risk={base_risk:.6f} sl_lo={sl_wide:.4f}/{sl_tight:.4f} tp={tp_price:.4f}"
+            f"sig_range={sig_range:.6f} sl×{sl_mx}/{sl_mn} tp×{tp_mult}"
         )
     else:
         side = "Sell"
-        sl_wide = entry_ref + (base_risk * sl_mx)
-        sl_tight = entry_ref + (base_risk * sl_mn)
-        tp_price = entry_ref - (base_risk * tp_mult)
         reason = (
             f"WM SHORT rsi_sig={float(sig_rsi):.2f}>{rsi_ob} bullish_sig breakdown "
-            f"base_risk={base_risk:.6f} sl_hi={sl_wide:.4f}/{sl_tight:.4f} tp={tp_price:.4f}"
+            f"sig_range={sig_range:.6f} sl×{sl_mx}/{sl_mn} tp×{tp_mult}"
         )
 
-    conf_row = conf_bar.to_dict() if hasattr(conf_bar, "to_dict") else dict(conf_bar)
     meta: dict[str, Any] = {
-        "use_fixed_sl_tp": True,
-        "sl_price": float(sl_wide),
-        "sl_min_price": float(sl_tight),
-        "tp_price": float(tp_price),
-        "signal_row": conf_row,
+        "use_fixed_sl_tp": False,
+        "signal_row": sig_row_dict,
     }
     return (side, reason, meta)
 
@@ -4778,20 +4779,12 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
         signal = None
         reason = ""
         row_dict: dict | None = None
-        use_fixed = False
-        sl_p = tp_p = None
-        sl_min_p: float | None = None
 
         if strat == "ema_trap":
             ev = ema_trap.evaluate(df_closed, dict(inst.get("params") or {}), st)
             signal = ev.get("signal")
             reason = str(ev.get("reason") or "")
             row_dict = ev.get("signal_row")
-            if signal in ("Buy", "Sell") and ev.get("sl_price") is not None:
-                use_fixed = True
-                sl_p = float(ev["sl_price"])
-                tp_p = float(ev["tp_price"])
-                sl_min_p = float(ev.get("sl_min_price", sl_p))
         elif strat == "weak_momentum_reversal":
             wm_sig, wm_reason, wm_meta = evaluate_weak_momentum_instance(
                 df_closed, dict(inst.get("params") or {})
@@ -4799,11 +4792,7 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             signal = wm_sig
             reason = str(wm_reason or "")
             if signal in ("Buy", "Sell") and wm_meta:
-                use_fixed = bool(wm_meta.get("use_fixed_sl_tp"))
-                sl_p = float(wm_meta["sl_price"])
-                tp_p = float(wm_meta["tp_price"])
-                sl_min_p = float(wm_meta.get("sl_min_price", sl_p))
-                row_dict = wm_meta.get("signal_row") or df_closed.iloc[-1].to_dict()
+                row_dict = wm_meta.get("signal_row")
         else:
             continue
 
@@ -4834,14 +4823,7 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
         # Dedup: only after we are about to queue (avoids locking the bar when autotrade was off).
         instance_storage.merge_instance_state(inst["id"], {"last_signal_start": conf_start})
         _patch_instance_state_cache(inst["id"], {"last_signal_start": conf_start})
-        meta = {
-            **meta_base,
-            "use_fixed_sl_tp": use_fixed,
-            "sl_price": sl_p,
-            "tp_price": tp_p,
-        }
-        if use_fixed and sl_min_p is not None:
-            meta["sl_min_price"] = float(sl_min_p)
+        meta = {**meta_base}
         _loop.call_soon_threadsafe(
             _signal_queue.put_nowait,
             ("entry", signal, row_dict, False, meta),
@@ -4863,6 +4845,9 @@ def check_signals(df: pd.DataFrame) -> None:
         return
 
     row_dict = row_conf.to_dict() if hasattr(row_conf, "to_dict") else dict(row_conf)
+    _meta_exec_drop = frozenset(
+        {"signal_row", "use_fixed_sl_tp", "sl_price", "sl_min_price", "tp_price"}
+    )
 
     for strat_key in ACTIVE_STRATEGIES:
         fn = STRATEGY_REGISTRY.get(strat_key)
@@ -4885,7 +4870,7 @@ def check_signals(df: pd.DataFrame) -> None:
             return
         queue_meta = None
         if isinstance(sig_meta, dict):
-            queue_meta = {k: v for k, v in sig_meta.items() if k != "signal_row"}
+            queue_meta = {k: v for k, v in sig_meta.items() if k not in _meta_exec_drop}
             sr = sig_meta.get("signal_row")
             if isinstance(sr, dict):
                 row_dict = sr
