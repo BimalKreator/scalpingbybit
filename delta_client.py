@@ -854,22 +854,28 @@ class DeltaLiveStream:
         self._task: asyncio.Task | None = None
         self._running = False
         self._order_unfilled: dict[int, float] = {}
-        self._main_symbol: str = ""
-        self._env_symbol: str = ""
+        self._delta_symbols: list[str] = []
+        self._delta_to_user: dict[str, str] = {}
 
     async def start(
         self,
         api_key: str,
         api_secret: str,
-        symbol: str,
+        symbols: list[str],
         on_kline: Callable[..., None],
-        on_orderbook: Callable[[dict], None],
+        on_orderbook: Callable[..., None],
         on_position: Callable[[dict], None],
         on_execution: Callable[[dict], None],
         kline_intervals: tuple[int, ...] = (1,),
     ) -> None:
-        self._main_symbol = normalize_delta_symbol(symbol)
-        self._env_symbol = (symbol or "").strip().upper() or self._main_symbol
+        sym_list = [str(s).strip().upper() for s in (symbols or []) if str(s).strip()]
+        if not sym_list:
+            raise ValueError("DeltaLiveStream.start: symbols list is empty")
+        self._delta_symbols = [normalize_delta_symbol(s) for s in sym_list]
+        self._delta_to_user = {
+            normalize_delta_symbol(s): str(s).strip().upper() for s in sym_list
+        }
+        self._user_symbols_fallback = sym_list[0]
         self._running = True
         self._ws = await websockets.connect(
             _WS_BASE_INDIA,
@@ -878,12 +884,12 @@ class DeltaLiveStream:
             close_timeout=10,
         )
         ivs = sorted({max(1, int(x)) for x in kline_intervals})
-        candle_chans = [{"name": _delta_candle_channel_name(m), "symbols": [self._main_symbol]} for m in ivs]
+        ds = list(dict.fromkeys(self._delta_symbols))
+        candle_chans = [{"name": _delta_candle_channel_name(m), "symbols": ds} for m in ivs]
         pub = {
             "type": "subscribe",
             "payload": {
-                "channels": candle_chans
-                + [{"name": "l2_orderbook", "symbols": [self._main_symbol]}]
+                "channels": candle_chans + [{"name": "l2_orderbook", "symbols": ds}]
             },
         }
         await self._ws.send(json.dumps(pub))
@@ -920,8 +926,8 @@ class DeltaLiveStream:
             "type": "subscribe",
             "payload": {
                 "channels": [
-                    {"name": "positions", "symbols": [self._main_symbol]},
-                    {"name": "orders", "symbols": [self._main_symbol]},
+                    {"name": "positions", "symbols": ds},
+                    {"name": "orders", "symbols": ds},
                 ]
             },
         }
@@ -931,7 +937,7 @@ class DeltaLiveStream:
             self._recv_loop(on_kline, on_orderbook, on_position, on_execution)
         )
         print(
-            f"[Delta WS] Subscribed candles {ivs}m + l2 + private positions/orders for {self._main_symbol}."
+            f"[Delta WS] Subscribed candles {ivs}m + l2 + private positions/orders for {ds}."
         )
 
     async def _recv_loop(
@@ -977,13 +983,22 @@ class DeltaLiveStream:
                         "confirm": True,
                         "timestamp": int(start_ms),
                     }
+                    dsym = normalize_delta_symbol(str(msg.get("symbol") or ""))
+                    user_sym = self._delta_to_user.get(dsym) or self._user_symbols_fallback
                     try:
+                        on_kline({"data": [row]}, ivm, user_sym)
+                    except TypeError:
                         on_kline({"data": [row]}, ivm)
                     except Exception as e:
                         print(f"[Delta WS] on_kline error: {e}")
                 elif t == "l2_orderbook":
-                    if msg.get("symbol") != self._main_symbol:
+                    dsym = str(msg.get("symbol") or "")
+                    if normalize_delta_symbol(dsym) not in set(self._delta_symbols):
                         continue
+                    user_sym = (
+                        self._delta_to_user.get(normalize_delta_symbol(dsym))
+                        or self._user_symbols_fallback
+                    )
                     buys = msg.get("buy") or []
                     sells = msg.get("sell") or []
                     bid_p = bid_q = ask_p = ask_q = 0.0
@@ -995,6 +1010,16 @@ class DeltaLiveStream:
                         ask_q = float(sells[0].get("size") or 0)
                     try:
                         on_orderbook(
+                            user_sym,
+                            {
+                                "data": {
+                                    "b": [[str(bid_p), str(bid_q)]] if bid_p else [],
+                                    "a": [[str(ask_p), str(ask_q)]] if ask_p else [],
+                                }
+                            },
+                        )
+                    except TypeError:
+                        on_orderbook(
                             {
                                 "data": {
                                     "b": [[str(bid_p), str(bid_q)]] if bid_p else [],
@@ -1005,11 +1030,13 @@ class DeltaLiveStream:
                     except Exception as e:
                         print(f"[Delta WS] on_orderbook error: {e}")
                 elif t == "positions":
-                    sym_u = self._env_symbol
                     if msg.get("action") == "snapshot":
                         for p in msg.get("result") or []:
-                            if (p.get("product_symbol") or p.get("symbol")) != self._main_symbol:
+                            raw = p.get("product_symbol") or p.get("symbol") or ""
+                            dkey = normalize_delta_symbol(str(raw))
+                            if dkey not in set(self._delta_symbols):
                                 continue
+                            sym_u = self._delta_to_user.get(dkey) or str(raw).strip().upper()
                             sz = float(p.get("size") or 0)
                             try:
                                 on_position(
@@ -1026,8 +1053,11 @@ class DeltaLiveStream:
                             except Exception as e:
                                 print(f"[Delta WS] on_position snapshot: {e}")
                     else:
-                        if msg.get("symbol") != self._main_symbol:
+                        raw = msg.get("symbol") or ""
+                        dkey = normalize_delta_symbol(str(raw))
+                        if dkey not in set(self._delta_symbols):
                             continue
+                        sym_u = self._delta_to_user.get(dkey) or str(raw).strip().upper()
                         sz = float(msg.get("size") or 0)
                         try:
                             on_position(

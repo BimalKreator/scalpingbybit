@@ -759,6 +759,7 @@ class BybitLiveStream:
         self.ws_kline: WebSocket | None = None
         self.ws_kline_list: list[WebSocket] = []
         self.ws_orderbook: WebSocket | None = None
+        self.ws_orderbook_list: list[WebSocket] = []
         self.ws_private: WebSocket | None = None
         self.ws_trade: WebSocketTrading | None = None
 
@@ -766,38 +767,55 @@ class BybitLiveStream:
         self,
         api_key: str,
         api_secret: str,
-        symbol: str,
+        symbols: list[str],
         on_kline: Callable[..., None],
-        on_orderbook: Callable[[dict], None],
+        on_orderbook: Callable[..., None],
         on_position: Callable[[dict], None],
         on_execution: Callable[[dict], None],
         kline_intervals: tuple[int, ...] = (1,),
     ) -> None:
+        """
+        ``symbols``: list of linear symbols (e.g. BTCUSDT, ETHUSDT). One kline socket per
+        (interval, symbol); one orderbook.1 socket per symbol. Callbacks receive (msg, ...) for kline
+        and (symbol, msg) for orderbook when multiple symbols are used.
+        """
+        sym_list = [str(s).strip().upper() for s in (symbols or []) if str(s).strip()]
+        if not sym_list:
+            raise ValueError("BybitLiveStream.start: symbols list is empty")
         self.ws_kline_list = []
         for iv in sorted({max(1, int(x)) for x in kline_intervals}):
-            ws_k = WebSocket(
+            for sym in sym_list:
+                ws_k = WebSocket(
+                    testnet=False,
+                    channel_type="linear",
+                    api_key="",
+                    api_secret="",
+                )
+
+                def _cb(msg: dict, interval: int = iv, s: str = sym) -> None:
+                    on_kline(msg, interval, s)
+
+                ws_k.kline_stream(interval=iv, symbol=sym, callback=_cb)
+                self.ws_kline_list.append(ws_k)
+                print(f"Subscribed to {iv}m kline {sym} (public WebSocket).")
+        self.ws_kline = self.ws_kline_list[0] if self.ws_kline_list else None
+
+        self.ws_orderbook_list: list[WebSocket] = []
+        for sym in sym_list:
+            ws_ob = WebSocket(
                 testnet=False,
                 channel_type="linear",
                 api_key="",
                 api_secret="",
             )
 
-            def _cb(msg: dict, interval: int = iv) -> None:
-                on_kline(msg, interval)
+            def _ob_cb(msg: dict, s: str = sym) -> None:
+                on_orderbook(s, msg)
 
-            ws_k.kline_stream(interval=iv, symbol=symbol, callback=_cb)
-            self.ws_kline_list.append(ws_k)
-            print(f"Subscribed to {iv}m kline {symbol} (public WebSocket).")
-        self.ws_kline = self.ws_kline_list[0] if self.ws_kline_list else None
-
-        self.ws_orderbook = WebSocket(
-            testnet=False,
-            channel_type="linear",
-            api_key="",
-            api_secret="",
-        )
-        self.ws_orderbook.orderbook_stream(depth=1, symbol=symbol, callback=on_orderbook)
-        print("Subscribed to orderbook.1 " + symbol + " (public WebSocket).")
+            ws_ob.orderbook_stream(depth=1, symbol=sym, callback=_ob_cb)
+            self.ws_orderbook_list.append(ws_ob)
+            print("Subscribed to orderbook.1 " + sym + " (public WebSocket).")
+        self.ws_orderbook = self.ws_orderbook_list[0] if self.ws_orderbook_list else None
 
         self.ws_private = WebSocket(
             testnet=False,
@@ -825,7 +843,15 @@ class BybitLiveStream:
                     pass
         self.ws_kline_list = []
         self.ws_kline = None
-        for attr in ("ws_orderbook", "ws_private", "ws_trade"):
+        for ws in list(getattr(self, "ws_orderbook_list", []) or []):
+            if ws is not None:
+                try:
+                    ws.exit()
+                except Exception:
+                    pass
+        self.ws_orderbook_list = []
+        self.ws_orderbook = None
+        for attr in ("ws_private", "ws_trade"):
             ws = getattr(self, attr, None)
             if ws is not None:
                 try:

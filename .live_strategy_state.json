@@ -1,15 +1,15 @@
 {
   "symbol": "BTCUSDT",
-  "price": 68646.0,
+  "price": 68177.0,
   "indicators": {
-    "RSI": 21.28,
-    "RSI_SMA": 43.06,
+    "RSI": 37.94,
+    "RSI_SMA": 36.3,
     "volume_signal_vs_prev": true,
-    "body_size": 84.0,
-    "open": 68730.0,
-    "close": 68646.0,
-    "volume": 9961.0,
-    "Expected_Profit_Pct": 0.26
+    "body_size": 21.5,
+    "open": 68198.5,
+    "close": 68177.0,
+    "volume": 5783.0,
+    "Expected_Profit_Pct": 0.1
   },
   "conditions": {
     "long": [
@@ -19,11 +19,11 @@
       },
       {
         "name": "Previous Candle Bearish",
-        "met": true
+        "met": false
       },
       {
         "name": "Both Bearish",
-        "met": true
+        "met": false
       },
       {
         "name": "Volume: signal > previous",
@@ -45,7 +45,7 @@
       },
       {
         "name": "Previous Candle Bullish",
-        "met": false
+        "met": true
       },
       {
         "name": "Both Bullish",
@@ -65,61 +65,10 @@
       }
     ]
   },
-  "status": "Long Signal",
+  "status": "Waiting",
   "last_signal_candle_start": 1774111200000,
   "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
   "checks": {
-    "inst_default_wmr": {
-      "name": "Weak Momentum 1m",
-      "interval": "1m",
-      "strategy_type": "weak_momentum_reversal",
-      "rules_long": [
-        {
-          "text": "Instance & Exchange Flat",
-          "met": true
-        },
-        {
-          "text": "Sig bar RSI < 40.0 (was 6.05)",
-          "met": true
-        },
-        {
-          "text": "Sig bar Bearish (close < open)",
-          "met": true
-        },
-        {
-          "text": "Conf close > Sig high",
-          "met": false
-        }
-      ],
-      "rules_short": [
-        {
-          "text": "Instance & Exchange Flat",
-          "met": true
-        },
-        {
-          "text": "Sig bar RSI > 60.0 (was 6.05)",
-          "met": false
-        },
-        {
-          "text": "Sig bar Bullish (close > open)",
-          "met": false
-        },
-        {
-          "text": "Conf close < Sig low",
-          "met": true
-        }
-      ],
-      "monitor_sync": {
-        "engine": "weak_momentum_reversal",
-        "prep": "ok",
-        "rows_in_buffer": 1000,
-        "rows_after_indicator_drop": 1000,
-        "sig_rsi": 6.0547,
-        "sig_bar_start": 1774171440000,
-        "conf_bar_start": 1774171500000,
-        "updated_at_unix": 1774171512.1153018
-      }
-    },
     "inst_1774111627580_0eb580": {
       "name": "EMA Trap 3m",
       "interval": "3m",
@@ -131,7 +80,7 @@
         },
         {
           "text": "Prev RSI < 40.0",
-          "met": false
+          "met": true
         },
         {
           "text": "Curr Close > EMA Low",
@@ -168,59 +117,9 @@
           "met": false
         }
       ]
-    },
-    "inst_1774166651003_657a50": {
-      "name": "EMA Trap 3m",
-      "interval": "5m",
-      "strategy_type": "ema_trap",
-      "rules_long": [
-        {
-          "text": "Prev Close < EMA Low",
-          "met": false
-        },
-        {
-          "text": "Prev RSI < 40.0",
-          "met": false
-        },
-        {
-          "text": "Curr Close > EMA Low",
-          "met": false
-        },
-        {
-          "text": "Range Filter Uptrend",
-          "met": false
-        },
-        {
-          "text": "Expected Profit >= 0.08%",
-          "met": false
-        }
-      ],
-      "rules_short": [
-        {
-          "text": "Prev Close > EMA High",
-          "met": false
-        },
-        {
-          "text": "Prev RSI > 60.0",
-          "met": false
-        },
-        {
-          "text": "Curr Close < EMA High",
-          "met": false
-        },
-        {
-          "text": "Range Filter Downtrend",
-          "met": false
-        },
-        {
-          "text": "Expected Profit >= 0.08%",
-          "met": false
-        }
-      ],
-      "note": "insufficient_bars"
     }
   },
-  "checks_updated_unix": 1774171512.1263533,
+  "checks_updated_unix": 1774209471.0914555,
   "position_risk": {
     "open": false
   },

@@ -90,19 +90,29 @@ def _append_trade_journal_entry(*, side: str, is_reverse: bool, signal_candle: d
         logging.error("Trade journal write failed: %s", e, exc_info=True)
 
 
-def _append_partial_exit_journal(*, trigger_mid: float, closed_qty: float, position_size_before: float) -> None:
+def _append_partial_exit_journal(
+    *,
+    trigger_mid: float,
+    closed_qty: float,
+    position_size_before: float,
+    symbol: str | None = None,
+) -> None:
     """Auditable line in trade_journal.log for scale-out at half-target."""
     try:
-        side_name = "Long" if str(_last_position_side or "").strip().lower() == "buy" else "Short"
+        sym = _norm_sym(symbol or SYMBOL)
+        _, _, ps_raw = _read_position_for_symbol(sym)
+        side_l = ps_raw.strip().lower()
+        side_name = "Long" if side_l == "buy" else "Short"
+        tr = xst.tracker(sym, SYMBOL)
         entry = {
             "event": "[PARTIAL EXIT]",
             "timestamp": datetime.now().isoformat(),
-            "symbol": SYMBOL,
+            "symbol": sym,
             "side": side_name,
             "trigger_mid": float(trigger_mid),
             "closed_qty": float(closed_qty),
             "position_size_before": float(position_size_before),
-            "breakeven_triggered": bool(_breakeven_triggered),
+            "breakeven_triggered": bool(tr.get("breakeven_triggered")),
         }
         TRADE_JOURNAL_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(TRADE_JOURNAL_PATH, "a", encoding="utf-8") as f:
@@ -158,6 +168,8 @@ DELTA_API_KEY = os.getenv("DELTA_API_KEY")
 DELTA_API_SECRET = os.getenv("DELTA_API_SECRET")
 EXCHANGE_ID = os.getenv("EXCHANGE_ID", "bybit").lower()
 USE_DELTA = EXCHANGE_ID == "delta_india"
+
+import exchange_state as xst
 
 # Strategy parameters (from .env)
 SYMBOL = os.getenv("TRADING_SYMBOL") or os.getenv("SYMBOL", "BTCUSDT")
@@ -364,6 +376,26 @@ def get_strategy_instances() -> list[dict]:
 
 def _norm_sym(s: str) -> str:
     return (s or SYMBOL or "").strip().upper()
+
+
+def get_active_symbols() -> list[str]:
+    """
+    Unique symbols from enabled strategy instances, plus .env SYMBOL fallback.
+    Used for WebSocket subscriptions and multi-coin routing.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for ins in get_strategy_instances():
+        if not ins.get("enabled", True):
+            continue
+        s = _norm_sym(str(ins.get("symbol") or SYMBOL))
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    fb = _norm_sym(SYMBOL)
+    if fb and fb not in seen:
+        out.append(fb)
+    return out
 
 
 def kline_buffer(symbol: str, interval_minutes: int) -> list:
@@ -649,15 +681,17 @@ def _append_virtual_closed_trade_row(
     pnl: float,
     exit_reason: str,
     strategy_name: str | None = None,
+    trade_symbol: str | None = None,
 ) -> None:
     try:
         VIRTUAL_CLOSED_TRADES_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
         lev = float(os.getenv("LEVERAGE", "5") or "5")
         created_ms = int(time.time() * 1000)
         updated_ms = created_ms
+        sym_row = _norm_sym(trade_symbol or SYMBOL)
         row = {
             "exchange": "Virtual (Paper)",
-            "symbol": SYMBOL,
+            "symbol": sym_row,
             "side": "BUY" if str(side).strip().lower() == "buy" else "SELL",
             "createdTime": str(created_ms),
             "updatedTime": str(updated_ms),
@@ -725,15 +759,17 @@ def get_paper_position_rows_for_ui(symbol: str) -> list[dict]:
     ]
 
 
-def _finalize_virtual_position_close(exit_price: float, exit_reason: str) -> None:
+def _finalize_virtual_position_close(
+    exit_price: float, exit_reason: str, symbol: str | None = None
+) -> None:
     """Update wallet, log closed trade, clear trackers (paper mode)."""
-    global _monitor_had_position, _position_size, _position_entry_price, _local_close_reason
+    global _monitor_had_position, _position_size, _position_entry_price, _local_close_reason, _is_closing_position
+    sym = _norm_sym(symbol or SYMBOL)
     if "manual" in (exit_reason or "").lower():
         _local_close_reason = "MANUAL"
-    with _position_lock:
-        snap_sz = float(_position_size)
-        entry = float(_position_entry_price or 0.0)
-        ps = (_last_position_side or "").strip()
+        xst.tracker_update(sym, SYMBOL, local_close_reason="MANUAL")
+    snap_sz, entry_raw, ps = _read_position_for_symbol(sym)
+    entry = float(entry_raw or 0.0)
     if snap_sz <= 0:
         return
     pnl = _virtual_linear_pnl_usd(entry, float(exit_price), snap_sz, ps)
@@ -747,16 +783,24 @@ def _finalize_virtual_position_close(exit_price: float, exit_reason: str) -> Non
         pnl=pnl,
         exit_reason=exit_reason,
         strategy_name=strat_snap,
+        trade_symbol=sym,
     )
-    _monitor_had_position = False
+    if sym == _norm_sym(SYMBOL):
+        _monitor_had_position = False
     ep = float(exit_price)
-    sl_hit = _was_closed_by_sl(ep)
-    on_position_closed(ep)
-    _clear_active_instance_on_flat(sl_loss=sl_hit)
-    _clear_sl_tp_tracker_on_file_and_globals()
-    with _position_lock:
-        _position_size = 0.0
-        _position_entry_price = None
+    sl_hit = _was_closed_by_sl(ep, sym)
+    if sym == _norm_sym(SYMBOL):
+        on_position_closed(ep)
+        _clear_active_instance_on_flat(sl_loss=sl_hit)
+    xst.set_position_fields(sym, SYMBOL, size=0.0, entry=None, side=None)
+    xst.tracker_reset_flat(sym, SYMBOL)
+    xst.set_closing(sym, SYMBOL, False)
+    if sym == _norm_sym(SYMBOL):
+        _clear_sl_tp_tracker_on_file_and_globals()
+        with _position_lock:
+            _position_size = 0.0
+            _position_entry_price = None
+        _is_closing_position = False
     _sync_position_risk_to_state()
     try:
         _flush_live_state_file_with_tracker()
@@ -1430,10 +1474,32 @@ def compute_indicators(
     return df
 
 
-def get_open_position() -> bool:
-    """True if there is an open position for SYMBOL (from private position WebSocket)."""
-    with _position_lock:
-        return _position_size > 0
+def get_open_position(symbol: str | None = None) -> bool:
+    """True if there is an open position for the given symbol (exchange_state + legacy mirror)."""
+    sym = _norm_sym(symbol or SYMBOL)
+    if xst.get_open_position(sym, SYMBOL):
+        return True
+    if sym == _norm_sym(SYMBOL):
+        with _position_lock:
+            return float(_position_size) > 0
+    return False
+
+
+def _read_position_for_symbol(sym: str) -> tuple[float, float | None, str]:
+    """Effective size, entry, side string (Buy/Sell) for SL/TP and virtual close."""
+    u = _norm_sym(sym)
+    pos = xst.position_snapshot(u, SYMBOL)
+    sz = float(pos.get("size") or 0)
+    ep = pos.get("entry")
+    side = str(pos.get("side") or "").strip()
+    if sz <= 0 and u == _norm_sym(SYMBOL):
+        with _position_lock:
+            sz = float(_position_size)
+            if ep is None:
+                ep = _position_entry_price
+            if not side:
+                side = str(_last_position_side or "").strip()
+    return sz, ep if ep is not None else None, side
 
 
 async def _confirm_exchange_sl_verified_after_sync() -> bool:
@@ -1456,10 +1522,14 @@ async def _confirm_exchange_sl_verified_after_sync() -> bool:
     return False
 
 
-def _get_orderbook_l1() -> tuple[float, float, float, float]:
-    """Return (best_bid, best_ask, bid_qty, ask_qty) under lock."""
-    with _orderbook_lock:
-        return (best_bid, best_ask, bid_qty, ask_qty)
+def _get_orderbook_l1(symbol: str | None = None) -> tuple[float, float, float, float]:
+    """Return (best_bid, best_ask, bid_qty, ask_qty) for ``symbol`` (multi-coin) or legacy globals."""
+    sym = _norm_sym(symbol or SYMBOL)
+    bb, ba, bq, aq = xst.orderbook_l1(sym, SYMBOL)
+    if sym == _norm_sym(SYMBOL) and bb <= 0 and ba <= 0:
+        with _orderbook_lock:
+            return (best_bid, best_ask, bid_qty, ask_qty)
+    return (bb, ba, bq, aq)
 
 
 def _sl_multipliers_for_position() -> tuple[float, float]:
@@ -1821,98 +1891,130 @@ async def apply_dynamic_env_updates() -> None:
     _flush_live_state_file_with_tracker()
 
 
-def _compute_active_sl_price(mid_price: float) -> float | None:
+def _compute_active_sl_price(mid_price: float, symbol: str | None = None) -> float | None:
     """
     Time-based SL: max distance until decay, then min distance.
-    At ~45% of the path entry→TP, mark half-target; if trailing on, lock SL at breakeven (+buffer)
-    and force-exchange amend.
+    Per-symbol state in ``exchange_state``; legacy globals mirrored for SYMBOL for .env amend paths.
     """
     global _breakeven_triggered, _half_target_reached, _last_active_sl_price
+    global _last_tp_price, _last_sl_price, _sl_max_price, _sl_min_price, _entry_time, _last_position_side
+    sym = _norm_sym(symbol or SYMBOL)
     if mid_price <= 0:
         return None
-    with _position_lock:
-        if _position_size <= 0:
-            return None
-    tpf = _last_tp_price
-    ent = _position_entry_price
+    xst.ensure_symbol(sym, SYMBOL)
+    pos = xst.position_snapshot(sym, SYMBOL)
+    if float(pos.get("size") or 0) <= 0:
+        return None
+    tr = xst.tracker(sym, SYMBOL)
+    tpf = tr.get("last_tp_price")
+    ent = pos.get("entry")
+    last_sl = tr.get("last_sl_price")
     if tpf is None or ent is None:
-        return float(_last_sl_price) if _last_sl_price is not None else None
+        return float(last_sl) if last_sl is not None else None
     try:
         ent_f, tpf_f = float(ent), float(tpf)
     except (TypeError, ValueError):
-        return float(_last_sl_price) if _last_sl_price is not None else None
-    ps = (_last_position_side or "").strip().lower()
-    smax, smin = float(_sl_max_price), float(_sl_min_price)
-    if smax <= 0 and _last_sl_price is not None:
-        smax = smin = float(_last_sl_price)
+        return float(last_sl) if last_sl is not None else None
+    ps = (pos.get("side") or tr.get("last_position_side") or "").strip().lower()
+    smax, smin = float(tr.get("sl_max_price") or 0), float(tr.get("sl_min_price") or 0)
+    if smax <= 0 and last_sl is not None:
+        smax = smin = float(last_sl)
     if smin <= 0 and smax > 0:
         smin = smax
 
-    prev_be = _breakeven_triggered
+    breakeven_triggered = bool(tr.get("breakeven_triggered"))
+    half_target_reached = bool(tr.get("half_target_reached"))
+    prev_be = breakeven_triggered
+    entry_time = float(tr.get("entry_time") or 0)
     total_dist = abs(tpf_f - ent_f)
     current_dist = abs(mid_price - ent_f)
-    # Half-target / breakeven: trigger at 45% of entry→TP distance (spread/fees headroom).
     if total_dist > 1e-12 and current_dist >= (total_dist * 0.45):
-        if not _half_target_reached:
-            _half_target_reached = True
+        if not half_target_reached:
+            xst.tracker_update(sym, SYMBOL, half_target_reached=True)
+            half_target_reached = True
             logging.info(
-                "[Breakeven] Half-target path (45%%) reached mid=%.8g entry=%.8g tp=%.8g "
-                "current_dist=%.8g total_dist=%.8g trailing_enabled=%s",
+                "[Breakeven] Half-target path (45%%) reached mid=%.8g entry=%.8g tp=%.8g sym=%s",
                 mid_price,
                 ent_f,
                 tpf_f,
-                current_dist,
-                total_dist,
-                _trailing_sl_enabled(),
+                sym,
             )
-        if _trailing_sl_enabled() and not _breakeven_triggered:
-            _breakeven_triggered = True
+        if _trailing_sl_enabled() and not breakeven_triggered:
             buf = _breakeven_buffer_decimal()
             if ps == "buy":
-                _last_active_sl_price = ent_f * (1.0 + buf)
+                new_la = ent_f * (1.0 + buf)
             else:
-                _last_active_sl_price = ent_f * (1.0 - buf)
-            logging.info(
-                f"[Breakeven] Half-target (45%) crossed! Local SL moving to: {_last_active_sl_price}"
+                new_la = ent_f * (1.0 - buf)
+            xst.tracker_update(
+                sym,
+                SYMBOL,
+                breakeven_triggered=True,
+                last_active_sl_price=new_la,
             )
+            breakeven_triggered = True
+            logging.info("[Breakeven] Half-target (45%%) crossed sym=%s local SL -> %s", sym, new_la)
             if not prev_be:
                 _schedule_exchange_sl_tp_resync_from_globals()
 
-    if _breakeven_triggered:
-        if _last_active_sl_price is not None and float(_last_active_sl_price) > 0:
-            act = float(_last_active_sl_price)
+    tr = xst.tracker(sym, SYMBOL)
+    breakeven_triggered = bool(tr.get("breakeven_triggered"))
+    last_active = tr.get("last_active_sl_price")
+
+    if breakeven_triggered:
+        if last_active is not None and float(last_active) > 0:
+            act = float(last_active)
         else:
             buf = _breakeven_buffer_decimal()
             act = ent_f * (1.0 + buf) if ps == "buy" else ent_f * (1.0 - buf)
-    elif _entry_time <= 0 or (time.time() - _entry_time) >= _sl_decay_seconds():
+    elif entry_time <= 0 or (time.time() - entry_time) >= _sl_decay_seconds():
         act = smin if smin > 0 else smax
     else:
-        act = smax if smax > 0 else float(_last_sl_price or 0)
+        act = smax if smax > 0 else float(last_sl or 0)
     if act <= 0:
-        act = float(_last_sl_price or 0)
-    _last_active_sl_price = act
+        act = float(last_sl or 0)
+    xst.tracker_update(sym, SYMBOL, last_active_sl_price=act)
+    if sym == _norm_sym(SYMBOL):
+        _breakeven_triggered = bool(tr.get("breakeven_triggered"))
+        _half_target_reached = bool(tr.get("half_target_reached"))
+        _last_active_sl_price = act
+        _last_tp_price = tr.get("last_tp_price")
+        _last_sl_price = tr.get("last_sl_price")
+        _sl_max_price = float(tr.get("sl_max_price") or 0)
+        _sl_min_price = float(tr.get("sl_min_price") or 0)
+        _entry_time = float(tr.get("entry_time") or 0)
+        _last_position_side = pos.get("side") or tr.get("last_position_side")
     return act
 
 
-def handle_orderbook_message(message: dict) -> None:
-    """Update global L1 orderbook from public orderbook.1 stream (snapshot-only for depth 1)."""
+def handle_orderbook_message(symbol: str, message: dict) -> None:
+    """Update per-symbol L1 orderbook; optional legacy mirror for primary SYMBOL."""
     global best_bid, best_ask, bid_qty, ask_qty, _sl_persist_ts, _last_ws_msg_ts
+    sym = xst.norm_symbol(symbol, SYMBOL)
     _last_ws_msg_ts = time.time()
     data = message.get("data") or {}
     bids = data.get("b") or []
     asks = data.get("a") or []
-    with _orderbook_lock:
-        if bids:
-            best_bid = float(bids[0][0])
-            bid_qty = float(bids[0][1])
-        if asks:
-            best_ask = float(asks[0][0])
-            ask_qty = float(asks[0][1])
+    bb = ba = 0.0
+    bq = aq = 0.0
+    if bids:
+        bb = float(bids[0][0])
+        bq = float(bids[0][1])
+    if asks:
+        ba = float(asks[0][0])
+        aq = float(asks[0][1])
+    xst.orderbook_set_l1(sym, SYMBOL, bb, ba, bq, aq)
+    if sym == _norm_sym(SYMBOL):
+        with _orderbook_lock:
+            if bids:
+                best_bid = bb
+                bid_qty = bq
+            if asks:
+                best_ask = ba
+                ask_qty = aq
     _sync_position_risk_to_state()
-    bb, ba = best_bid, best_ask
     if bb > 0 and ba > 0:
         mid = (bb + ba) / 2.0
-        _trigger_local_sl_tp_if_needed(mid)
+        _trigger_local_sl_tp_if_needed(mid, sym)
         global _sl_persist_ts
         now = time.time()
         if now - _sl_persist_ts >= 2.0:
@@ -1923,24 +2025,27 @@ def handle_orderbook_message(message: dict) -> None:
                 pass
 
 
-def _trigger_local_sl_tp_if_needed(mid_price: float) -> None:
+def _trigger_local_sl_tp_if_needed(mid_price: float, symbol: str | None = None) -> None:
     """Exit when mid crosses TP immediately, or SL (optionally after SL_DELAY_MS re-check)."""
-    global _is_closing_position, _loop, _sl_trigger_task_running, _half_target_exited, _half_target_reached, _local_close_reason
+    global _is_closing_position, _loop, _half_target_exited, _local_close_reason
+    sym = _norm_sym(symbol or SYMBOL)
     if mid_price <= 0 or _loop is None:
         return
     schedule_partial = False
     with _local_sl_tp_lock:
-        if _is_closing_position:
+        if xst.is_closing(sym, SYMBOL):
             return
-        if not get_open_position():
+        if not get_open_position(sym):
             return
-        if _last_tp_price is None:
+        tr = xst.tracker(sym, SYMBOL)
+        pos = xst.position_snapshot(sym, SYMBOL)
+        if tr.get("last_tp_price") is None:
             return
-        act = _compute_active_sl_price(mid_price)
+        act = _compute_active_sl_price(mid_price, sym)
         if act is None:
             return
-        ps = (_last_position_side or "").strip().lower()
-        tpf = float(_last_tp_price)
+        ps = (pos.get("side") or tr.get("last_position_side") or "").strip().lower()
+        tpf = float(tr["last_tp_price"])
         original_sl = float(act)
         tp_hit = sl_hit = False
         if ps == "buy":
@@ -1952,16 +2057,23 @@ def _trigger_local_sl_tp_if_needed(mid_price: float) -> None:
         else:
             return
         if not tp_hit and not sl_hit:
-            if _half_target_reached and _partial_tp_enabled() and not _half_target_exited:
-                _half_target_exited = True
+            if (
+                bool(tr.get("half_target_reached"))
+                and _partial_tp_enabled()
+                and not bool(tr.get("half_target_exited"))
+            ):
+                xst.tracker_update(sym, SYMBOL, half_target_exited=True)
                 schedule_partial = True
             if not schedule_partial:
                 return
         elif tp_hit:
-            _is_closing_position = True
+            xst.set_closing(sym, SYMBOL, True)
+            if sym == _norm_sym(SYMBOL):
+                _is_closing_position = True
 
     if schedule_partial:
         _local_close_reason = "PARTIAL"
+        xst.tracker_update(sym, SYMBOL, local_close_reason="PARTIAL")
         try:
             _flush_live_state_file_with_tracker()
         except Exception:
@@ -1970,45 +2082,47 @@ def _trigger_local_sl_tp_if_needed(mid_price: float) -> None:
 
         def _sched_partial() -> None:
             try:
-                _ = asyncio.create_task(_async_partial_tp_close(mid_snap))
+                _ = asyncio.create_task(_async_partial_tp_close(mid_snap, sym))
             except Exception as e:
                 print(f"[Partial TP] schedule error: {e}")
                 with _local_sl_tp_lock:
                     global _half_target_exited
                     _half_target_exited = False
+                    xst.tracker_update(sym, SYMBOL, half_target_exited=False)
 
         _loop.call_soon_threadsafe(_sched_partial)
         return
 
     if tp_hit:
         _local_close_reason = "TP"
+        xst.tracker_update(sym, SYMBOL, local_close_reason="TP")
 
         def _sched_tp() -> None:
             try:
-                _ = asyncio.create_task(_async_local_sl_tp_close(mid_price))
+                _ = asyncio.create_task(_async_local_sl_tp_close(mid_price, sym))
             except Exception as e:
                 print(f"[Local SL/TP] schedule error: {e}")
                 with _local_sl_tp_lock:
-                    global _is_closing_position
-                    _is_closing_position = False
+                    if sym == _norm_sym(SYMBOL):
+                        _is_closing_position = False
+                    xst.set_closing(sym, SYMBOL, False)
 
         _loop.call_soon_threadsafe(_sched_tp)
         return
 
     delay_ms = _sl_delay_ms()
     if delay_ms > 0:
-        if _sl_trigger_task_running:
+        if xst.sl_trigger_running(sym, SYMBOL):
             return
 
         def _sched_delay() -> None:
-            global _sl_trigger_task_running
             try:
-                _sl_trigger_task_running = True
+                xst.set_sl_trigger_running(sym, SYMBOL, True)
                 _ = asyncio.create_task(
-                    _delayed_sl_check(ps, original_sl, tpf, delay_ms)
+                    _delayed_sl_check(ps, original_sl, tpf, delay_ms, sym)
                 )
             except Exception as e:
-                _sl_trigger_task_running = False
+                xst.set_sl_trigger_running(sym, SYMBOL, False)
                 print(f"[Local SL/TP] delayed SL schedule error: {e}")
 
         _loop.call_soon_threadsafe(_sched_delay)
@@ -2016,16 +2130,19 @@ def _trigger_local_sl_tp_if_needed(mid_price: float) -> None:
 
     with _local_sl_tp_lock:
         _local_close_reason = "SL"
-        _is_closing_position = True
+        xst.tracker_update(sym, SYMBOL, local_close_reason="SL")
+        xst.set_closing(sym, SYMBOL, True)
+        _is_closing_position = sym == _norm_sym(SYMBOL)
 
     def _sched_sl() -> None:
         try:
-            _ = asyncio.create_task(_async_local_sl_tp_close(mid_price))
+            _ = asyncio.create_task(_async_local_sl_tp_close(mid_price, sym))
         except Exception as e:
             print(f"[Local SL/TP] schedule error: {e}")
             with _local_sl_tp_lock:
-                global _is_closing_position
-                _is_closing_position = False
+                if sym == _norm_sym(SYMBOL):
+                    _is_closing_position = False
+                xst.set_closing(sym, SYMBOL, False)
 
     _loop.call_soon_threadsafe(_sched_sl)
 
@@ -2035,23 +2152,24 @@ async def _delayed_sl_check(
     original_sl_price: float,
     tp_price: float,
     delay_ms: int,
+    symbol: str | None = None,
 ) -> None:
     """
     After SL_DELAY_MS, re-read mid; close only if still through SL (wick filter).
     TP always closes immediately if crossed after wait.
     """
-    global _sl_trigger_task_running, _is_closing_position, _local_close_reason
+    global _is_closing_position, _local_close_reason
+    sym = _norm_sym(symbol or SYMBOL)
     try:
         if delay_ms <= 0:
             return
         await asyncio.sleep(delay_ms / 1000.0)
-        if not get_open_position():
+        if not get_open_position(sym):
             return
         with _local_sl_tp_lock:
-            if _is_closing_position:
+            if xst.is_closing(sym, SYMBOL):
                 return
-        with _orderbook_lock:
-            bb, ba = best_bid, best_ask
+        bb, ba, _, _ = _get_orderbook_l1(sym)
         if bb <= 0 or ba <= 0:
             return
         current_mid = (bb + ba) / 2.0
@@ -2060,19 +2178,25 @@ async def _delayed_sl_check(
         if sl == "buy":
             if current_mid >= tpf:
                 with _local_sl_tp_lock:
-                    if _is_closing_position:
+                    if xst.is_closing(sym, SYMBOL):
                         return
                     _local_close_reason = "TP"
-                    _is_closing_position = True
-                await _async_local_sl_tp_close(current_mid)
+                    xst.tracker_update(sym, SYMBOL, local_close_reason="TP")
+                    xst.set_closing(sym, SYMBOL, True)
+                    if sym == _norm_sym(SYMBOL):
+                        _is_closing_position = True
+                await _async_local_sl_tp_close(current_mid, sym)
                 return
             if current_mid <= original_sl_price:
                 with _local_sl_tp_lock:
-                    if _is_closing_position:
+                    if xst.is_closing(sym, SYMBOL):
                         return
                     _local_close_reason = "SL"
-                    _is_closing_position = True
-                await _async_local_sl_tp_close(current_mid)
+                    xst.tracker_update(sym, SYMBOL, local_close_reason="SL")
+                    xst.set_closing(sym, SYMBOL, True)
+                    if sym == _norm_sym(SYMBOL):
+                        _is_closing_position = True
+                await _async_local_sl_tp_close(current_mid, sym)
             else:
                 print(
                     f"[Local SL/TP] Fake SL spike avoided (LONG): mid={current_mid:.4f} "
@@ -2081,19 +2205,25 @@ async def _delayed_sl_check(
         elif sl == "sell":
             if current_mid <= tpf:
                 with _local_sl_tp_lock:
-                    if _is_closing_position:
+                    if xst.is_closing(sym, SYMBOL):
                         return
                     _local_close_reason = "TP"
-                    _is_closing_position = True
-                await _async_local_sl_tp_close(current_mid)
+                    xst.tracker_update(sym, SYMBOL, local_close_reason="TP")
+                    xst.set_closing(sym, SYMBOL, True)
+                    if sym == _norm_sym(SYMBOL):
+                        _is_closing_position = True
+                await _async_local_sl_tp_close(current_mid, sym)
                 return
             if current_mid >= original_sl_price:
                 with _local_sl_tp_lock:
-                    if _is_closing_position:
+                    if xst.is_closing(sym, SYMBOL):
                         return
                     _local_close_reason = "SL"
-                    _is_closing_position = True
-                await _async_local_sl_tp_close(current_mid)
+                    xst.tracker_update(sym, SYMBOL, local_close_reason="SL")
+                    xst.set_closing(sym, SYMBOL, True)
+                    if sym == _norm_sym(SYMBOL):
+                        _is_closing_position = True
+                await _async_local_sl_tp_close(current_mid, sym)
             else:
                 print(
                     f"[Local SL/TP] Fake SL spike avoided (SHORT): mid={current_mid:.4f} "
@@ -2103,38 +2233,44 @@ async def _delayed_sl_check(
         logging.error(f"[Local SL/TP] delayed SL check failed: {e}", exc_info=True)
         _set_health_error("Delayed SL check failed")
     finally:
-        _sl_trigger_task_running = False
+        xst.set_sl_trigger_running(sym, SYMBOL, False)
 
 
-async def _async_local_sl_tp_close(trigger_mid: float) -> None:
+async def _async_local_sl_tp_close(
+    trigger_mid: float, symbol: str | None = None
+) -> None:
     """Close position at market/IOC when local mid crossed SL or TP."""
     global _is_closing_position
+    sym = _norm_sym(symbol or SYMBOL)
+    get_l1 = lambda: _get_orderbook_l1(sym)
     async with _exit_mutex:
         try:
             # Never get stuck: retry close until the position is actually closed.
             while True:
-                with _position_lock:
-                    sz = float(_position_size)
-                    ps = (_last_position_side or "").strip()
-                if sz <= 0 or not get_open_position():
+                sz, _, ps_raw = _read_position_for_symbol(sym)
+                ps = str(ps_raw or "").strip()
+                if sz <= 0 or not get_open_position(sym):
                     return
 
                 close_side = "Sell" if ps.lower() == "buy" else "Buy"
                 print(
-                    f"[Local SL/TP] mid={trigger_mid:.4f} → closing {ps} size={sz} side={close_side} (exchange stops are backup only)"
+                    f"[Local SL/TP] {sym} mid={trigger_mid:.4f} → closing {ps} size={sz} side={close_side} (exchange stops are backup only)"
                 )
 
                 if _virtual_trading_enabled():
-                    reason = (_local_close_reason or "TP").strip() or "TP"
-                    if reason == "PARTIAL":
+                    tr = xst.tracker(sym, SYMBOL)
+                    reason_code = str(
+                        tr.get("local_close_reason") or _local_close_reason or "TP"
+                    ).strip() or "TP"
+                    if reason_code == "PARTIAL":
                         reason = "Partial (paper)"
-                    elif reason == "SL":
+                    elif reason_code == "SL":
                         reason = "Stop Loss (paper)"
-                    elif reason == "TP":
+                    elif reason_code == "TP":
                         reason = "Take Profit (paper)"
                     else:
-                        reason = f"{reason} (paper)"
-                    _finalize_virtual_position_close(float(trigger_mid), reason)
+                        reason = f"{reason_code} (paper)"
+                    _finalize_virtual_position_close(float(trigger_mid), reason, sym)
                     return
 
                 loop = asyncio.get_running_loop()
@@ -2142,10 +2278,10 @@ async def _async_local_sl_tp_close(trigger_mid: float) -> None:
                     await execute_chunk_order_ws(
                         close_side,
                         sz,
-                        SYMBOL,
+                        sym,
                         _qty_step,
                         _min_order_qty,
-                        _get_orderbook_l1,
+                        get_l1,
                         loop,
                         ws_trade,
                         _pending_fills,
@@ -2161,7 +2297,7 @@ async def _async_local_sl_tp_close(trigger_mid: float) -> None:
 
                 # If call didn't throw but the position didn't close, keep retrying.
                 await asyncio.sleep(0.7)
-                if get_open_position():
+                if get_open_position(sym):
                     logging.warning("Exit not confirmed yet; retrying close in 1s...")
                     await asyncio.sleep(1)
                     continue
@@ -2169,22 +2305,27 @@ async def _async_local_sl_tp_close(trigger_mid: float) -> None:
         finally:
             await asyncio.sleep(1.5)
             with _local_sl_tp_lock:
-                _is_closing_position = False
+                xst.set_closing(sym, SYMBOL, False)
+                if sym == _norm_sym(SYMBOL):
+                    _is_closing_position = False
 
 
-async def _async_partial_tp_close(trigger_mid: float) -> None:
+async def _async_partial_tp_close(
+    trigger_mid: float, symbol: str | None = None
+) -> None:
     """
     At half-target (breakeven engaged): close ~50% of position, floored to qty step.
     Does not set _is_closing_position; remaining size keeps using SL/TP monitoring.
     """
     global _position_size
+    sym = _norm_sym(symbol or SYMBOL)
+    get_l1 = lambda: _get_orderbook_l1(sym)
     async with _exit_mutex:
         try:
             while True:
-                with _position_lock:
-                    sz = float(_position_size)
-                    ps = (_last_position_side or "").strip()
-                if sz <= 0 or not get_open_position():
+                sz, _, ps_raw = _read_position_for_symbol(sym)
+                ps = str(ps_raw or "").strip()
+                if sz <= 0 or not get_open_position(sym):
                     return
 
                 close_side = "Sell" if ps.lower() == "buy" else "Buy"
@@ -2199,16 +2340,20 @@ async def _async_partial_tp_close(trigger_mid: float) -> None:
                     return
 
                 print(
-                    f"[PARTIAL TP] mid={trigger_mid:.4f} → closing {half_size} of {sz} side={close_side} "
+                    f"[PARTIAL TP] {sym} mid={trigger_mid:.4f} → closing {half_size} of {sz} side={close_side} "
                     f"(scale-out at half-target)"
                 )
                 if _virtual_trading_enabled():
-                    with _position_lock:
-                        _position_size = max(0.0, float(sz) - float(half_size))
+                    new_sz = max(0.0, float(sz) - float(half_size))
+                    xst.set_position_fields(sym, SYMBOL, size=new_sz)
+                    if sym == _norm_sym(SYMBOL):
+                        with _position_lock:
+                            _position_size = new_sz
                     _append_partial_exit_journal(
                         trigger_mid=trigger_mid,
                         closed_qty=float(half_size),
                         position_size_before=float(sz),
+                        symbol=sym,
                     )
                     try:
                         _flush_live_state_file_with_tracker()
@@ -2222,10 +2367,10 @@ async def _async_partial_tp_close(trigger_mid: float) -> None:
                     await execute_chunk_order_ws(
                         close_side,
                         half_size,
-                        SYMBOL,
+                        sym,
                         _qty_step,
                         _min_order_qty,
-                        _get_orderbook_l1,
+                        get_l1,
                         loop,
                         ws_trade,
                         _pending_fills,
@@ -2239,13 +2384,13 @@ async def _async_partial_tp_close(trigger_mid: float) -> None:
                     continue
 
                 await asyncio.sleep(0.7)
-                with _position_lock:
-                    sz_after = float(_position_size)
-                if sz_after <= 0 or not get_open_position():
+                sz_after, _, _ = _read_position_for_symbol(sym)
+                if sz_after <= 0 or not get_open_position(sym):
                     _append_partial_exit_journal(
                         trigger_mid=trigger_mid,
                         closed_qty=float(half_size),
                         position_size_before=float(sz),
+                        symbol=sym,
                     )
                     try:
                         _flush_live_state_file_with_tracker()
@@ -2257,6 +2402,7 @@ async def _async_partial_tp_close(trigger_mid: float) -> None:
                         trigger_mid=trigger_mid,
                         closed_qty=float(half_size),
                         position_size_before=float(sz),
+                        symbol=sym,
                     )
                     try:
                         _flush_live_state_file_with_tracker()
@@ -3424,12 +3570,40 @@ def register_manual_trade(
             pass
 
 
-def _was_closed_by_sl(current_price: float) -> bool:
+def _was_closed_by_sl(current_price: float, symbol: str | None = None) -> bool:
     """
     True if the close should be treated as stop-loss for reversal logic.
     Local exits use _local_close_reason; exchange-native exits use loss vs entry (no SL-price proximity).
     """
     global _local_close_reason, _last_position_side, _position_entry_price
+
+    sym = _norm_sym(symbol or SYMBOL)
+    if sym != _norm_sym(SYMBOL):
+        tr = xst.tracker(sym, SYMBOL)
+        lr = str(tr.get("local_close_reason") or "")
+        if lr == "SL":
+            return True
+        if lr in ("TP", "PARTIAL"):
+            return False
+        if lr.upper() == "MANUAL":
+            return False
+        if lr == "":
+            try:
+                _, entry_raw, ps = _read_position_for_symbol(sym)
+                if entry_raw is None:
+                    return False
+                cp = float(current_price)
+                entry = float(entry_raw)
+                if cp <= 0 or entry <= 0:
+                    return False
+                ps_u = str(ps or "").strip()
+                if ps_u.lower() == "buy" and cp <= entry:
+                    return True
+                if ps_u.lower() == "sell" and cp >= entry:
+                    return True
+            except (TypeError, ValueError):
+                pass
+        return False
 
     if _local_close_reason == "SL":
         return True
