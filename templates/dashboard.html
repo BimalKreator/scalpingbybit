@@ -944,8 +944,11 @@
       var sideClass = (p.side || '').toUpperCase() === 'BUY' ? 'text-emerald-400' : 'text-red-400';
       var ct = p.createdTime;
       var entryTimeIST = (ct && ct !== '0') ? new Date(parseInt(ct, 10)).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '–';
-      var strat = (p.strategy_name != null && String(p.strategy_name).trim()) ? String(p.strategy_name).trim() : 'Manual';
-      var badgeClass = String(strat).toLowerCase() === 'manual'
+      var snFromPr = (p.position_risk && p.position_risk.strategy_name != null) ? String(p.position_risk.strategy_name).trim() : '';
+      var sn = snFromPr || (p.strategy_name != null ? String(p.strategy_name).trim() : '');
+      var isManualStrat = !sn || String(sn).toLowerCase() === 'manual';
+      var stratLabel = isManualStrat ? 'MANUAL (Default 1% Risk)' : sn;
+      var badgeClass = isManualStrat
         ? 'bg-emerald-500 text-slate-950 border-emerald-200 shadow-emerald-500/30'
         : 'bg-cyan-400 text-slate-950 border-cyan-200 shadow-cyan-500/30';
       var slRaw = p.stop_loss;
@@ -957,7 +960,7 @@
         '<div class="flex flex-wrap items-center gap-2">' +
         '<span class="text-lg font-bold text-white font-mono tracking-tight">' + escapeHtmlUnified(sym) + '</span>' +
         '<span class="text-xs font-bold uppercase px-2 py-0.5 rounded border ' + sideClass + ' border-current/40">' + escapeHtmlUnified(p.side || '') + '</span>' +
-        '<span class="text-[10px] font-bold uppercase tracking-wide rounded-full px-2.5 py-1 border shadow ' + badgeClass + '">' + escapeHtmlStr(strat) + '</span>' +
+        '<span class="text-[9px] sm:text-[10px] font-bold uppercase tracking-wide rounded-full px-2 py-1 border shadow leading-tight max-w-[min(100%,220px)] text-center ' + badgeClass + '" title="Naked manual trades use the bot default 1% stop / 2% take-profit, not Strategy Hub multipliers.">' + escapeHtmlStr(stratLabel) + '</span>' +
         '</div>' +
         '<p class="text-xs text-slate-500">Opened <span class="text-slate-400">' + escapeHtmlUnified(entryTimeIST) + '</span> (IST)</p>' +
         '<div class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">' +
@@ -965,6 +968,9 @@
         '<span class="text-slate-500">Mark</span><span class="text-amber-200 font-mono">' + escapeHtmlUnified(isFinite(midN) ? String(midN) : (p.markPrice || '–')) + '</span>' +
         '<span class="text-slate-500">SL</span><span class="text-red-300 font-mono">' + escapeHtmlUnified(slRaw || '–') + '</span>' +
         '<span class="text-slate-500">TP</span><span class="text-emerald-300 font-mono">' + escapeHtmlUnified(tpRaw || '–') + '</span>' +
+        (isManualStrat
+          ? '<span class="col-span-2 text-[10px] text-slate-500 mt-1">SL/TP = bot default (1% / 2%), not instance candle × multipliers.</span>'
+          : '') +
         '<span class="text-slate-500">Size</span><span class="text-slate-200 font-mono">' + escapeHtmlUnified(p.size || '–') + '</span>' +
         '<span class="text-slate-500">uPNL</span><span class="' + uPnlClass + ' font-semibold font-mono">' + (isFinite(uPnl) ? ((uPnl >= 0 ? '+' : '') + formatNum(p.unrealisedPnl)) : '–') + '</span>' +
         '</div>' +
@@ -1022,39 +1028,32 @@
 
       var root = window.dashboardState.strategy;
       var positions = window.dashboardState.positions || [];
+      var stratErr = !!window.dashboardState.lastStrategyError;
+      var effectiveRoot = (root != null && typeof root === 'object') ? root : {};
 
-      if (window.dashboardState.lastStrategyError) {
-        wrap.innerHTML = '<div class="text-amber-400/90 text-sm p-4 bg-slate-800/80 border border-amber-900/50 rounded-xl">Could not load <code class="text-slate-300">/api/strategy/status</code>. Check that the bot is running.</div>';
-        if (meta) meta.textContent = 'Strategy feed: error · positions: ' + (window.dashboardState.positionsFetchError ? 'error' : String(positions.length));
-        updateGlobalSlHealthVisibility(positions.length > 0);
-        window.__unifiedSymbolsOrdered = [];
-        window.__liveFocusSymbol = '';
-        return;
+      var bannerHtml = '';
+      if (stratErr) {
+        bannerHtml = '<div class="mb-4 text-amber-400/90 text-sm p-3 bg-slate-800/80 border border-amber-900/50 rounded-lg">Could not refresh <code class="text-slate-300">/api/strategy/status</code>. Scanner may be stale; position column still updates from <code class="text-slate-300">/api/positions</code>.</div>';
+      } else if (root == null || typeof root !== 'object') {
+        bannerHtml = '<div class="mb-4 text-slate-500 text-sm p-3 bg-slate-900/50 border border-slate-700 rounded-lg">Waiting for first strategy status… Open positions and SL/TP still refresh from the positions API (left column).</div>';
       }
 
-      if (root == null || typeof root !== 'object') {
-        wrap.innerHTML = '<p class="text-slate-500 text-sm p-6 text-center">Waiting for strategy status…</p>';
-        if (meta) meta.textContent = 'Strategy: — · positions: ' + String(positions.length);
-        updateGlobalSlHealthVisibility(positions.length > 0);
-        window.__unifiedSymbolsOrdered = collectUnifiedSymbols({}, positions);
-        window.__liveFocusSymbol = (window.__unifiedSymbolsOrdered[0] || '');
-        return;
-      }
-
-      var sm = _getSymbolsMapFromStrategy(root);
-      var syms = collectUnifiedSymbols(root, positions);
+      var sm = _getSymbolsMapFromStrategy(effectiveRoot);
+      var syms = collectUnifiedSymbols(effectiveRoot, positions);
       window.__unifiedSymbolsOrdered = syms;
       window.__liveFocusSymbol = syms[0] || '';
 
       if (meta) {
-        var ps = (root.primary_symbol != null) ? String(root.primary_symbol).trim() : '';
-        meta.textContent = 'Tokens: ' + (syms.length ? syms.join(', ') : '(none)') + (ps ? ' · primary: ' + ps : '') +
+        var ps = (effectiveRoot.primary_symbol != null) ? String(effectiveRoot.primary_symbol).trim() : '';
+        meta.textContent =
+          'Strategy: ' + (stratErr ? 'error' : (root == null || typeof root !== 'object' ? 'loading' : 'ok')) +
+          ' · tokens: ' + (syms.length ? syms.join(', ') : '(none)') + (ps ? ' · primary: ' + ps : '') +
           ' · open positions: ' + String(positions.length) +
           (window.dashboardState.positionsFetchError ? ' (positions API error)' : '');
       }
 
       if (syms.length === 0) {
-        wrap.innerHTML = '<p class="text-slate-500 text-sm p-6 text-center">No tokens in scope. Add Strategy Hub instances or open a position.</p>';
+        wrap.innerHTML = bannerHtml + '<p class="text-slate-500 text-sm p-6 text-center">No tokens in scope. Add Strategy Hub instances or open a position.</p>';
         updateGlobalSlHealthVisibility(false);
         return;
       }
@@ -1066,20 +1065,20 @@
       for (si = 0; si < syms.length; si++) {
         var sym = syms[si];
         var subRow = sm ? getSubRowForSymbol(sm, sym) : null;
-        if (!subRow && !sm && root.symbol && _symMatches(root.symbol, sym)) subRow = root;
+        if (!subRow && !sm && effectiveRoot.symbol && _symMatches(effectiveRoot.symbol, sym)) subRow = effectiveRoot;
         if (!subRow) subRow = { symbol: sym, checks: {}, indicators: {}, price: null, status: '' };
         var p = findPositionForSymbol(positions, sym);
-        html += '<div class="unified-token-row w-full rounded-xl bg-slate-800/90 border border-slate-700 overflow-hidden flex flex-col lg:flex-row shadow-lg shadow-black/20" data-unified-symbol="' + escapeHtmlUnified(sym) + '">';
-        html += '<div class="w-full lg:w-1/3 flex-shrink-0 p-4 border-b lg:border-b-0 lg:border-r border-slate-700 bg-slate-900/40">';
+        html += '<div class="unified-token-row w-full rounded-lg bg-slate-800 border border-slate-700 overflow-hidden grid grid-cols-1 lg:grid-cols-3 gap-0 shadow-lg shadow-black/20" data-unified-symbol="' + escapeHtmlUnified(sym) + '">';
+        html += '<div class="col-span-1 p-4 border-b lg:border-b-0 lg:border-r border-slate-700 bg-slate-900/40 min-w-0">';
         html += '<p class="text-[10px] font-semibold text-cyan-400/90 uppercase tracking-wider mb-2">Position</p>';
         html += renderPositionLeftHtml(sym, p);
         html += '</div>';
-        html += '<div class="w-full lg:w-2/3 flex-grow p-4 flex flex-col justify-center">';
+        html += '<div class="col-span-1 lg:col-span-2 p-4 flex flex-col justify-center min-w-0">';
         html += '<p class="text-[10px] font-semibold text-sky-400/90 uppercase tracking-wider mb-2">Strategy scanner</p>';
-        html += renderScannerRightHtml(sym, subRow, sm ? null : root);
+        html += renderScannerRightHtml(sym, subRow, sm ? null : effectiveRoot);
         html += '</div></div>';
       }
-      wrap.innerHTML = html;
+      wrap.innerHTML = bannerHtml + html;
 
       var rows = wrap.querySelectorAll('.unified-token-row');
       for (var ri = 0; ri < rows.length; ri++) {
@@ -1169,6 +1168,7 @@
       }
     }
 
+    /** Polls faster than strategy status; always calls syncDashboardRender() so the left column updates without waiting for /api/strategy/status. */
     async function pollPositions() {
       try {
         const res = await fetch('/api/positions');
