@@ -103,7 +103,7 @@
 <body class="min-h-screen bg-slate-950 text-slate-100 antialiased">
   <div id="health-banner" style="display: none; position: fixed; top: 0; left: 0; right: 0; width: 100%; background: #dc2626; color: white; text-align: center; padding: 10px 16px; z-index: 9999; font-weight: bold; box-shadow: 0 2px 8px rgba(0,0,0,0.3);"></div>
   <div id="app-toast" role="status" aria-live="polite" class="hidden fixed bottom-4 right-4 z-[10000] max-w-md rounded-xl border-2 px-4 py-3 text-sm font-medium shadow-lg pointer-events-none"></div>
-  <div class="max-w-6xl mx-auto px-4 py-6 pb-8 safe-bottom">
+  <div class="max-w-7xl mx-auto px-4 py-6 pb-8 safe-bottom">
     <!-- Header: nav visible at top -->
     <header class="flex items-center justify-between mb-6 flex-wrap gap-2 border-b border-slate-800 pb-4">
       <a href="/" class="text-xl font-semibold tracking-tight text-white">Momentum Reversal</a>
@@ -152,81 +152,26 @@
       </div>
     </section>
 
-    <!-- Row 2: Active trade detail + position cards (not mixed with opportunity scanners) -->
+    <!-- Unified Command Center: one full-width row per token (position | scanner) -->
     <section class="card mb-6">
-      <h2 class="text-sm font-semibold text-slate-200 mb-1">Active Positions</h2>
-      <p class="text-[11px] text-slate-500 mb-3">Open trades, live P&amp;L, SL/TP, and strategy — updated every second. Use Manual Trade only for <em>pre-entry</em> sizing; once filled, everything lives here.</p>
-      <div id="activePositionCard" class="hidden rounded-xl border-2 border-cyan-500/40 bg-slate-900/80 p-4 space-y-3 mb-4">
-        <div class="flex flex-wrap items-center gap-2">
-          <p class="text-xs font-semibold text-cyan-300 uppercase tracking-wide m-0">Focused open position</p>
-          <span id="activePositionSymbolLabel" class="text-xs font-mono text-white font-bold"></span>
-          <span id="activePositionStrategyBadge" class="hidden text-[10px] font-bold uppercase tracking-wide rounded-full px-2.5 py-1 bg-cyan-400 text-slate-950 border border-cyan-200 shadow shadow-cyan-500/30"></span>
+      <h2 class="text-sm font-semibold text-slate-200 mb-1">Unified Command Center</h2>
+      <p class="text-[11px] text-slate-500 mb-3">Each row is one token: <strong class="text-slate-300">left</strong> = position or flat · <strong class="text-slate-300">right</strong> = strategy rule checklist. Updates from <code class="text-slate-400">/api/strategy/status</code> + <code class="text-slate-400">/api/positions</code>.</p>
+      <div id="exchangeSlHealthWrap" class="hidden mb-4 rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-2">
+        <div class="flex items-center justify-between gap-2">
+          <span id="exchangeSlHealthBadge" class="inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold border-slate-600 bg-slate-700 text-slate-200">Exchange SL: N/A</span>
+          <span id="exchangeSlHealthMeta" class="text-[11px] text-slate-400">Last synced: --</span>
         </div>
-        <div id="exchangeSlHealthWrap" class="hidden rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-2">
-          <div class="flex items-center justify-between gap-2">
-            <span id="exchangeSlHealthBadge" class="inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold border-slate-600 bg-slate-700 text-slate-200">Exchange SL: N/A</span>
-            <span id="exchangeSlHealthMeta" class="text-[11px] text-slate-400">Last synced: --</span>
-          </div>
-          <p id="exchangeSlHealthError" class="mt-1 text-[11px] text-red-300 hidden"></p>
-        </div>
-        <div class="flex flex-wrap gap-x-5 gap-y-1 text-sm text-slate-300">
-          <span>SL <strong id="riskSlPriceDisplay" class="text-red-300">–</strong></span>
-          <span>TP <strong id="riskTpPriceDisplay" class="text-emerald-300">–</strong></span>
-          <span>Entry <span id="riskEntryDisplay" class="text-slate-200">–</span></span>
-          <span>Mark / Mid <span id="riskLiveDisplay" class="text-amber-200">–</span></span>
-        </div>
-        <div class="flex justify-between text-xs font-mono px-0.5">
-          <span id="riskSlAmtLabel" class="text-slate-300 font-semibold">–</span>
-          <span id="riskTpAmtLabel" class="text-emerald-400 font-semibold">–</span>
-        </div>
-        <div class="risk-bar-track" aria-hidden="true">
-          <div id="riskZoneSl" class="risk-bar-zone-sl" style="width:0%"></div>
-          <div id="riskZoneTp" class="risk-bar-zone-tp" style="left:0%;width:0%"></div>
-          <div id="riskFillGreen" class="risk-bar-fill risk-bar-fill-green" style="left:0%;width:0%;display:none"></div>
-          <div id="riskFillRed" class="risk-bar-fill risk-bar-fill-red" style="left:0%;width:0%;display:none"></div>
-          <div id="riskEntryLine" class="risk-bar-entry" style="left:50%"></div>
-          <div id="riskDot" class="risk-bar-dot" style="left:50%"></div>
-        </div>
-        <p class="text-[10px] text-slate-500">Bar: SL ↔ TP range · line = entry · dot = mark/mid · green/red = P&amp;L direction vs entry</p>
+        <p id="exchangeSlHealthError" class="mt-1 text-[11px] text-red-300 hidden"></p>
       </div>
-      <div id="positions-grid" class="grid gap-4" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
-        <p class="text-slate-500 text-sm col-span-full">Loading…</p>
-      </div>
+      <p id="commandCenterMeta" class="text-[11px] text-slate-500 mb-3 font-mono">Loading…</p>
+      <div id="unifiedTokenRows" class="flex flex-col gap-6"></div>
     </section>
 
-    <!-- Row 3: 60% Live Monitor | 40% Manual Trade -->
+    <!-- Manual Trade -->
     <div class="grid grid-cols-1 lg:grid-cols-5 gap-6 mb-6">
-      <section class="card lg:col-span-3">
-        <h2 class="text-sm font-semibold text-slate-200 mb-1">Live Monitor</h2>
-        <p id="liveMonitorFocusLabel" class="text-[11px] text-slate-500 mb-3">Waiting for bot…</p>
-        <p class="text-[11px] text-slate-400 mb-3 border-l-2 border-sky-500/60 pl-2">Opportunity context only (symbol + price + indicators). Open-trade risk and P&amp;L are in <strong class="text-slate-200">Active Positions</strong> above.</p>
-        <div class="space-y-4">
-          <div class="grid grid-cols-2 gap-2 text-sm">
-            <div>
-              <p class="text-xs text-slate-500">Scanner symbol</p>
-              <p id="liveToken" class="font-medium text-white">–</p>
-            </div>
-            <div>
-              <p class="text-xs text-slate-500">Current Price</p>
-              <p id="livePrice" class="font-medium text-white">–</p>
-            </div>
-          </div>
-          <div>
-            <p class="text-xs font-medium text-slate-400 mb-2">Live Indicators</p>
-            <div id="liveIndicators" class="rounded-xl bg-slate-800/80 border border-slate-700 p-3 text-xs space-y-1 text-slate-300">
-              <p class="text-slate-500">No data. Start the bot (main.py) to see live values.</p>
-            </div>
-          </div>
-          <div>
-            <p class="text-xs font-semibold text-sky-300 mb-1">Strategy Scanners (Looking for Entry)</p>
-            <p class="text-[11px] text-slate-500 mb-2">Progress bars = rule checklist toward a <em>potential</em> entry, not your open P&amp;L. One card per enabled Strategy Hub instance; updates on each closed candle.</p>
-            <div id="instance-checks-container" class="mt-4 space-y-3"></div>
-          </div>
-          <div>
-            <p class="text-xs text-slate-500">Status</p>
-            <p id="liveStatus" class="text-sm font-medium text-amber-400">Waiting</p>
-          </div>
-        </div>
+      <section class="card lg:col-span-3 hidden lg:block border-dashed border-slate-700">
+        <h2 class="text-sm font-semibold text-slate-200 mb-2">Quick reference</h2>
+        <p class="text-xs text-slate-500">Default manual symbol = <strong class="text-slate-300">first row</strong> in the command center (or type a symbol). Indicators per token appear in each row’s scanner panel when the bot publishes them.</p>
       </section>
       <section class="card lg:col-span-2">
         <h2 class="text-sm font-semibold text-slate-200 mb-3">Manual Trade</h2>
@@ -235,7 +180,7 @@
             <label for="manualSymbol" class="block text-xs font-medium text-slate-400 mb-1">Symbol</label>
             <input type="text" id="manualSymbol" name="symbol" value="BTCUSDT"
               class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition font-mono text-sm" placeholder="ETHUSDT" autocomplete="off" />
-            <p class="text-[11px] text-slate-500 mt-1">Leave blank to use the <strong class="text-slate-300">scanner symbol</strong> from Live Monitor (same as <code class="text-slate-400">#liveToken</code>).</p>
+            <p class="text-[11px] text-slate-500 mt-1">Leave blank to use the <strong class="text-slate-300">first token row</strong> in the Command Center (or type e.g. ETHUSDT).</p>
           </div>
           <div class="grid grid-cols-2 gap-3">
             <div>
@@ -438,7 +383,6 @@
     const manualMonitorInstance = document.getElementById('manualMonitorInstance');
     const availableBalanceEl = document.getElementById('availableBalance');
     const overallProfitEl = document.getElementById('overallProfit');
-    const positionsGrid = document.getElementById('positions-grid');
     const manualSymbol = document.getElementById('manualSymbol');
     const manualAmount = document.getElementById('manualAmount');
     const manualLeverage = document.getElementById('manualLeverage');
@@ -765,12 +709,31 @@
         .then(applyBotStatus)
         .catch(function () {});
       loadStrategyHub();
+      var utr = document.getElementById('unifiedTokenRows');
+      if (utr) {
+        utr.addEventListener('click', function (e) {
+          var t = e.target;
+          if (t && t.classList && t.classList.contains('closePos')) closePosition(e);
+        });
+      }
       pollLiveStrategy();
       setInterval(pollLiveStrategy, 1000);
     });
 
     /** Monotonic guard: detect stuck / empty strategy payloads from cache or bot-down states */
     window.__lastStrategyChecksTs = window.__lastStrategyChecksTs || 0;
+
+    window.dashboardState = { strategy: null, positions: [], lastStrategyError: false, positionsFetchError: false };
+
+    var __dashRenderScheduled = false;
+    function syncDashboardRender() {
+      if (__dashRenderScheduled) return;
+      __dashRenderScheduled = true;
+      requestAnimationFrame(function () {
+        __dashRenderScheduled = false;
+        renderUnifiedDashboard();
+      });
+    }
 
     function _symbolBase(sym) {
       var s = String(sym || '').trim().toUpperCase();
@@ -781,286 +744,49 @@
       return s;
     }
 
-    /** Pick which symbol row drives the Live Monitor (scanners / opportunity context only — not open P&amp;L). */
-    function _pickLiveFocusRow(symbolsMap, primarySym) {
-      if (!symbolsMap || typeof symbolsMap !== 'object' || Array.isArray(symbolsMap)) {
-        return { row: null, focusKey: '', reason: '' };
-      }
-      var keys = Object.keys(symbolsMap);
-      if (!keys.length) return { row: null, focusKey: '', reason: '' };
-      var p = String(primarySym || '').trim().toUpperCase();
-      if (p && symbolsMap[p]) {
-        return { row: symbolsMap[p], focusKey: p, reason: 'primary' };
-      }
-      var pb = _symbolBase(p);
-      if (pb) {
-        for (var i = 0; i < keys.length; i++) {
-          var k2 = keys[i];
-          if (_symbolBase(k2) === pb) {
-            return { row: symbolsMap[k2], focusKey: k2, reason: 'primary ≈ ' + k2 };
-          }
-        }
-      }
-      keys = keys.slice().sort();
-      var kFirst = keys[0];
-      return { row: symbolsMap[kFirst], focusKey: kFirst, reason: 'first symbol' };
+    function _canonicalSym(s) {
+      return String(s || '').trim().toUpperCase();
     }
 
-    function updateLiveStrategyPanel(data) {
-      if (data == null || typeof data !== 'object') {
-        var stBad = document.getElementById('liveStatus');
-        if (stBad) { stBad.textContent = 'No data'; stBad.classList.add('text-slate-400'); }
-        var indBad = document.getElementById('liveIndicators');
-        if (indBad) indBad.innerHTML = '<p class="text-slate-500">Invalid strategy payload — waiting for bot.</p>';
-        var cc = document.getElementById('instance-checks-container');
-        if (cc) cc.innerHTML = '<div class="text-amber-400/90 text-sm p-4 bg-slate-800/80 border border-amber-900/50 rounded-xl">Live Monitor reset: no valid JSON from /api/strategy/status.</div>';
-        return;
-      }
-
-      /** Multi-symbol API: { symbols: { BTCUSDT: {...} }, primary_symbol }; legacy: flat object */
-      var statusRoot = data;
-      var symbolsMap = (data.symbols != null && typeof data.symbols === 'object' && !Array.isArray(data.symbols)) ? data.symbols : null;
-      var primarySym = (data.primary_symbol != null && String(data.primary_symbol).trim()) ? String(data.primary_symbol).trim() : '';
-      var focusKey = '';
-      var focusReason = '';
-      if (symbolsMap) {
-        var mapKeys = Object.keys(symbolsMap);
-        if (!primarySym && mapKeys.length) {
-          var sortedPk = mapKeys.slice().sort();
-          primarySym = sortedPk[0];
-        }
-        var picked = _pickLiveFocusRow(symbolsMap, primarySym);
-        data = picked.row || {};
-        focusKey = picked.focusKey;
-        focusReason = picked.reason;
-        if (data && !data.symbol && focusKey) data = Object.assign({ symbol: focusKey }, data);
-      }
-      var focusLbl = document.getElementById('liveMonitorFocusLabel');
-      if (focusLbl) {
-        if (symbolsMap && focusKey) {
-          focusLbl.textContent = 'Scanners · symbol row: ' + focusKey + (focusReason ? ' · ' + focusReason : '');
-        } else if (data.symbol && String(data.symbol).trim()) {
-          focusLbl.textContent = 'Symbol · ' + String(data.symbol).trim();
-        } else {
-          focusLbl.textContent = 'Waiting for bot…';
-        }
-      }
-      window.__liveFocusSymbol = (focusKey && String(focusKey).trim())
-        ? String(focusKey).trim().toUpperCase()
-        : ((data.symbol && String(data.symbol).trim()) ? String(data.symbol).trim().toUpperCase() : '');
-
-      function escapeHtml(s) {
-        if (s == null) return '';
-        return String(s)
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/"/g, '&quot;');
-      }
-
-      // Legacy flat indicator fields (if present in payload / future API)
-      var elRsi = document.getElementById('liveRsi');
-      if (elRsi && data.rsi !== undefined && data.rsi !== null) {
-        var n = Number(data.rsi);
-        elRsi.textContent = isNaN(n) ? String(data.rsi) : n.toFixed(2);
-      }
-      var elOpen = document.getElementById('liveOpen');
-      if (elOpen && data.open !== undefined && data.open !== null) {
-        var no = Number(data.open);
-        elOpen.textContent = isNaN(no) ? String(data.open) : no.toFixed(2);
-      }
-      var elClose = document.getElementById('liveClose');
-      if (elClose && data.close !== undefined && data.close !== null) {
-        var nc = Number(data.close);
-        elClose.textContent = isNaN(nc) ? String(data.close) : nc.toFixed(2);
-      }
-      var elBody = document.getElementById('liveBodySize');
-      if (elBody && data.body_size !== undefined && data.body_size !== null) {
-        var nb = Number(data.body_size);
-        elBody.textContent = isNaN(nb) ? String(data.body_size) : nb.toFixed(2);
-      }
-      var elVol = document.getElementById('liveVolume');
-      if (elVol && data.volume !== undefined && data.volume !== null) {
-        var nv = Number(data.volume);
-        elVol.textContent = isNaN(nv) ? String(data.volume) : nv.toFixed(2);
-      }
-      var elVolInc = document.getElementById('liveVolumeDec');
-      if (elVolInc && data.volume_increasing !== undefined) {
-        elVolInc.textContent = data.volume_increasing ? 'Yes' : 'No';
-      }
-
-      var liveToken = document.getElementById('liveToken');
-      if (liveToken) liveToken.textContent = data.symbol || '–';
-      var livePrice = document.getElementById('livePrice');
-      if (livePrice) {
-        livePrice.textContent = (data.price != null && data.price !== '') ? formatNum(data.price) : '–';
-      }
-      var statusEl = document.getElementById('liveStatus');
-      if (statusEl) {
-        statusEl.textContent = data.status || 'Waiting';
-        statusEl.classList.remove('text-amber-400', 'text-emerald-400', 'text-red-400', 'text-slate-400');
-        if (data.status === 'Long Signal') statusEl.classList.add('text-emerald-400');
-        else if (data.status === 'Short Signal') statusEl.classList.add('text-red-400');
-        else if (data.status === 'Position Open') statusEl.classList.add('text-amber-400');
-        else statusEl.classList.add('text-slate-400');
-      }
-
-      var liveInd = document.getElementById('liveIndicators');
-      if (liveInd) {
-        var ind = data.indicators || {};
-        if (Object.keys(ind).length === 0 && !(data.symbol && String(data.symbol).trim())) {
-          liveInd.innerHTML = '<p class="text-slate-500">No data. Start the bot to see live values.</p>';
-        } else {
-          var lines = [];
-          if (ind.RSI != null) lines.push('RSI (1m legacy row): ' + formatNum(ind.RSI));
-          if (ind.open != null) lines.push('Open: ' + formatNum(ind.open));
-          if (ind.close != null) lines.push('Close: ' + formatNum(ind.close));
-          if (ind.body_size != null) lines.push('Body size: ' + formatNum(ind.body_size));
-          if (ind.volume != null) lines.push('Volume: ' + formatNum(ind.volume));
-          lines.push('Volume (signal > prev): ' + (ind.volume_signal_vs_prev ? 'Yes' : 'No'));
-          if (data.indicators_note) {
-            lines.push('<span class="text-amber-400/90 text-[11px]">' + escapeHtml(String(data.indicators_note)) + '</span>');
-          }
-          liveInd.innerHTML = lines.map(function (l) { return '<p class="leading-tight">' + l + '</p>'; }).join('');
-        }
-      }
-
-      // Instance checklists: multi-symbol → iterate symbols; legacy → single data.checks
-      var container = document.getElementById('instance-checks-container');
-      if (container) {
-        container.innerHTML = '';
-
-        function buildRules(rules) {
-          if (!rules || !rules.length) {
-            return '<p class="text-xs text-slate-500">No rules defined</p>';
-          }
-          return rules.map(function (r) {
-            var met = !!(r && r.met);
-            var label = (r && (r.text != null ? r.text : r.name)) ? String(r.text != null ? r.text : r.name) : '';
-            var textCls = met ? 'text-slate-100' : 'text-slate-400';
-            return '<div class="flex items-start mb-1.5 gap-2">' +
-              '<span class="mt-1.5 w-2.5 h-2.5 shrink-0 rounded-full ' + (met ? 'bg-emerald-500' : 'bg-red-500') + '" aria-hidden="true"></span>' +
-              '<span class="text-xs ' + textCls + '">' + escapeHtml(label) + '</span></div>';
-          }).join('');
-        }
-
-        function renderInstanceCards(checksDict, symLabel) {
-          var instanceList = Object.values(checksDict);
-          instanceList.forEach(function (instance) {
-            if (!instance || typeof instance !== 'object') return;
-            var name = instance.name || 'Unnamed instance';
-            var interval = instance.interval || '';
-            var stype = instance.strategy_type || '';
-            var noteBlock = instance.note
-              ? '<p class="text-xs text-amber-400/90 mb-3">' + escapeHtml(String(instance.note)) + '</p>'
-              : '';
-            var ms = instance.monitor_sync;
-            var syncBlock = '';
-            if (ms && typeof ms === 'object') {
-              var sr = ms.sig_rsi != null ? formatNum(ms.sig_rsi) : '—';
-              var atOn = ms.autotrade_enabled === true;
-              var pending = ms.order_pending_for_this_conf_bar === true;
-              var gateLine = '';
-              if (!atOn) {
-                gateLine = ' <span class="text-amber-400">Auto Trade OFF</span> — enable bot autotrade to execute.';
-              } else if (pending) {
-                gateLine = ' <span class="text-sky-300">Order already sent for this conf. candle</span> — next chance: next bar close.';
-              }
-              syncBlock = '<p class="text-[11px] text-slate-400 mb-2 font-mono">Engine sync: sig_rsi=' + escapeHtml(sr) +
-                ' · conf_start=' + escapeHtml(ms.conf_bar_start != null ? String(ms.conf_bar_start) : '—') +
-                ' · buf_rows=' + escapeHtml(ms.rows_in_buffer != null ? String(ms.rows_in_buffer) : '—') +
-                ' · autotrade=' + (atOn ? 'ON' : 'OFF') +
-                '</p>' +
-                (gateLine ? '<p class="text-[11px] mb-2">' + gateLine + '</p>' : '');
-            }
-            var cardHtml = '<div class="rounded-xl bg-slate-800/80 border border-slate-700 p-4 mb-3">' +
-              '<div class="flex flex-wrap justify-between items-center gap-2 mb-3">' +
-              '<h5 class="text-sm font-semibold text-sky-400">' + escapeHtml(name) +
-              (interval ? ' <span class="text-xs bg-slate-700 text-slate-300 px-2 py-0.5 rounded ml-1 font-mono">' + escapeHtml(interval) + '</span>' : '') +
-              '</h5>' +
-              '<span class="text-[11px] text-slate-500 uppercase tracking-wide">' + escapeHtml(stype) + '</span></div>' +
-              noteBlock + syncBlock +
-              '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">' +
-              '<div class="bg-slate-900/80 p-3 rounded-lg border border-slate-800">' +
-              '<h6 class="text-emerald-400 text-xs font-bold mb-2 uppercase tracking-wider">Long conditions</h6>' +
-              buildRules(instance.rules_long) +
-              '</div>' +
-              '<div class="bg-slate-900/80 p-3 rounded-lg border border-slate-800">' +
-              '<h6 class="text-red-400 text-xs font-bold mb-2 uppercase tracking-wider">Short conditions</h6>' +
-              buildRules(instance.rules_short) +
-              '</div></div></div>';
-            container.insertAdjacentHTML('beforeend', cardHtml);
-          });
-        }
-
-        var anyCards = false;
-        if (statusRoot && statusRoot.symbols && typeof statusRoot.symbols === 'object') {
-          var symKeys = Object.keys(statusRoot.symbols).sort();
-          for (var si = 0; si < symKeys.length; si++) {
-            var skey = symKeys[si];
-            var sub = statusRoot.symbols[skey];
-            if (!sub || typeof sub !== 'object') continue;
-            var rc = sub.checks;
-            var checksDict = {};
-            if (rc != null && typeof rc === 'object' && !Array.isArray(rc)) checksDict = rc;
-            var ts = Number(sub.checks_updated_unix);
-            if (isFinite(ts) && ts > 0) window.__lastStrategyChecksTs = Math.max(window.__lastStrategyChecksTs, ts);
-            if (Object.keys(checksDict).length === 0) continue;
-            anyCards = true;
-            container.insertAdjacentHTML('beforeend',
-              '<div class="text-xs font-mono text-slate-400 mb-2 mt-4 first:mt-0 border-b border-slate-700 pb-1">' +
-              escapeHtml(String(skey)) + '</div>');
-            renderInstanceCards(checksDict, skey);
-          }
-        }
-        if (!anyCards) {
-          var rawChecks = data.checks;
-          var checksDict = {};
-          if (rawChecks != null && typeof rawChecks === 'object' && !Array.isArray(rawChecks)) {
-            checksDict = rawChecks;
-          }
-          var instanceList = Object.values(checksDict);
-          var ts = Number(data.checks_updated_unix);
-          if (isFinite(ts) && ts > 0) window.__lastStrategyChecksTs = Math.max(window.__lastStrategyChecksTs, ts);
-          if (instanceList.length === 0) {
-            var staleHint = (!data.symbol || !String(data.symbol).trim())
-              ? ' (Bot may be off — last file merge also empty.)'
-              : '';
-            container.innerHTML = '<div class="text-slate-400 text-sm p-4 bg-slate-800/80 border border-slate-700 rounded-xl">No active strategy instances for this symbol. Enable one in the Strategy Hub.' + staleHint + '</div>';
-          } else {
-            renderInstanceCards(checksDict, data.symbol || '');
-          }
-        }
-      }
+    function _symMatches(a, b) {
+      return _symbolCore(a) === _symbolCore(b) || _canonicalSym(a) === _canonicalSym(b);
     }
 
-    function pollLiveStrategy() {
-      fetch('/api/strategy/status?ts=' + Date.now(), { cache: 'no-store' })
-        .then(function (res) { return res.json(); })
-        .then(updateLiveStrategyPanel)
-        .catch(function () {
-          document.getElementById('liveStatus').textContent = 'No data';
-          document.getElementById('liveIndicators').innerHTML = '<p class="text-slate-500">Could not load strategy status.</p>';
-        });
+    function _getSymbolsMapFromStrategy(root) {
+      if (!root || typeof root !== 'object') return null;
+      var sm = root.symbols;
+      if (sm != null && typeof sm === 'object' && !Array.isArray(sm)) return sm;
+      return null;
     }
 
-    function formatNum(v) {
-      if (v === null || v === undefined || v === '') return '--';
-      const n = Number(v);
-      return isNaN(n) ? String(v) : (Math.round(n * 100) / 100).toFixed(2);
+    function getSubRowForSymbol(sm, sym) {
+      if (!sm) return null;
+      var c = _canonicalSym(sym);
+      if (sm[c]) return sm[c];
+      var sc = _symbolCore(sym);
+      var keys = Object.keys(sm);
+      for (var i = 0; i < keys.length; i++) {
+        if (_symbolCore(keys[i]) === sc) return sm[keys[i]];
+      }
+      return null;
     }
 
-    /** SL/TP $ labels: 2 dp if ≥ $1, 4 dp if ≥ $0.01, else up to 6 dp so micro amounts stay visible */
-    function formatUsdRiskAmount(absVal) {
-      var x = Number(absVal);
-      if (!isFinite(x) || x < 0) return '0.00';
-      if (x === 0) return '0.00';
-      if (x >= 1) return x.toFixed(2);
-      if (x >= 0.01) return x.toFixed(4);
-      return x.toFixed(6);
+    function collectUnifiedSymbols(root, positions) {
+      var set = {};
+      var sm = _getSymbolsMapFromStrategy(root);
+      if (sm) {
+        Object.keys(sm).forEach(function (k) { if (k) set[_canonicalSym(k)] = true; });
+      } else if (root && root.symbol) {
+        set[_canonicalSym(root.symbol)] = true;
+      }
+      (positions || []).forEach(function (p) {
+        if (p && p.symbol) set[_canonicalSym(p.symbol)] = true;
+      });
+      if (root && root.primary_symbol) set[_canonicalSym(root.primary_symbol)] = true;
+      return Object.keys(set).filter(Boolean).sort();
     }
 
-    function escapeHtmlStr(s) {
+    function escapeHtmlUnified(s) {
       if (s == null) return '';
       return String(s)
         .replace(/&/g, '&amp;')
@@ -1069,43 +795,99 @@
         .replace(/"/g, '&quot;');
     }
 
-    /** Manual Trade JSON body: explicit field wins; empty field follows Live Monitor scanner symbol. */
-    function manualTradeSymbolOrFocus() {
-      var raw = manualSymbol && manualSymbol.value ? String(manualSymbol.value).trim() : '';
-      if (raw.length >= 2) return raw.toUpperCase();
-      var lt = document.getElementById('liveToken');
-      var t = lt && lt.textContent ? String(lt.textContent).trim().toUpperCase() : '';
-      if (t && t !== '–' && t !== '-' && t.length >= 2) return t;
-      return 'BTCUSDT';
-    }
-
-    function _symbolCore(s) {
-      return String(s || '').toUpperCase().replace(/USDT$/i, '').replace(/USD$/i, '');
-    }
-
-    function _pickPositionForDetailCard(posList) {
-      if (!posList || !posList.length) return null;
-      var focus = window.__liveFocusSymbol || '';
-      var i, p;
-      if (focus) {
-        var fc = _symbolCore(focus);
-        for (i = 0; i < posList.length; i++) {
-          p = posList[i];
-          if (_symbolCore(p.symbol) === fc || String(p.symbol || '').toUpperCase() === String(focus).toUpperCase()) return p;
-        }
+    function buildRulesHtmlUnified(rules) {
+      if (!rules || !rules.length) {
+        return '<p class="text-xs text-slate-500">No rules defined</p>';
       }
-      return posList[0];
+      return rules.map(function (r) {
+        var met = !!(r && r.met);
+        var label = (r && (r.text != null ? r.text : r.name)) ? String(r.text != null ? r.text : r.name) : '';
+        var textCls = met ? 'text-slate-100' : 'text-slate-400';
+        return '<div class="flex items-start mb-1.5 gap-2">' +
+          '<span class="mt-1.5 w-2.5 h-2.5 shrink-0 rounded-full ' + (met ? 'bg-emerald-500' : 'bg-red-500') + '" aria-hidden="true"></span>' +
+          '<span class="text-xs ' + textCls + '">' + escapeHtmlUnified(label) + '</span></div>';
+      }).join('');
     }
 
-    function _applyRiskBarFromPrices(sl, tp, entry, mid, side) {
-      var slN = Number(sl), tpN = Number(tp), eN = Number(entry), mN = Number(mid);
-      var zSl = document.getElementById('riskZoneSl');
-      var zTp = document.getElementById('riskZoneTp');
-      var eline = document.getElementById('riskEntryLine');
-      var dot = document.getElementById('riskDot');
-      var fg = document.getElementById('riskFillGreen');
-      var fr = document.getElementById('riskFillRed');
+    function renderInstanceCardsHtmlUnified(checksDict) {
+      var instanceList = Object.values(checksDict || {});
+      var parts = [];
+      instanceList.forEach(function (instance) {
+        if (!instance || typeof instance !== 'object') return;
+        var name = instance.name || 'Unnamed instance';
+        var interval = instance.interval || '';
+        var stype = instance.strategy_type || '';
+        var noteBlock = instance.note
+          ? '<p class="text-xs text-amber-400/90 mb-3">' + escapeHtmlUnified(String(instance.note)) + '</p>'
+          : '';
+        var ms = instance.monitor_sync;
+        var syncBlock = '';
+        if (ms && typeof ms === 'object') {
+          var sr = ms.sig_rsi != null ? formatNum(ms.sig_rsi) : '—';
+          var atOn = ms.autotrade_enabled === true;
+          var pending = ms.order_pending_for_this_conf_bar === true;
+          var gateLine = '';
+          if (!atOn) {
+            gateLine = ' <span class="text-amber-400">Auto Trade OFF</span> — enable bot autotrade to execute.';
+          } else if (pending) {
+            gateLine = ' <span class="text-sky-300">Order already sent for this conf. candle</span> — next chance: next bar close.';
+          }
+          syncBlock = '<p class="text-[11px] text-slate-400 mb-2 font-mono">Engine sync: sig_rsi=' + escapeHtmlUnified(sr) +
+            ' · conf_start=' + escapeHtmlUnified(ms.conf_bar_start != null ? String(ms.conf_bar_start) : '—') +
+            ' · buf_rows=' + escapeHtmlUnified(ms.rows_in_buffer != null ? String(ms.rows_in_buffer) : '—') +
+            ' · autotrade=' + (atOn ? 'ON' : 'OFF') +
+            '</p>' +
+            (gateLine ? '<p class="text-[11px] mb-2">' + gateLine + '</p>' : '');
+        }
+        parts.push(
+          '<div class="rounded-xl bg-slate-800/80 border border-slate-700 p-4 mb-3 last:mb-0">' +
+          '<div class="flex flex-wrap justify-between items-center gap-2 mb-3">' +
+          '<h5 class="text-sm font-semibold text-sky-400">' + escapeHtmlUnified(name) +
+          (interval ? ' <span class="text-xs bg-slate-700 text-slate-300 px-2 py-0.5 rounded ml-1 font-mono">' + escapeHtmlUnified(interval) + '</span>' : '') +
+          '</h5>' +
+          '<span class="text-[11px] text-slate-500 uppercase tracking-wide">' + escapeHtmlUnified(stype) + '</span></div>' +
+          noteBlock + syncBlock +
+          '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">' +
+          '<div class="bg-slate-900/80 p-3 rounded-lg border border-slate-800">' +
+          '<h6 class="text-emerald-400 text-xs font-bold mb-2 uppercase tracking-wider">Long conditions</h6>' +
+          buildRulesHtmlUnified(instance.rules_long) +
+          '</div>' +
+          '<div class="bg-slate-900/80 p-3 rounded-lg border border-slate-800">' +
+          '<h6 class="text-red-400 text-xs font-bold mb-2 uppercase tracking-wider">Short conditions</h6>' +
+          buildRulesHtmlUnified(instance.rules_short) +
+          '</div></div></div>'
+        );
+      });
+      return parts.join('');
+    }
+
+    function renderIndicatorsSnippetUnified(subRow) {
+      var ind = subRow && subRow.indicators;
+      if (!ind || typeof ind !== 'object') return '';
+      var lines = [];
+      if (ind.RSI != null) lines.push('RSI ' + formatNum(ind.RSI));
+      if (ind.open != null) lines.push('O ' + formatNum(ind.open));
+      if (ind.close != null) lines.push('C ' + formatNum(ind.close));
+      if (ind.body_size != null) lines.push('Body ' + formatNum(ind.body_size));
+      if (ind.volume != null) lines.push('Vol ' + formatNum(ind.volume));
+      lines.push('Vol&gt;prev: ' + (ind.volume_signal_vs_prev ? 'Yes' : 'No'));
+      if (subRow.indicators_note) {
+        lines.push('<span class="text-amber-400/90">' + escapeHtmlUnified(String(subRow.indicators_note)) + '</span>');
+      }
+      if (!lines.length) return '';
+      return '<div class="rounded-lg bg-slate-900/60 border border-slate-700 p-2 mb-3 text-[11px] text-slate-300 leading-relaxed">' + lines.join(' · ') + '</div>';
+    }
+
+    function applyRiskBarInContainer(container, sl, tp, entry, mid, side) {
+      if (!container) return;
+      var zSl = container.querySelector('[data-rb="zone-sl"]');
+      var zTp = container.querySelector('[data-rb="zone-tp"]');
+      var eline = container.querySelector('[data-rb="entry-line"]');
+      var dot = container.querySelector('[data-rb="dot"]');
+      var fg = container.querySelector('[data-rb="fill-green"]');
+      var fr = container.querySelector('[data-rb="fill-red"]');
       if (!zSl || !zTp || !eline || !dot || !fg || !fr) return;
+      var slN = Number(sl), tpN = Number(tp), eN = Number(entry), mN = Number(mid);
       if (!isFinite(slN) || !isFinite(tpN) || !isFinite(eN) || !isFinite(mN) || slN <= 0 || tpN <= 0 || eN <= 0 || mN <= 0) {
         zSl.style.width = '0%';
         zTp.style.width = '0%';
@@ -1142,51 +924,231 @@
       }
     }
 
-    function updateActivePositionDetailCard(posList) {
-      var card = document.getElementById('activePositionCard');
-      var symEl = document.getElementById('activePositionSymbolLabel');
-      var badge = document.getElementById('activePositionStrategyBadge');
-      if (!card) return;
-      if (!posList || !posList.length) {
-        card.classList.add('hidden');
-        if (badge) { badge.textContent = ''; badge.classList.add('hidden'); }
-        if (symEl) symEl.textContent = '';
-        return;
+    function findPositionForSymbol(positions, sym) {
+      var i;
+      for (i = 0; i < (positions || []).length; i++) {
+        if (_symMatches(positions[i].symbol, sym)) return positions[i];
       }
-      var p = _pickPositionForDetailCard(posList);
-      if (!p) return;
-      card.classList.remove('hidden');
-      if (symEl) symEl.textContent = String(p.symbol || '');
+      return null;
+    }
+
+    function renderPositionLeftHtml(sym, p) {
+      if (!p) {
+        return '<div class="flex flex-col items-center justify-center min-h-[140px] text-center px-2">' +
+          '<p class="text-slate-300 text-sm font-semibold">Flat · Looking for opportunities</p>' +
+          '<p class="text-[11px] text-slate-500 mt-2 max-w-[220px]">No open position on <span class="font-mono text-slate-400">' + escapeHtmlUnified(sym) + '</span>. Use Manual Trade to enter; scanner on the right shows pre-entry rules.</p>' +
+          '</div>';
+      }
+      var uPnl = Number(p.unrealisedPnl);
+      var uPnlClass = uPnl >= 0 ? 'text-emerald-400' : 'text-red-400';
+      var sideClass = (p.side || '').toUpperCase() === 'BUY' ? 'text-emerald-400' : 'text-red-400';
+      var ct = p.createdTime;
+      var entryTimeIST = (ct && ct !== '0') ? new Date(parseInt(ct, 10)).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '–';
+      var strat = (p.strategy_name != null && String(p.strategy_name).trim()) ? String(p.strategy_name).trim() : 'Manual';
+      var badgeClass = String(strat).toLowerCase() === 'manual'
+        ? 'bg-emerald-500 text-slate-950 border-emerald-200 shadow-emerald-500/30'
+        : 'bg-cyan-400 text-slate-950 border-cyan-200 shadow-cyan-500/30';
       var slRaw = p.stop_loss;
       var tpRaw = p.take_profit;
-      var slN = Number(slRaw);
-      var tpN = Number(tpRaw);
       var entryN = Number(p.entryPrice);
       var midN = Number(p.markPrice);
       if (!isFinite(midN) || midN <= 0) midN = entryN;
-      var rSl = document.getElementById('riskSlPriceDisplay');
-      var rTp = document.getElementById('riskTpPriceDisplay');
-      var rEn = document.getElementById('riskEntryDisplay');
-      var rLv = document.getElementById('riskLiveDisplay');
-      var rSlA = document.getElementById('riskSlAmtLabel');
-      var rTpA = document.getElementById('riskTpAmtLabel');
-      if (rSl) rSl.textContent = formatNum(slRaw);
-      if (rTp) rTp.textContent = formatNum(tpRaw);
-      if (rEn) rEn.textContent = formatNum(p.entryPrice);
-      if (rLv) rLv.textContent = formatNum(isFinite(midN) ? midN : p.markPrice);
-      var uPn = Number(p.unrealisedPnl);
-      if (rSlA) rSlA.textContent = isFinite(uPn) ? ('uPNL ' + (uPn >= 0 ? '+' : '') + formatNum(p.unrealisedPnl) + ' USD') : '–';
-      if (rTpA) rTpA.textContent = (p.markPrice != null && String(p.markPrice).trim() !== '') ? ('Mark ' + formatNum(p.markPrice)) : '–';
-      _applyRiskBarFromPrices(slN, tpN, entryN, midN, p.side);
-      var nm = (p.strategy_name != null && String(p.strategy_name).trim()) ? String(p.strategy_name).trim() : 'Manual';
-      if (badge) {
-        badge.textContent = nm;
-        badge.classList.remove('hidden');
-        badge.className = 'text-[10px] font-bold uppercase tracking-wide rounded-full px-2.5 py-1 border shadow ' +
-          (String(nm).toLowerCase() === 'manual'
-            ? 'bg-emerald-500 text-slate-950 border-emerald-200 shadow-emerald-500/30'
-            : 'bg-cyan-400 text-slate-950 border-cyan-200 shadow-cyan-500/30');
+      return '<div class="space-y-3" data-has-position="1">' +
+        '<div class="flex flex-wrap items-center gap-2">' +
+        '<span class="text-lg font-bold text-white font-mono tracking-tight">' + escapeHtmlUnified(sym) + '</span>' +
+        '<span class="text-xs font-bold uppercase px-2 py-0.5 rounded border ' + sideClass + ' border-current/40">' + escapeHtmlUnified(p.side || '') + '</span>' +
+        '<span class="text-[10px] font-bold uppercase tracking-wide rounded-full px-2.5 py-1 border shadow ' + badgeClass + '">' + escapeHtmlStr(strat) + '</span>' +
+        '</div>' +
+        '<p class="text-xs text-slate-500">Opened <span class="text-slate-400">' + escapeHtmlUnified(entryTimeIST) + '</span> (IST)</p>' +
+        '<div class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">' +
+        '<span class="text-slate-500">Entry</span><span class="text-slate-200 font-mono">' + escapeHtmlUnified(p.entryPrice || '–') + '</span>' +
+        '<span class="text-slate-500">Mark</span><span class="text-amber-200 font-mono">' + escapeHtmlUnified(isFinite(midN) ? String(midN) : (p.markPrice || '–')) + '</span>' +
+        '<span class="text-slate-500">SL</span><span class="text-red-300 font-mono">' + escapeHtmlUnified(slRaw || '–') + '</span>' +
+        '<span class="text-slate-500">TP</span><span class="text-emerald-300 font-mono">' + escapeHtmlUnified(tpRaw || '–') + '</span>' +
+        '<span class="text-slate-500">Size</span><span class="text-slate-200 font-mono">' + escapeHtmlUnified(p.size || '–') + '</span>' +
+        '<span class="text-slate-500">uPNL</span><span class="' + uPnlClass + ' font-semibold font-mono">' + (isFinite(uPnl) ? ((uPnl >= 0 ? '+' : '') + formatNum(p.unrealisedPnl)) : '–') + '</span>' +
+        '</div>' +
+        '<div class="risk-bar-track mt-1" data-risk-bar-root>' +
+        '<div data-rb="zone-sl" class="risk-bar-zone-sl" style="width:0%"></div>' +
+        '<div data-rb="zone-tp" class="risk-bar-zone-tp" style="left:0%;width:0%"></div>' +
+        '<div data-rb="fill-green" class="risk-bar-fill risk-bar-fill-green" style="left:0%;width:0%;display:none"></div>' +
+        '<div data-rb="fill-red" class="risk-bar-fill risk-bar-fill-red" style="left:0%;width:0%;display:none"></div>' +
+        '<div data-rb="entry-line" class="risk-bar-entry" style="left:50%"></div>' +
+        '<div data-rb="dot" class="risk-bar-dot" style="left:50%"></div></div>' +
+        '<p class="text-[10px] text-slate-500">Bar: SL–TP · line = entry · dot = mark</p>' +
+        '<button type="button" class="closePos w-full rounded-lg bg-slate-700 hover:bg-slate-600 text-white text-sm font-medium py-2 px-3 transition" data-symbol="' + escapeHtmlUnified(p.symbol || sym) + '" data-side="' + escapeHtmlUnified(p.side || '') + '">Close position</button>' +
+        '</div>';
+    }
+
+    function renderScannerRightHtml(sym, subRow, legacyRoot) {
+      var checksDict = {};
+      if (subRow && subRow.checks != null && typeof subRow.checks === 'object' && !Array.isArray(subRow.checks)) {
+        checksDict = subRow.checks;
+      } else if (legacyRoot && legacyRoot.checks && _symMatches(legacyRoot.symbol, sym)) {
+        checksDict = legacyRoot.checks;
       }
+      var ts = Number(subRow && subRow.checks_updated_unix);
+      if (!isFinite(ts) && legacyRoot) ts = Number(legacyRoot.checks_updated_unix);
+      if (isFinite(ts) && ts > 0) window.__lastStrategyChecksTs = Math.max(window.__lastStrategyChecksTs, ts);
+
+      var priceStatus = '';
+      if (subRow && (subRow.price != null && subRow.price !== '')) {
+        priceStatus = '<div class="flex flex-wrap items-baseline gap-2 mb-2 text-sm">' +
+          '<span class="text-slate-500 text-xs">Price</span>' +
+          '<span class="font-mono text-white font-semibold">' + formatNum(subRow.price) + '</span>' +
+          '<span class="text-slate-500 text-xs">·</span>' +
+          '<span class="text-xs text-sky-300">' + escapeHtmlUnified(String(subRow.status || '—')) + '</span></div>';
+      }
+
+      var body = '';
+      if (Object.keys(checksDict).length === 0) {
+        body = '<div class="text-slate-400 text-sm p-4 bg-slate-900/50 border border-slate-700 rounded-xl">No strategy checklist for this symbol yet. Enable a Strategy Hub instance on <span class="font-mono text-slate-300">' + escapeHtmlUnified(sym) + '</span> or wait for the bot to publish state.</div>';
+      } else {
+        body = renderInstanceCardsHtmlUnified(checksDict);
+      }
+      return priceStatus + renderIndicatorsSnippetUnified(subRow) + body;
+    }
+
+    function updateGlobalSlHealthVisibility(hasAnyPosition) {
+      var w = document.getElementById('exchangeSlHealthWrap');
+      if (!w) return;
+      w.classList.toggle('hidden', !hasAnyPosition);
+    }
+
+    function renderUnifiedDashboard() {
+      var wrap = document.getElementById('unifiedTokenRows');
+      var meta = document.getElementById('commandCenterMeta');
+      if (!wrap) return;
+
+      var root = window.dashboardState.strategy;
+      var positions = window.dashboardState.positions || [];
+
+      if (window.dashboardState.lastStrategyError) {
+        wrap.innerHTML = '<div class="text-amber-400/90 text-sm p-4 bg-slate-800/80 border border-amber-900/50 rounded-xl">Could not load <code class="text-slate-300">/api/strategy/status</code>. Check that the bot is running.</div>';
+        if (meta) meta.textContent = 'Strategy feed: error · positions: ' + (window.dashboardState.positionsFetchError ? 'error' : String(positions.length));
+        updateGlobalSlHealthVisibility(positions.length > 0);
+        window.__unifiedSymbolsOrdered = [];
+        window.__liveFocusSymbol = '';
+        return;
+      }
+
+      if (root == null || typeof root !== 'object') {
+        wrap.innerHTML = '<p class="text-slate-500 text-sm p-6 text-center">Waiting for strategy status…</p>';
+        if (meta) meta.textContent = 'Strategy: — · positions: ' + String(positions.length);
+        updateGlobalSlHealthVisibility(positions.length > 0);
+        window.__unifiedSymbolsOrdered = collectUnifiedSymbols({}, positions);
+        window.__liveFocusSymbol = (window.__unifiedSymbolsOrdered[0] || '');
+        return;
+      }
+
+      var sm = _getSymbolsMapFromStrategy(root);
+      var syms = collectUnifiedSymbols(root, positions);
+      window.__unifiedSymbolsOrdered = syms;
+      window.__liveFocusSymbol = syms[0] || '';
+
+      if (meta) {
+        var ps = (root.primary_symbol != null) ? String(root.primary_symbol).trim() : '';
+        meta.textContent = 'Tokens: ' + (syms.length ? syms.join(', ') : '(none)') + (ps ? ' · primary: ' + ps : '') +
+          ' · open positions: ' + String(positions.length) +
+          (window.dashboardState.positionsFetchError ? ' (positions API error)' : '');
+      }
+
+      if (syms.length === 0) {
+        wrap.innerHTML = '<p class="text-slate-500 text-sm p-6 text-center">No tokens in scope. Add Strategy Hub instances or open a position.</p>';
+        updateGlobalSlHealthVisibility(false);
+        return;
+      }
+
+      updateGlobalSlHealthVisibility(positions.length > 0);
+
+      var html = '';
+      var si;
+      for (si = 0; si < syms.length; si++) {
+        var sym = syms[si];
+        var subRow = sm ? getSubRowForSymbol(sm, sym) : null;
+        if (!subRow && !sm && root.symbol && _symMatches(root.symbol, sym)) subRow = root;
+        if (!subRow) subRow = { symbol: sym, checks: {}, indicators: {}, price: null, status: '' };
+        var p = findPositionForSymbol(positions, sym);
+        html += '<div class="unified-token-row w-full rounded-xl bg-slate-800/90 border border-slate-700 overflow-hidden flex flex-col md:flex-row shadow-lg shadow-black/20" data-unified-symbol="' + escapeHtmlUnified(sym) + '">';
+        html += '<div class="w-full md:w-1/3 p-4 border-b md:border-b-0 md:border-r border-slate-700 bg-slate-900/40">';
+        html += '<p class="text-[10px] font-semibold text-cyan-400/90 uppercase tracking-wider mb-2">Position</p>';
+        html += renderPositionLeftHtml(sym, p);
+        html += '</div>';
+        html += '<div class="w-full md:w-2/3 p-4 flex flex-col justify-start">';
+        html += '<p class="text-[10px] font-semibold text-sky-400/90 uppercase tracking-wider mb-2">Strategy scanner</p>';
+        html += renderScannerRightHtml(sym, subRow, sm ? null : root);
+        html += '</div></div>';
+      }
+      wrap.innerHTML = html;
+
+      var rows = wrap.querySelectorAll('.unified-token-row');
+      for (var ri = 0; ri < rows.length; ri++) {
+        var row = rows[ri];
+        var symAttr = row.getAttribute('data-unified-symbol');
+        if (!symAttr) continue;
+        var p2 = findPositionForSymbol(positions, symAttr);
+        if (!p2) continue;
+        var rbRoot = row.querySelector('[data-risk-bar-root]');
+        var slN = Number(p2.stop_loss);
+        var tpN = Number(p2.take_profit);
+        var entryN = Number(p2.entryPrice);
+        var midN = Number(p2.markPrice);
+        if (!isFinite(midN) || midN <= 0) midN = entryN;
+        applyRiskBarInContainer(rbRoot, slN, tpN, entryN, midN, p2.side);
+      }
+    }
+
+    function pollLiveStrategy() {
+      fetch('/api/strategy/status?ts=' + Date.now(), { cache: 'no-store' })
+        .then(function (res) { return res.json(); })
+        .then(function (data) {
+          window.dashboardState.lastStrategyError = false;
+          window.dashboardState.strategy = data;
+          syncDashboardRender();
+        })
+        .catch(function () {
+          window.dashboardState.lastStrategyError = true;
+          syncDashboardRender();
+        });
+    }
+
+
+    function formatNum(v) {
+      if (v === null || v === undefined || v === '') return '--';
+      const n = Number(v);
+      return isNaN(n) ? String(v) : (Math.round(n * 100) / 100).toFixed(2);
+    }
+
+    /** SL/TP $ labels: 2 dp if ≥ $1, 4 dp if ≥ $0.01, else up to 6 dp so micro amounts stay visible */
+    function formatUsdRiskAmount(absVal) {
+      var x = Number(absVal);
+      if (!isFinite(x) || x < 0) return '0.00';
+      if (x === 0) return '0.00';
+      if (x >= 1) return x.toFixed(2);
+      if (x >= 0.01) return x.toFixed(4);
+      return x.toFixed(6);
+    }
+
+    function escapeHtmlStr(s) {
+      if (s == null) return '';
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    /** Manual Trade: explicit symbol wins; else first Command Center row. */
+    function manualTradeSymbolOrFocus() {
+      var raw = manualSymbol && manualSymbol.value ? String(manualSymbol.value).trim() : '';
+      if (raw.length >= 2) return raw.toUpperCase();
+      var ord = window.__unifiedSymbolsOrdered;
+      if (ord && ord.length) return String(ord[0]).toUpperCase();
+      return 'BTCUSDT';
+    }
+
+    function _symbolCore(s) {
+      return String(s || '').toUpperCase().replace(/USDT$/i, '').replace(/USD$/i, '');
     }
 
     async function pollAccount() {
@@ -1211,55 +1173,18 @@
       try {
         const res = await fetch('/api/positions');
         const data = await res.json();
-        positionsGrid.innerHTML = '';
         if (!res.ok || !Array.isArray(data)) {
-          positionsGrid.innerHTML = '<p class="text-slate-500 text-sm col-span-full">Error loading positions</p>';
-          updateActivePositionDetailCard([]);
-          return;
+          window.dashboardState.positions = [];
+          window.dashboardState.positionsFetchError = true;
+        } else {
+          window.dashboardState.positions = data;
+          window.dashboardState.positionsFetchError = false;
         }
-        var list = data;
-        if (list.length === 0) {
-          positionsGrid.innerHTML = '<p class="text-slate-500 text-sm col-span-full">No active positions</p>';
-          updateActivePositionDetailCard([]);
-          return;
-        }
-        list.forEach(function (p) {
-          const uPnl = Number(p.unrealisedPnl);
-          const uPnlClass = uPnl >= 0 ? 'text-emerald-400' : 'text-red-400';
-          const sideClass = (p.side || '').toUpperCase() === 'BUY' ? 'text-emerald-400' : 'text-red-400';
-          const ct = p.createdTime;
-          const entryTimeIST = (ct && ct !== '0') ? new Date(parseInt(ct)).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '–';
-          const card = document.createElement('div');
-          card.className = 'rounded-xl bg-slate-800/90 border border-slate-700 p-4 flex flex-col gap-3';
-          var strat = (p.strategy_name != null && String(p.strategy_name).trim()) ? String(p.strategy_name).trim() : 'Manual';
-          var stratHtml = '<span class="text-[10px] font-semibold uppercase tracking-wide rounded-full px-2 py-0.5 bg-sky-900/80 text-sky-200 border border-sky-700/60 shrink-0">' + escapeHtmlStr(strat) + '</span>';
-          card.innerHTML =
-            '<div class="flex justify-between items-center gap-2 flex-wrap">' +
-              '<span class="text-lg font-bold text-white">' + (p.symbol || '') + '</span>' +
-              '<div class="flex items-center gap-2">' +
-              stratHtml +
-              '<span class="font-medium ' + sideClass + '">' + (p.side || '') + '</span>' +
-              '</div></div>' +
-            '<p class="text-xs text-slate-400"><strong>Entry Time:</strong> ' + entryTimeIST + '</p>' +
-            '<div class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">' +
-              '<span class="text-slate-500">Entry</span><span class="text-slate-200">' + (p.entryPrice || '–') + '</span>' +
-              '<span class="text-slate-500">Qty</span><span class="text-slate-200">' + (p.size || '–') + '</span>' +
-              '<span class="text-slate-500">Margin</span><span class="text-slate-200">' + (p.positionValue || '–') + '</span>' +
-              '<span class="text-slate-500">Liq Price</span><span class="text-slate-200">' + (p.liqPrice || '–') + '</span>' +
-              '<span class="text-slate-500">SL Price</span><span class="text-slate-200">' + (p.stop_loss || '–') + '</span>' +
-              '<span class="text-slate-500">Target (TP)</span><span class="text-slate-200">' + (p.take_profit || '–') + '</span>' +
-              '<span class="text-slate-500">uPNL</span><span class="' + uPnlClass + ' font-medium">' + formatNum(p.unrealisedPnl) + '</span>' +
-            '</div>' +
-            '<button type="button" class="closePos w-full mt-1 rounded-lg bg-slate-700 hover:bg-slate-600 text-white text-sm font-medium py-2 px-3 transition" data-symbol="' + (p.symbol || '') + '" data-side="' + (p.side || '') + '">Close Position</button>';
-          positionsGrid.appendChild(card);
-        });
-        positionsGrid.querySelectorAll('.closePos').forEach(function (btn) {
-          btn.addEventListener('click', closePosition);
-        });
-        updateActivePositionDetailCard(list);
+        syncDashboardRender();
       } catch (e) {
-        positionsGrid.innerHTML = '<p class="text-slate-500 text-sm col-span-full">Error loading positions</p>';
-        updateActivePositionDetailCard([]);
+        window.dashboardState.positions = [];
+        window.dashboardState.positionsFetchError = true;
+        syncDashboardRender();
       }
     }
 
@@ -1399,8 +1324,8 @@
 
       function updateExchangeSlHealth(h) {
         if (!slWrap || !slBadge || !slMeta || !slErr) return;
-        var card = document.getElementById('activePositionCard');
-        var hasActivePosition = !!(card && !card.classList.contains('hidden'));
+        var pos = (window.dashboardState && window.dashboardState.positions) ? window.dashboardState.positions : [];
+        var hasActivePosition = Array.isArray(pos) && pos.length > 0;
         if (!hasActivePosition) {
           slWrap.classList.add('hidden');
           return;
