@@ -164,6 +164,26 @@ def tracker_reset_flat(sym: str, fallback: str) -> None:
         _trackers[u] = _empty_tracker()
 
 
+def clear_tracker(sym: str, fallback: str) -> None:
+    """Alias for tracker_reset_flat (SL/TP + local exit metadata cleared on flat)."""
+    tracker_reset_flat(sym, fallback)
+
+
+def read_position_for_symbol(sym: str, fallback: str) -> dict[str, Any]:
+    """Snapshot of size / entry / side for one symbol."""
+    return position_snapshot(sym, fallback)
+
+
+def get_orderbook_l1(sym: str, fallback: str) -> tuple[float, float, float, float]:
+    """Best bid/ask and top-of-book quantities."""
+    return orderbook_l1(sym, fallback)
+
+
+def set_tracker_fields(sym: str, fallback: str, **kwargs: Any) -> None:
+    """Update SL/TP tracker fields for a symbol."""
+    tracker_update(sym, fallback, **kwargs)
+
+
 def set_active_monitor(sym: str, fallback: str, snap: dict[str, Any] | None) -> None:
     u = norm_symbol(sym, fallback)
     with _mon_lock:

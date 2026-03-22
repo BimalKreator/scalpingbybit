@@ -1,21 +1,21 @@
 {
   "symbol": "BTCUSDT",
-  "price": 68177.0,
+  "price": 68198.5,
   "indicators": {
-    "RSI": 37.94,
-    "RSI_SMA": 36.3,
-    "volume_signal_vs_prev": true,
-    "body_size": 21.5,
+    "RSI": 51.93,
+    "RSI_SMA": 36.92,
+    "volume_signal_vs_prev": false,
+    "body_size": 0.0,
     "open": 68198.5,
-    "close": 68177.0,
-    "volume": 5783.0,
-    "Expected_Profit_Pct": 0.1
+    "close": 68198.5,
+    "volume": 1.0,
+    "Expected_Profit_Pct": 0.0
   },
   "conditions": {
     "long": [
       {
         "name": "Signal Candle Bearish (open > close)",
-        "met": true
+        "met": false
       },
       {
         "name": "Previous Candle Bearish",
@@ -27,15 +27,15 @@
       },
       {
         "name": "Volume: signal > previous",
-        "met": true
+        "met": false
       },
       {
         "name": "RSI < 40.0",
-        "met": true
+        "met": false
       },
       {
         "name": "Expected Profit >= 0.02%",
-        "met": true
+        "met": false
       }
     ],
     "short": [
@@ -45,7 +45,7 @@
       },
       {
         "name": "Previous Candle Bullish",
-        "met": true
+        "met": false
       },
       {
         "name": "Both Bullish",
@@ -53,7 +53,7 @@
       },
       {
         "name": "Volume: signal > previous",
-        "met": true
+        "met": false
       },
       {
         "name": "RSI > 60.0",
@@ -61,7 +61,7 @@
       },
       {
         "name": "Expected Profit >= 0.02%",
-        "met": true
+        "met": false
       }
     ]
   },
@@ -110,7 +110,7 @@
         },
         {
           "text": "Range Filter Downtrend",
-          "met": true
+          "met": false
         },
         {
           "text": "Expected Profit >= 0.08%",
@@ -119,7 +119,7 @@
       ]
     }
   },
-  "checks_updated_unix": 1774209471.0914555,
+  "checks_updated_unix": 1774209477.627674,
   "position_risk": {
     "open": false
   },

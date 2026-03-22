@@ -50,17 +50,23 @@ from main import (
     _cancel_protective_orders_after_flat_sync,
     _get_orderbook_l1,
     _initial_sl_setting_guard,
+    _live_state_symbols_from_disk_raw,
+    _read_live_state_json_safe,
     apply_dynamic_env_updates,
     execute_strategy_signal,
     get_active_strategies_from_env,
+    get_live_strategy_status_for_api,
     get_paper_position_rows_for_ui,
     get_virtual_wallet,
+    get_active_symbols,
     register_manual_trade,
     reload_active_strategies_from_env,
     reload_strategy_instances_cache,
     set_virtual_balance,
     virtual_market_close_sync,
 )
+
+import exchange_state as _xst
 
 # Env file: prefer .env, fallback to "env"
 ENV_PATH = Path(__file__).resolve().parent / ".env"
@@ -299,50 +305,67 @@ def _exchange_sl_tp_missing(stop_loss: str | None, take_profit: str | None) -> b
     return False
 
 
-def _load_local_sl_tp_for_positions() -> tuple[float | None, float | None, str]:
-    """Read last_sl_price / last_tp_price from .live_strategy_state.json."""
+def _load_local_sl_tp_for_position_symbol(pos_symbol: str) -> tuple[float | None, float | None, str]:
+    """Read last_sl_price / last_tp_price for a position symbol from multi-symbol live state file."""
     try:
         if not _LIVE_STATE_JSON_PATH.is_file():
             return None, None, ""
-        with open(_LIVE_STATE_JSON_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            return None, None, ""
-        sl = data.get("last_sl_price")
-        tp = data.get("last_tp_price")
-        sym = str(data.get("symbol") or "").strip()
-        try:
-            slf = float(sl) if sl is not None else 0.0
-            tpf = float(tp) if tp is not None else 0.0
-        except (TypeError, ValueError):
-            return None, None, sym
-        if slf <= 0 or tpf <= 0:
-            return None, None, sym
-        return slf, tpf, sym
+        raw = _read_live_state_json_safe()
+        mp = _live_state_symbols_from_disk_raw(raw)
+        for state_sym, row in mp.items():
+            if not isinstance(row, dict):
+                continue
+            if not _symbol_matches_state(pos_symbol, state_sym):
+                continue
+            sl = row.get("last_sl_price")
+            tp = row.get("last_tp_price")
+            try:
+                slf = float(sl) if sl is not None else 0.0
+                tpf = float(tp) if tp is not None else 0.0
+            except (TypeError, ValueError):
+                return None, None, str(state_sym)
+            if slf <= 0 or tpf <= 0:
+                return None, None, str(state_sym)
+            return slf, tpf, str(state_sym)
+        return None, None, ""
     except Exception as e:
         print(f"[api/positions] local SL/TP state read skipped: {e}")
         return None, None, ""
 
 
+def _tracked_symbols_for_positions() -> set[str]:
+    """Symbols we monitor (instances + any open position in exchange_state)."""
+    out = {str(s).strip().upper() for s in get_active_symbols()}
+    out |= set(_xst.all_symbols_with_positions(BOT_SYMBOL))
+    out.discard("")
+    if not out:
+        out.add(str(BOT_SYMBOL or "").strip().upper())
+    return out
+
+
+def _position_row_matches_tracked(pos_symbol: str, tracked: set[str]) -> bool:
+    ps = str(pos_symbol or "").strip()
+    if not ps:
+        return False
+    for t in tracked:
+        if _symbol_matches_state(ps, t):
+            return True
+    return False
+
+
 def _inject_local_sl_tp_into_positions(positions: list, *, is_delta: bool) -> list:
-    """Override stop_loss / take_profit from bot-local tracker when appropriate."""
+    """Override stop_loss / take_profit from bot-local tracker when appropriate (per symbol)."""
     if not positions:
         return positions
-    slf, tpf, state_sym = _load_local_sl_tp_for_positions()
-    if slf is None or tpf is None:
-        return positions
-    sl_s = f"{slf:.4f}".rstrip("0").rstrip(".")
-    tp_s = f"{tpf:.4f}".rstrip("0").rstrip(".")
-    single = len(positions) == 1
     for p in positions:
         if not isinstance(p, dict):
             continue
         psym = str(p.get("symbol") or "")
-        if state_sym:
-            if not _symbol_matches_state(psym, state_sym):
-                continue
-        elif not single and not is_delta:
+        slf, tpf, _state_sym = _load_local_sl_tp_for_position_symbol(psym)
+        if slf is None or tpf is None:
             continue
+        sl_s = f"{slf:.4f}".rstrip("0").rstrip(".")
+        tp_s = f"{tpf:.4f}".rstrip("0").rstrip(".")
         if is_delta or _exchange_sl_tp_missing(p.get("stop_loss"), p.get("take_profit")):
             p["stop_loss"] = sl_s
             p["take_profit"] = tp_s
@@ -640,8 +663,9 @@ async def api_virtual_closed_trades():
 async def api_positions():
     """Fetch open positions; shape matches dashboard (symbol, side, entryPrice, size, …)."""
     if _virtual_trading_from_env():
-        rows = await asyncio.to_thread(get_paper_position_rows_for_ui, BOT_SYMBOL)
+        rows = await asyncio.to_thread(get_paper_position_rows_for_ui, "")
         return rows
+    tracked = _tracked_symbols_for_positions()
     if _app_exchange_id() == "delta_india":
         k, s = _delta_keys()
         if not k or not s:
@@ -655,6 +679,12 @@ async def api_positions():
                     msg = msg.get("message") or raw
                 return JSONResponse(status_code=502, content={"error": str(msg or "Delta positions error")})
             rows = _delta_positions_to_ui_rows(raw)
+            rows = [
+                r
+                for r in rows
+                if isinstance(r, dict)
+                and _position_row_matches_tracked(str(r.get("symbol") or ""), tracked)
+            ]
             return _inject_local_sl_tp_into_positions(rows, is_delta=True)
         except Exception as e:
             print(f"[api/positions] Delta: {e}")
@@ -667,7 +697,12 @@ async def api_positions():
             print(f"[api/positions] Bybit retCode != 0: {msg}")
             return JSONResponse(status_code=502, content={"error": msg})
         positions = response.get("result", {}).get("list", [])
-        active_positions = [p for p in positions if float(p.get("size", 0) or 0) > 0]
+        active_positions = [
+            p
+            for p in positions
+            if float(p.get("size", 0) or 0) > 0
+            and _position_row_matches_tracked(str(p.get("symbol") or ""), tracked)
+        ]
         out = []
         for p in active_positions:
             sl = p.get("stopLoss") or "0"
@@ -784,28 +819,6 @@ async def logs_page():
     return HTMLResponse(template.render())
 
 
-# Live Strategy Monitor: shared in-memory state with main.py (same process when bot runs via toggle)
-try:
-    from main import live_strategy_state
-except ImportError:
-    live_strategy_state = {
-        "symbol": "",
-        "price": 0.0,
-        "indicators": {},
-        "indicators_note": "",
-        "conditions": {"long": [], "short": []},
-        "checks": {},
-        "checks_updated_unix": 0.0,
-        "status": "No data",
-        "sl_price": None,
-        "tp_price": None,
-        "entry_price": None,
-        "position_size": 0.0,
-        "sl_amount_usd": None,
-        "tp_amount_usd": None,
-        "position_risk": {"open": False},
-    }
-
 _DEFAULT_STRATEGY_STATE = {
     "symbol": "",
     "price": 0.0,
@@ -822,36 +835,15 @@ _DEFAULT_STRATEGY_STATE = {
 @app.get("/api/strategy/status")
 async def api_strategy_status():
     """
-    Return live strategy state from bot (same process as main_async when started via app).
-    No HTTP caching — UI must not show stale RSI vs engine logs.
-    If in-memory symbol is empty (bot not started), merge checks from .live_strategy_state.json.
+    Multi-symbol live monitor: ``{ "symbols": { "BTCUSDT": {...}, ... }, "primary_symbol", "active_symbols" }``.
     """
-    out = dict(live_strategy_state)
-    sym = str(out.get("symbol") or "").strip()
-    if not sym:
-        try:
-            p = _LIVE_STATE_JSON_PATH
-            if p.is_file():
-                with open(p, "r", encoding="utf-8") as f:
-                    disk = json.load(f)
-                if isinstance(disk, dict):
-                    for k in (
-                        "checks",
-                        "checks_updated_unix",
-                        "indicators",
-                        "indicators_note",
-                        "status",
-                        "symbol",
-                        "price",
-                        "position_risk",
-                    ):
-                        if k in disk and disk[k] is not None:
-                            out[k] = disk[k]
-        except Exception as e:
-            logging.debug("[api/strategy/status] disk merge skip: %s", e)
-    ch = out.get("checks")
-    if ch is None or not isinstance(ch, dict):
-        out["checks"] = {}
+    try:
+        out = get_live_strategy_status_for_api()
+    except Exception as e:
+        logging.warning("[api/strategy/status] %s", e)
+        out = {"symbols": {}, "primary_symbol": str(BOT_SYMBOL or "").strip().upper(), "active_symbols": []}
+    if not isinstance(out.get("symbols"), dict):
+        out["symbols"] = {}
     resp = JSONResponse(content=out)
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"

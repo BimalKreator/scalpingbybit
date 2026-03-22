@@ -530,6 +530,8 @@ _exit_mutex = asyncio.Lock()
 _qty_step: float = 0.001
 _min_order_qty: float = 0.001
 _instrument_min_notional: float = 6.0
+# Per-symbol (qty_step, min_order_qty) for multi-coin order sizing
+_instrument_constraints_by_symbol: dict[str, tuple[float, float]] = {}
 
 # Event loop reference for bridging WS callbacks into asyncio
 _loop: asyncio.AbstractEventLoop | None = None
@@ -550,23 +552,79 @@ import json as _json
 from pathlib import Path as _Path
 _LIVE_STATE_PATH = _Path(__file__).resolve().parent / ".live_strategy_state.json"
 _live_state_lock = threading.Lock()
-live_strategy_state = {
-    "symbol": "",
-    "price": 0.0,
-    "indicators": {},
-    "indicators_note": "",
-    "conditions": {"long": [], "short": []},
-    "checks": {},
-    "checks_updated_unix": 0.0,
-    "status": "Waiting",
-    "sl_price": None,
-    "tp_price": None,
-    "entry_price": None,
-    "position_size": 0.0,
-    "sl_amount_usd": None,
-    "tp_amount_usd": None,
-    "position_risk": {"open": False},
-}
+# Live Monitor: one dict per normalized symbol (also persisted under JSON "symbols")
+live_strategy_state: dict[str, dict] = {}
+_LIVE_STATE_FILE_FORMAT = "live_strategy_multi_v1"
+
+
+def _default_per_symbol_live_state(sym: str) -> dict:
+    u = _norm_sym(sym)
+    return {
+        "symbol": u,
+        "price": 0.0,
+        "indicators": {},
+        "indicators_note": "",
+        "conditions": {"long": [], "short": []},
+        "checks": {},
+        "checks_updated_unix": 0.0,
+        "status": "Waiting",
+        "sl_price": None,
+        "tp_price": None,
+        "entry_price": None,
+        "position_size": 0.0,
+        "sl_amount_usd": None,
+        "tp_amount_usd": None,
+        "position_risk": {"open": False},
+        "last_signal_candle_start": None,
+    }
+
+
+def _live_state_symbols_from_disk_raw(raw: dict) -> dict[str, dict]:
+    """Normalize on-disk JSON (multi_v1 or legacy flat) to {symbol: state_dict}."""
+    if not isinstance(raw, dict):
+        return {}
+    if raw.get("_file_format") == _LIVE_STATE_FILE_FORMAT and isinstance(raw.get("symbols"), dict):
+        out: dict[str, dict] = {}
+        for k, v in raw["symbols"].items():
+            if isinstance(v, dict):
+                out[_norm_sym(str(k))] = dict(v)
+        return out
+    if any(
+        k in raw
+        for k in (
+            "position_risk",
+            "checks",
+            "indicators",
+            "last_tp_price",
+            "status",
+            "conditions",
+        )
+    ):
+        s = _norm_sym(str(raw.get("symbol") or SYMBOL))
+        return {s: dict(raw)}
+    return {}
+
+
+def _pack_live_state_for_disk(symbols_map: dict[str, dict]) -> dict:
+    return {"_file_format": _LIVE_STATE_FILE_FORMAT, "symbols": dict(symbols_map)}
+
+
+def get_live_strategy_status_for_api() -> dict[str, Any]:
+    """
+    Dashboard JSON: all per-symbol monitor rows + primary/active symbol hints.
+    Merges on-disk state when in-memory is empty (bot not started).
+    """
+    with _live_state_lock:
+        symbols = {k: dict(v) for k, v in live_strategy_state.items()}
+    if not symbols:
+        disk = _live_state_symbols_from_disk_raw(_read_live_state_json_safe())
+        symbols = {k: dict(v) for k, v in disk.items()}
+    primary = _norm_sym(SYMBOL)
+    return {
+        "symbols": symbols,
+        "primary_symbol": primary,
+        "active_symbols": list(get_active_symbols()),
+    }
 
 # --- Paper / virtual trading (no exchange orders; local wallet + positions) ---
 VIRTUAL_WALLET_PATH = _Path(__file__).resolve().parent / "virtual_wallet.json"
@@ -723,40 +781,64 @@ def _append_virtual_closed_trade_row(
         logging.warning("[virtual] Could not append virtual_closed_trades: %s", e, exc_info=True)
 
 
-def get_paper_position_rows_for_ui(symbol: str) -> list[dict]:
-    """Synthetic open position for dashboard when paper trading (no exchange REST)."""
+def get_paper_position_rows_for_ui(symbol: str = "") -> list[dict]:
+    """All synthetic open paper positions for the dashboard (multi-symbol)."""
     if not _virtual_trading_enabled():
         return []
-    sym_u = (symbol or "").strip().upper()
-    if sym_u and sym_u != (SYMBOL or "").strip().upper():
-        return []
-    with _position_lock:
-        sz = float(_position_size)
-        ep = _position_entry_price
-        ps = (_last_position_side or "").strip()
-    if sz <= 1e-18:
-        return []
-    try:
-        ent_s = f"{float(ep):g}" if ep is not None and float(ep) > 0 else ""
-    except (TypeError, ValueError):
-        ent_s = ""
-    sl = _last_sl_price
-    tp = _last_tp_price
-    return [
-        {
-            "symbol": SYMBOL,
-            "side": ps or "Buy",
-            "entryPrice": ent_s,
-            "size": str(sz),
-            "positionValue": "",
-            "liqPrice": "",
-            "stop_loss": str(sl) if sl is not None else "-",
-            "take_profit": str(tp) if tp is not None else "-",
-            "unrealisedPnl": "0",
-            "createdTime": "0",
-            "paper": True,
-        }
-    ]
+    sym_filter = (symbol or "").strip().upper()
+    rows: list[dict] = []
+    for sym in xst.all_symbols_with_positions(SYMBOL):
+        if sym_filter and sym != sym_filter:
+            continue
+        pos = xst.read_position_for_symbol(sym, SYMBOL)
+        sz = float(pos.get("size") or 0)
+        if sz <= 1e-18:
+            continue
+        ep = pos.get("entry")
+        ps = str(pos.get("side") or "").strip() or "Buy"
+        try:
+            ent_s = f"{float(ep):g}" if ep is not None and float(ep) > 0 else ""
+        except (TypeError, ValueError):
+            ent_s = ""
+        tr = xst.tracker(sym, SYMBOL)
+        sl = tr.get("last_sl_price") or tr.get("last_active_sl_price")
+        tp = tr.get("last_tp_price")
+        bb, ba, _, _ = xst.get_orderbook_l1(sym, SYMBOL)
+        upnl = "0"
+        try:
+            ent_f = float(ep or 0)
+            if ent_f > 0 and bb > 0 and ba > 0:
+                mid = (bb + ba) / 2.0
+                ps_l = ps.strip().lower()
+                if ps_l == "buy":
+                    u = _virtual_linear_pnl_usd(ent_f, mid, sz, "buy")
+                else:
+                    u = _virtual_linear_pnl_usd(ent_f, mid, sz, "sell")
+                upnl = f"{float(u):.6f}"
+        except (TypeError, ValueError):
+            pass
+        ct = tr.get("entry_time") or tr.get("last_entry_time") or 0.0
+        try:
+            ct_f = float(ct or 0)
+            ct_ms = str(int(ct_f * 1000)) if ct_f > 0 else "0"
+        except (TypeError, ValueError):
+            ct_ms = "0"
+        rows.append(
+            {
+                "symbol": sym,
+                "side": ps,
+                "entryPrice": ent_s,
+                "size": str(sz),
+                "positionValue": "",
+                "liqPrice": "",
+                "stop_loss": str(sl) if sl is not None else "-",
+                "take_profit": str(tp) if tp is not None else "-",
+                "unrealisedPnl": upnl,
+                "createdTime": ct_ms,
+                "paper": True,
+            }
+        )
+    return rows
 
 
 def _finalize_virtual_position_close(
@@ -789,9 +871,8 @@ def _finalize_virtual_position_close(
         _monitor_had_position = False
     ep = float(exit_price)
     sl_hit = _was_closed_by_sl(ep, sym)
-    if sym == _norm_sym(SYMBOL):
-        on_position_closed(ep)
-        _clear_active_instance_on_flat(sl_loss=sl_hit)
+    on_position_closed(ep, sym)
+    _clear_active_instance_on_flat(sl_loss=sl_hit, symbol=sym)
     xst.set_position_fields(sym, SYMBOL, size=0.0, entry=None, side=None)
     xst.tracker_reset_flat(sym, SYMBOL)
     xst.set_closing(sym, SYMBOL, False)
@@ -832,34 +913,42 @@ def _read_live_state_json_safe() -> dict:
         return {}
 
 
-def _merge_sl_tp_tracker_into_dict(d: dict) -> None:
-    """Persist active SL (dynamic), TP, tracker bounds, entry time, breakeven flag."""
+def _merge_sl_tp_tracker_into_dict(d: dict, symbol: str) -> None:
+    """Merge active SL/TP tracker fields for ``symbol`` from exchange_state into ``d``."""
+    sym = _norm_sym(symbol)
+    tr = xst.tracker(sym, SYMBOL)
     try:
-        tp = float(_last_tp_price) if _last_tp_price is not None else 0.0
+        tp = float(tr.get("last_tp_price") or 0)
     except (TypeError, ValueError):
         tp = 0.0
-    bb, ba = best_bid, best_ask
+    bb, ba, _, _ = xst.get_orderbook_l1(sym, SYMBOL)
+    if sym == _norm_sym(SYMBOL) and bb <= 0 and ba <= 0:
+        with _orderbook_lock:
+            bb, ba = best_bid, best_ask
     mid = (bb + ba) / 2.0 if bb > 0 and ba > 0 else 0.0
     act_sl = 0.0
-    if tp > 0 and get_open_position():
+    if tp > 0 and get_open_position(sym):
         if mid > 0:
-            a = _compute_active_sl_price(mid)
+            a = _compute_active_sl_price(mid, sym)
             act_sl = float(a) if a is not None else 0.0
-        if act_sl <= 0 and _last_active_sl_price is not None:
-            act_sl = float(_last_active_sl_price)
-        if act_sl <= 0 and _last_sl_price is not None:
-            act_sl = float(_last_sl_price)
+        if act_sl <= 0 and tr.get("last_active_sl_price") is not None:
+            act_sl = float(tr["last_active_sl_price"])
+        if act_sl <= 0 and tr.get("last_sl_price") is not None:
+            act_sl = float(tr["last_sl_price"])
     if act_sl > 0 and tp > 0:
+        pos = xst.position_snapshot(sym, SYMBOL)
         d["last_sl_price"] = act_sl
         d["last_tp_price"] = tp
-        d["last_position_side"] = (_last_position_side or "").strip() or ""
-        d["tracker_sl_max"] = float(_sl_max_price)
-        d["tracker_sl_min"] = float(_sl_min_price)
-        d["sl_entry_time_unix"] = float(_entry_time)
-        d["sl_breakeven_triggered"] = bool(_breakeven_triggered)
-        d["sl_half_target_exited"] = bool(_half_target_exited)
-        d["sl_half_target_reached"] = bool(_half_target_reached)
-        d["base_risk_dist"] = float(_base_risk_dist)
+        d["last_position_side"] = str(
+            pos.get("side") or tr.get("last_position_side") or ""
+        ).strip() or ""
+        d["tracker_sl_max"] = float(tr.get("sl_max_price") or 0)
+        d["tracker_sl_min"] = float(tr.get("sl_min_price") or 0)
+        d["sl_entry_time_unix"] = float(tr.get("entry_time") or 0)
+        d["sl_breakeven_triggered"] = bool(tr.get("breakeven_triggered"))
+        d["sl_half_target_exited"] = bool(tr.get("half_target_exited"))
+        d["sl_half_target_reached"] = bool(tr.get("half_target_reached"))
+        d["base_risk_dist"] = float(tr.get("base_risk_dist") or 0)
     else:
         d["last_sl_price"] = 0.0
         d["last_tp_price"] = 0.0
@@ -874,59 +963,88 @@ def _merge_sl_tp_tracker_into_dict(d: dict) -> None:
 
 
 def _flush_live_state_file_with_tracker() -> None:
-    """Write live_strategy_state + SL/TP tracker fields to disk."""
+    """Write all per-symbol live states + merged SL/TP trackers to disk (multi_v1 JSON)."""
     try:
+        raw_existing = _read_live_state_json_safe()
+        merged = _live_state_symbols_from_disk_raw(raw_existing)
         with _live_state_lock:
-            snap = dict(live_strategy_state)
-            _merge_sl_tp_tracker_into_dict(snap)
+            for s, d in list(live_strategy_state.items()):
+                u = _norm_sym(s)
+                base = dict(merged.get(u, _default_per_symbol_live_state(u)))
+                base.update(d)
+                merged[u] = base
+            all_syms = (
+                set(merged.keys())
+                | {_norm_sym(x) for x in get_active_symbols()}
+                | set(xst.all_symbols_with_positions(SYMBOL))
+            )
+            for u in all_syms:
+                row = dict(merged.get(u, _default_per_symbol_live_state(u)))
+                _merge_sl_tp_tracker_into_dict(row, u)
+                _apply_position_risk_to_state_dict(row, u)
+                merged[u] = row
+                live_strategy_state[u] = row
+            out = _pack_live_state_for_disk({k: dict(merged[k]) for k in sorted(merged.keys())})
         with open(_LIVE_STATE_PATH, "w", encoding="utf-8") as f:
-            _json.dump(snap, f, indent=2)
+            _json.dump(out, f, indent=2)
     except Exception as e:
         print(f"[sl_tp_tracker] Could not write state file: {e}")
 
 
 def _restore_paper_position_from_live_state_file() -> None:
-    """Paper mode restart: restore size/entry/side from persisted live state (no exchange poll)."""
+    """Paper mode restart: restore positions from persisted live state (multi-symbol)."""
     global _position_size, _position_entry_price, _monitor_had_position, _last_signal_candle, _last_position_side
     if not _virtual_trading_enabled():
         return
     try:
-        data = _read_live_state_json_safe()
-        pr = data.get("position_risk") or {}
-        if not isinstance(pr, dict) or not pr.get("open"):
+        raw = _read_live_state_json_safe()
+        mp = _live_state_symbols_from_disk_raw(raw)
+        if not mp:
             return
-        sz = float(pr.get("size") or data.get("position_size") or 0)
-        ep_raw = pr.get("entry_price")
-        if ep_raw is None:
-            ep_raw = data.get("entry_price")
-        ep_f = float(ep_raw or 0)
-        side_raw = str(pr.get("side") or data.get("last_position_side") or "").strip()
-        sll = side_raw.lower()
-        if sll in ("buy", "long"):
-            side = "Buy"
-        elif sll in ("sell", "short"):
-            side = "Sell"
-        else:
-            side = "Buy"
-        if sz <= 1e-18 or ep_f <= 0:
-            return
-        with _position_lock:
-            _position_size = sz
-            _position_entry_price = ep_f
-        _monitor_had_position = True
-        _last_position_side = side
-        _last_signal_candle = {"high": ep_f, "low": ep_f, "close": ep_f}
-        _sync_position_risk_to_state()
-        print(f"[VIRTUAL] Restored paper position from disk size={sz:g} entry={ep_f:g} side={side}")
+        primary = _norm_sym(SYMBOL)
+        restored_any = False
+        for sym_u, data in mp.items():
+            pr = data.get("position_risk") or {}
+            if not isinstance(pr, dict) or not pr.get("open"):
+                continue
+            sz = float(pr.get("size") or data.get("position_size") or 0)
+            ep_raw = pr.get("entry_price")
+            if ep_raw is None:
+                ep_raw = data.get("entry_price")
+            ep_f = float(ep_raw or 0)
+            side_raw = str(pr.get("side") or data.get("last_position_side") or "").strip()
+            sll = side_raw.lower()
+            if sll in ("buy", "long"):
+                side = "Buy"
+            elif sll in ("sell", "short"):
+                side = "Sell"
+            else:
+                side = "Buy"
+            if sz <= 1e-18 or ep_f <= 0:
+                continue
+            xst.set_position_fields(sym_u, SYMBOL, size=sz, entry=ep_f, side=side)
+            if sym_u == primary:
+                with _position_lock:
+                    _position_size = sz
+                    _position_entry_price = ep_f
+                _monitor_had_position = True
+                _last_position_side = side
+                _last_signal_candle = {"high": ep_f, "low": ep_f, "close": ep_f}
+            restored_any = True
+            print(f"[VIRTUAL] Restored paper {sym_u} size={sz:g} entry={ep_f:g} side={side}")
+        if restored_any:
+            _sync_position_risk_to_state()
     except Exception as e:
         logging.warning("[VIRTUAL] Could not restore paper position from state file: %s", e)
 
 
 def _load_sl_tp_tracker_from_file_on_startup() -> None:
-    """Restore SL/TP tracker + dynamic SL state before WS."""
+    """Restore SL/TP tracker + dynamic SL state before WS (primary symbol slice + xst)."""
     global _last_sl_price, _last_tp_price, _last_position_side, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _half_target_reached, _last_active_sl_price, _exchange_sl_price, _base_risk_dist
     try:
-        data = _read_live_state_json_safe()
+        raw = _read_live_state_json_safe()
+        mp = _live_state_symbols_from_disk_raw(raw)
+        data = mp.get(_norm_sym(SYMBOL), raw if isinstance(raw, dict) else {})
         tp = data.get("last_tp_price")
         side_raw = data.get("last_position_side")
         tpf = float(tp) if tp is not None else 0.0
@@ -964,6 +1082,33 @@ def _load_sl_tp_tracker_from_file_on_startup() -> None:
                     f"[bot] Restored SL tracker: TP={tpf:g} side={_last_position_side} "
                     f"sl_max={_sl_max_price:g} sl_min={_sl_min_price:g} breakeven={be} half_exited={hte}"
                 )
+        # Hydrate exchange_state trackers from disk for every symbol with saved TP/SL rows
+        for sym_u, row in mp.items():
+            try:
+                tpf2 = float(row.get("last_tp_price") or 0)
+            except (TypeError, ValueError):
+                tpf2 = 0.0
+            if tpf2 <= 0:
+                continue
+            side2 = str(row.get("last_position_side") or "").strip()
+            xst.set_tracker_fields(
+                sym_u,
+                SYMBOL,
+                last_tp_price=tpf2,
+                last_sl_price=float(row.get("last_sl_price") or 0),
+                sl_max_price=float(row.get("tracker_sl_max") or row.get("last_sl_price") or 0),
+                sl_min_price=float(row.get("tracker_sl_min") or row.get("last_sl_price") or 0),
+                last_position_side=side2 or None,
+                entry_time=float(row.get("sl_entry_time_unix") or 0) or time.time(),
+                breakeven_triggered=str(row.get("sl_breakeven_triggered", "")).lower()
+                in ("1", "true", "yes"),
+                half_target_exited=str(row.get("sl_half_target_exited", "")).lower()
+                in ("1", "true", "yes"),
+                half_target_reached=str(row.get("sl_half_target_reached", "")).lower()
+                in ("1", "true", "yes"),
+                last_active_sl_price=float(row.get("last_sl_price") or 0),
+                base_risk_dist=float(row.get("base_risk_dist") or 0),
+            )
     except Exception as e:
         print(f"[bot] SL/TP tracker load error (using defaults): {e}")
 
@@ -985,19 +1130,39 @@ def _clear_sl_tp_tracker_on_file_and_globals() -> None:
     _base_risk_dist = 0.0
     _set_exchange_sl_health("inactive", "")
     try:
-        data = _read_live_state_json_safe()
-        data["last_sl_price"] = 0.0
-        data["last_tp_price"] = 0.0
-        data["last_position_side"] = ""
-        data["tracker_sl_max"] = 0.0
-        data["tracker_sl_min"] = 0.0
-        data["sl_entry_time_unix"] = 0.0
-        data["sl_breakeven_triggered"] = False
-        data["sl_half_target_exited"] = False
-        data["sl_half_target_reached"] = False
-        data["base_risk_dist"] = 0.0
+        raw = _read_live_state_json_safe()
+        mp = _live_state_symbols_from_disk_raw(raw)
+        sym = _norm_sym(SYMBOL)
+        row = dict(mp.get(sym, _default_per_symbol_live_state(sym)))
+        row["last_sl_price"] = 0.0
+        row["last_tp_price"] = 0.0
+        row["last_position_side"] = ""
+        row["tracker_sl_max"] = 0.0
+        row["tracker_sl_min"] = 0.0
+        row["sl_entry_time_unix"] = 0.0
+        row["sl_breakeven_triggered"] = False
+        row["sl_half_target_exited"] = False
+        row["sl_half_target_reached"] = False
+        row["base_risk_dist"] = 0.0
+        mp[sym] = row
+        with _live_state_lock:
+            if sym in live_strategy_state:
+                for k, v in row.items():
+                    if k in (
+                        "last_sl_price",
+                        "last_tp_price",
+                        "last_position_side",
+                        "tracker_sl_max",
+                        "tracker_sl_min",
+                        "sl_entry_time_unix",
+                        "sl_breakeven_triggered",
+                        "sl_half_target_exited",
+                        "sl_half_target_reached",
+                        "base_risk_dist",
+                    ):
+                        live_strategy_state[sym][k] = v
         with open(_LIVE_STATE_PATH, "w", encoding="utf-8") as f:
-            _json.dump(data, f, indent=2)
+            _json.dump(_pack_live_state_for_disk(mp), f, indent=2)
     except Exception as e:
         print(f"[sl_tp_tracker] Could not persist tracker clear: {e}")
 
@@ -1116,10 +1281,17 @@ def _fetch_exchange_mark_mid_for_symbol_sync(entry_price_fallback: float = 0.0) 
         return float(entry_price_fallback or 0.0)
 
 
-def _local_state_compatible_with_open_position(local_state: dict, open_pos: dict) -> bool:
-    if not local_state or not isinstance(local_state, dict):
+def _local_state_compatible_with_open_position(local_state_raw: dict, open_pos: dict) -> bool:
+    if not local_state_raw or not isinstance(local_state_raw, dict):
         return False
     if not open_pos:
+        return False
+    mp = _live_state_symbols_from_disk_raw(local_state_raw)
+    sym = _norm_sym(SYMBOL)
+    local_state = mp.get(sym)
+    if local_state is None:
+        local_state = local_state_raw
+    if not isinstance(local_state, dict):
         return False
     side_state = str(local_state.get("last_position_side") or "").strip()
     if side_state != open_pos.get("side"):
@@ -1502,20 +1674,35 @@ def _read_position_for_symbol(sym: str) -> tuple[float, float | None, str]:
     return sz, ep if ep is not None else None, side
 
 
-async def _confirm_exchange_sl_verified_after_sync() -> bool:
+def _qty_constraints_for_symbol(sym: str) -> tuple[float, float]:
+    """qty_step and min_order_qty for ``sym`` (cached; falls back to globals)."""
+    u = _norm_sym(sym)
+    if u in _instrument_constraints_by_symbol:
+        return _instrument_constraints_by_symbol[u]
+    ok, qt, miq, _mnv = fetch_instrument_info(
+        u, HTTP_CLIENT if not USE_DELTA else None
+    )
+    if ok and qt is not None and miq is not None:
+        _instrument_constraints_by_symbol[u] = (float(qt), float(miq))
+        return _instrument_constraints_by_symbol[u]
+    return (float(_qty_step), float(_min_order_qty))
+
+
+async def _confirm_exchange_sl_verified_after_sync(symbol: str | None = None) -> bool:
     """
     After _set_position_sl_tp_sync returns True, confirm a protective SL exists (Delta REST).
     Wait 1.5s before each read (up to 3 tries ≈ 4.5s) so Delta's read path can catch up.
     """
     if not USE_DELTA:
         return True
+    sym = _norm_sym(symbol or SYMBOL)
     for _ in range(3):
         await asyncio.sleep(1.5)
         is_verified = await asyncio.to_thread(
             _verify_open_stop_order,
             DELTA_API_KEY or "",
             DELTA_API_SECRET or "",
-            SYMBOL,
+            sym,
         )
         if is_verified:
             return True
@@ -2415,50 +2602,58 @@ async def _async_partial_tp_close(
             raise
 
 
-def _position_risk_payload() -> dict:
-    """Risk bar uses dynamic active SL and static TP."""
-    if not get_open_position():
+def _position_risk_payload(symbol: str | None = None) -> dict:
+    """Risk bar uses dynamic active SL and static TP (per-symbol exchange_state)."""
+    sym = _norm_sym(symbol or SYMBOL)
+    if not get_open_position(sym):
         return {"open": False}
+    tr = xst.tracker(sym, SYMBOL)
+    pos = xst.position_snapshot(sym, SYMBOL)
     try:
-        tpf = float(_last_tp_price) if _last_tp_price is not None else None
+        tpf = float(tr.get("last_tp_price")) if tr.get("last_tp_price") is not None else None
     except (TypeError, ValueError):
         tpf = None
-    with _orderbook_lock:
-        bb, ba = best_bid, best_ask
+    bb, ba, _, _ = xst.get_orderbook_l1(sym, SYMBOL)
+    if sym == _norm_sym(SYMBOL) and bb <= 0 and ba <= 0:
+        with _orderbook_lock:
+            bb, ba = best_bid, best_ask
     mid = (bb + ba) / 2.0 if bb > 0 and ba > 0 else 0.0
     slf = None
     if mid > 0:
-        slf = _compute_active_sl_price(mid)
-    if slf is None and _last_active_sl_price is not None:
-        slf = float(_last_active_sl_price)
-    if slf is None and _last_sl_price is not None:
-        slf = float(_last_sl_price)
+        slf = _compute_active_sl_price(mid, sym)
+    if slf is None and tr.get("last_active_sl_price") is not None:
+        slf = float(tr["last_active_sl_price"])
+    if slf is None and tr.get("last_sl_price") is not None:
+        slf = float(tr["last_sl_price"])
     has_levels = bool(slf is not None and tpf is not None and slf > 0 and tpf > 0)
+    side_raw = str(pos.get("side") or tr.get("last_position_side") or "").strip()
     if not has_levels:
-        return {"open": True, "has_levels": False, "side": _last_position_side}
-    with _position_lock:
-        size = float(_position_size)
-        entry = _position_entry_price
+        return {"open": True, "has_levels": False, "side": side_raw or None}
+    size = float(pos.get("size") or 0)
+    entry = pos.get("entry")
     mid = (bb + ba) / 2 if bb > 0 and ba > 0 else None
-    if entry is None or entry <= 0:
+    if entry is None or float(entry or 0) <= 0:
         entry = mid
-    if entry is None or entry <= 0:
-        entry = (slf + tpf) / 2.0
+    if entry is None or float(entry or 0) <= 0:
+        entry = (float(slf) + float(tpf)) / 2.0
     if mid is None or mid <= 0:
         mid = float(entry)
-    side = (_last_position_side or "Buy").strip()
+    side = (side_raw or "Buy").strip()
+    if side.lower() not in ("buy", "sell"):
+        side = "Buy" if side.lower() in ("long", "buy") else "Sell"
     ent = float(entry)
     load_dotenv(override=True)
     load_dotenv("env", override=True)
     trade_amt = float(os.getenv("TRADE_AMOUNT_USD", os.getenv("trade_amount", "100")))
     lev = float(os.getenv("LEVERAGE", os.getenv("leverage", "10")))
     position_value_usd = trade_amt * lev
+    qstep, minq = _qty_constraints_for_symbol(sym)
     if size <= 1e-18 and ent > 0:
-        size = max(_min_order_qty, position_value_usd / ent)
+        size = max(minq, position_value_usd / ent)
     live_mid = float(mid)
     side_l = side.lower()
     is_short = side_l in ("sell", "short")
-    breakeven_buffer_active = bool(_breakeven_triggered)
+    breakeven_buffer_active = bool(tr.get("breakeven_triggered"))
     # Progress bar + SL $: normal SL left of entry; breakeven+buffer SL is past entry (fee cushion).
     if breakeven_buffer_active and not is_short and slf >= ent - 1e-12 and tpf > ent + 1e-12:
         fr = tpf - ent
@@ -2513,8 +2708,8 @@ def _position_risk_payload() -> dict:
     }
 
 
-def _apply_position_risk_to_state_dict(d: dict) -> None:
-    pr = _position_risk_payload()
+def _apply_position_risk_to_state_dict(d: dict, symbol: str) -> None:
+    pr = _position_risk_payload(symbol)
     d["position_risk"] = pr
     if pr.get("open") and pr.get("has_levels"):
         d["sl_price"] = pr.get("sl_price")
@@ -2533,8 +2728,17 @@ def _apply_position_risk_to_state_dict(d: dict) -> None:
 
 
 def _sync_position_risk_to_state() -> None:
+    syms = (
+        set(live_strategy_state.keys())
+        | {_norm_sym(s) for s in get_active_symbols()}
+        | set(xst.all_symbols_with_positions(SYMBOL))
+    )
     with _live_state_lock:
-        _apply_position_risk_to_state_dict(live_strategy_state)
+        for s in syms:
+            u = _norm_sym(s)
+            row = dict(live_strategy_state.get(u, _default_per_symbol_live_state(u)))
+            _apply_position_risk_to_state_dict(row, u)
+            live_strategy_state[u] = row
 
 
 def handle_execution_message(message: dict) -> None:
@@ -2814,19 +3018,73 @@ async def execute_strategy_signal(
         print("[Mock Signal] Warning: set_trading_stop failed.")
 
 
-async def _wait_for_entry_fill_confirmation(max_iters: int = 10, sleep_s: float = 0.5) -> bool:
-    """Wait until WS position state confirms open size > 0."""
+def _xst_record_filled_entry(
+    order_sym: str,
+    *,
+    side: str,
+    high: float,
+    low: float,
+    close: float,
+    is_reverse: bool,
+    total_qty: float,
+    ent: float,
+    sl_wide: float,
+    sl_tight: float,
+    tp: float,
+    sl_mx: float,
+    exchange_sl_ok: bool,
+) -> None:
+    """Persist open position + SL/TP tracker in exchange_state (multi-coin)."""
+    now = time.time()
+    xst.set_position_fields(
+        order_sym,
+        SYMBOL,
+        size=float(total_qty),
+        entry=float(ent),
+        side=side,
+    )
+    xst.set_tracker_fields(
+        order_sym,
+        SYMBOL,
+        last_signal_candle={"high": float(high), "low": float(low), "close": float(close)},
+        last_position_side=side,
+        last_sl_price=float(sl_wide),
+        last_tp_price=float(tp),
+        sl_max_price=float(sl_wide),
+        sl_min_price=float(sl_tight),
+        entry_time=now,
+        last_entry_time=now,
+        breakeven_triggered=False,
+        half_target_exited=False,
+        half_target_reached=False,
+        local_close_reason="",
+        last_active_sl_price=float(sl_wide),
+        exchange_sl_price=float(sl_wide) if exchange_sl_ok else 0.0,
+        last_position_was_reverse=bool(is_reverse),
+        base_risk_dist=abs(float(ent) - float(sl_wide)) / max(float(sl_mx), 1e-12),
+        monitor_had_position=True,
+    )
+
+
+async def _wait_for_entry_fill_confirmation(
+    max_iters: int = 10, sleep_s: float = 0.5, symbol: str | None = None
+) -> bool:
+    """Wait until WS position state confirms open size > 0 for ``symbol``."""
+    sym = _norm_sym(symbol or SYMBOL)
     for _ in range(max(1, int(max_iters))):
         await asyncio.sleep(max(0.05, float(sleep_s)))
-        if get_open_position():
-            with _position_lock:
-                if float(_position_size) > 0:
-                    return True
+        if xst.get_open_position(sym, SYMBOL):
+            return True
     return False
 
 
 async def _place_order_async(
-    side: str, signal_candle: dict, is_reverse: bool, meta: dict | None = None
+    side: str,
+    signal_candle: dict,
+    is_reverse: bool,
+    meta: dict | None = None,
+    *,
+    symbol: str | None = None,
 ) -> None:
     """
     Chunk execution then SL/TP. Signal_Range = signal candle high − low.
@@ -2834,12 +3092,11 @@ async def _place_order_async(
     SHORT: base = best bid → SL = base + range×SL_MULT, TP = base − range×TP_MULT.
     If meta.use_fixed_sl_tp (EMA Trap), SL/TP prices come from the strategy meta dict.
     """
-    global _last_position_side, _last_signal_candle, _last_sl_price, _last_tp_price, _last_position_was_reverse
-    global _position_entry_price, _entry_time, _sl_max_price, _sl_min_price, _breakeven_triggered, _half_target_exited, _half_target_reached, _last_active_sl_price, _exchange_sl_price, _local_close_reason
-    global _is_setting_initial_sl, _last_entry_time, _base_risk_dist, _position_size, _monitor_had_position
-    global _active_order_instance_id
-    if get_open_position():
-        print("Position already open, skipping new signal")
+    global _is_setting_initial_sl
+    order_sym = _norm_sym(symbol or str((meta or {}).get("symbol") or SYMBOL))
+    pos_row = xst.read_position_for_symbol(order_sym, SYMBOL)
+    if float(pos_row.get("size") or 0) > 0:
+        print(f"Position already open for {order_sym}, skipping new signal")
         return
     if not is_reverse and not _is_autotrade_enabled():
         print("Auto Trade is OFF (read from .env); skipping queued entry.")
@@ -2849,6 +3106,7 @@ async def _place_order_async(
     elif not is_reverse:
         load_active_instance_execution(None)
     high, low, close = _candle_to_ohlc(signal_candle)
+    qty_step, min_qty = _qty_constraints_for_symbol(order_sym)
     range_ = max(high - low, 1e-12)
     load_dotenv(override=True)
     load_dotenv("env", override=True)
@@ -2875,7 +3133,7 @@ async def _place_order_async(
         except Exception as e:
             print(f"[BALANCE ERROR] Failed to fetch wallet balance: {e}. Skipping trade.")
             return
-    b_bid, b_ask, _, _ = _get_orderbook_l1()
+    b_bid, b_ask, _, _ = xst.get_orderbook_l1(order_sym, SYMBOL)
     b_bid, b_ask = _apply_virtual_orderbook_fallback(
         b_bid, b_ask, close=close, high=high, low=low
     )
@@ -2950,16 +3208,16 @@ async def _place_order_async(
             total_qty = (trade_amount_usd * leverage) / (cv * current_price)
         else:
             total_qty = (trade_amount_usd * leverage) / current_price
-    total_qty = max(_min_order_qty, math.floor(total_qty / _qty_step) * _qty_step)
-    if total_qty < _min_order_qty:
-        print(f"Abort: total_qty {total_qty} below minOrderQty {_min_order_qty}. Increase trade amount or leverage.")
+    total_qty = max(min_qty, math.floor(total_qty / qty_step) * qty_step)
+    if total_qty < min_qty:
+        print(f"Abort: total_qty {total_qty} below minOrderQty {min_qty}. Increase trade amount or leverage.")
         return
 
     if not USE_DELTA and not _virtual_trading_enabled():
         try:
             HTTP_CLIENT.set_leverage(
                 category="linear",
-                symbol=SYMBOL,
+                symbol=order_sym,
                 buyLeverage=str(int(leverage)),
                 sellLeverage=str(int(leverage)),
             )
@@ -2971,9 +3229,8 @@ async def _place_order_async(
         loop = asyncio.get_running_loop()
         if _virtual_trading_enabled():
             await asyncio.sleep(0.05)
-            _last_entry_time = time.time()
             if is_reverse:
-                b_bid2, b_ask2, _, _ = _get_orderbook_l1()
+                b_bid2, b_ask2, _, _ = xst.get_orderbook_l1(order_sym, SYMBOL)
                 b_bid2, b_ask2 = _apply_virtual_orderbook_fallback(
                     b_bid2, b_ask2, close=close, high=high, low=low
                 )
@@ -2993,29 +3250,23 @@ async def _place_order_async(
                     sl_wide = ent + (range_ * sl_mx)
                     sl_tight = ent + (range_ * sl_mn)
                     tp = ent - (range_ * tp_m)
-                ok_rev = True
             else:
                 ent = float(base)
-                ok_rev = True
-            with _position_lock:
-                _position_size = float(total_qty)
-            _monitor_had_position = True
-            _last_position_side = side
-            _last_signal_candle = {"high": high, "low": low, "close": close}
-            _sl_max_price = sl_wide
-            _sl_min_price = sl_tight
-            _last_sl_price = sl_wide
-            _last_tp_price = tp
-            _last_position_was_reverse = bool(is_reverse)
-            _position_entry_price = ent
-            _entry_time = time.time()
-            _breakeven_triggered = False
-            _half_target_exited = False
-            _half_target_reached = False
-            _local_close_reason = ""
-            _last_active_sl_price = sl_wide
-            _base_risk_dist = abs(float(ent) - float(sl_wide)) / max(float(sl_mx), 1e-12)
-            _exchange_sl_price = float(sl_wide)
+            _xst_record_filled_entry(
+                order_sym,
+                side=side,
+                high=high,
+                low=low,
+                close=close,
+                is_reverse=is_reverse,
+                total_qty=total_qty,
+                ent=float(ent),
+                sl_wide=float(sl_wide),
+                sl_tight=float(sl_tight),
+                tp=float(tp),
+                sl_mx=float(sl_mx),
+                exchange_sl_ok=True,
+            )
             _set_exchange_sl_health("ok", "")
             if meta and meta.get("instance_id"):
                 iid = str(meta["instance_id"])
@@ -3034,7 +3285,8 @@ async def _place_order_async(
                 set_trading_stop_ok=True,
             )
             logging.info(
-                "[VIRTUAL] Paper fill %s size=%s entry=%s SL=%s TP=%s",
+                "[VIRTUAL] Paper fill %s %s size=%s entry=%s SL=%s TP=%s",
+                order_sym,
                 side,
                 total_qty,
                 ent,
@@ -3043,13 +3295,14 @@ async def _place_order_async(
             )
             return
 
+        get_l1 = lambda: xst.get_orderbook_l1(order_sym, SYMBOL)
         await execute_chunk_order_ws(
             side,
             total_qty,
-            SYMBOL,
-            _qty_step,
-            _min_order_qty,
-            _get_orderbook_l1,
+            order_sym,
+            qty_step,
+            min_qty,
+            get_l1,
             loop,
             ws_trade,
             _pending_fills,
@@ -3057,15 +3310,14 @@ async def _place_order_async(
             HTTP_CLIENT,
             is_entry=True,
         )
-        fill_ok = await _wait_for_entry_fill_confirmation(10, 0.5)
+        fill_ok = await _wait_for_entry_fill_confirmation(10, 0.5, order_sym)
         if not fill_ok:
             logging.critical("CRITICAL: Entry fill confirmation timeout. Aborting exchange SL/TP placement.")
             _set_health_error("Entry fill confirmation timeout")
             return
-        _last_entry_time = time.time()
 
         if is_reverse:
-            b_bid2, b_ask2, _, _ = _get_orderbook_l1()
+            b_bid2, b_ask2, _, _ = xst.get_orderbook_l1(order_sym, SYMBOL)
             if side == "Buy":
                 if not b_ask2 or b_ask2 <= 0:
                     print("No best ask after reversal fill; cannot init dynamic SL.")
@@ -3086,13 +3338,13 @@ async def _place_order_async(
             tp_str = f"{tp:.2f}"
             ok_sync_rev = await loop.run_in_executor(
                 None,
-                lambda s=side: _set_position_sl_tp_sync(
-                    HTTP_CLIENT, SYMBOL, "linear", sl_str, tp_str, entry_side=s
+                lambda s=side, osym=order_sym: _set_position_sl_tp_sync(
+                    HTTP_CLIENT, osym, "linear", sl_str, tp_str, entry_side=s
                 ),
             )
             verified_rev = True
             if ok_sync_rev:
-                verified_rev = await _confirm_exchange_sl_verified_after_sync()
+                verified_rev = await _confirm_exchange_sl_verified_after_sync(order_sym)
             ok_rev = ok_sync_rev and verified_rev
             if ok_sync_rev and not verified_rev:
                 logging.error(
@@ -3117,23 +3369,21 @@ async def _place_order_async(
                 "| TP:",
                 tp_str,
             )
-            _last_position_side = side
-            _last_signal_candle = {"high": high, "low": low, "close": close}
-            _sl_max_price = sl_wide
-            _sl_min_price = sl_tight
-            _last_sl_price = sl_wide
-            _last_tp_price = tp
-            _last_position_was_reverse = True
-            _position_entry_price = ent
-            _entry_time = time.time()
-            _breakeven_triggered = False
-            _half_target_exited = False
-            _half_target_reached = False
-            _local_close_reason = ""
-            _last_active_sl_price = sl_wide
-            _base_risk_dist = abs(float(ent) - float(sl_wide)) / max(float(sl_mx), 1e-12)
-            if ok_rev:
-                _exchange_sl_price = float(_sl_max_price)
+            _xst_record_filled_entry(
+                order_sym,
+                side=side,
+                high=high,
+                low=low,
+                close=close,
+                is_reverse=True,
+                total_qty=total_qty,
+                ent=float(ent),
+                sl_wide=float(sl_wide),
+                sl_tight=float(sl_tight),
+                tp=float(tp),
+                sl_mx=float(sl_mx),
+                exchange_sl_ok=bool(ok_rev),
+            )
             if meta and meta.get("instance_id"):
                 iid = str(meta["instance_id"])
                 instance_storage.merge_instance_state(iid, {"in_position": True})
@@ -3158,13 +3408,13 @@ async def _place_order_async(
 
         ok_sync = await loop.run_in_executor(
             None,
-            lambda s=side: _set_position_sl_tp_sync(
-                HTTP_CLIENT, SYMBOL, "linear", sl_str, tp_str, entry_side=s
+            lambda s=side, osym=order_sym: _set_position_sl_tp_sync(
+                HTTP_CLIENT, osym, "linear", sl_str, tp_str, entry_side=s
             ),
         )
         verified = True
         if ok_sync:
-            verified = await _confirm_exchange_sl_verified_after_sync()
+            verified = await _confirm_exchange_sl_verified_after_sync(order_sym)
         ok = ok_sync and verified
         if ok_sync and not verified:
             logging.error(
@@ -3186,23 +3436,21 @@ async def _place_order_async(
             print("Calculated SL (wide→tight):", sl_str, "| TP:", tp_str)
         else:
             print("Warning: set_trading_stop failed for SL/TP; local SL/TP tracker will still protect.")
-        _last_position_side = side
-        _last_signal_candle = {"high": high, "low": low, "close": close}
-        _sl_max_price = sl_wide
-        _sl_min_price = sl_tight
-        _last_sl_price = sl_wide
-        _last_tp_price = tp
-        _last_position_was_reverse = False
-        _position_entry_price = current_price
-        _entry_time = time.time()
-        _breakeven_triggered = False
-        _half_target_exited = False
-        _half_target_reached = False
-        _local_close_reason = ""
-        _last_active_sl_price = sl_wide
-        _base_risk_dist = abs(float(current_price) - float(sl_wide)) / max(float(sl_mx), 1e-12)
-        if ok:
-            _exchange_sl_price = float(_sl_max_price)
+        _xst_record_filled_entry(
+            order_sym,
+            side=side,
+            high=high,
+            low=low,
+            close=close,
+            is_reverse=False,
+            total_qty=total_qty,
+            ent=float(current_price),
+            sl_wide=float(sl_wide),
+            sl_tight=float(sl_tight),
+            tp=float(tp),
+            sl_mx=float(sl_mx),
+            exchange_sl_ok=bool(ok),
+        )
         if meta and meta.get("instance_id"):
             iid = str(meta["instance_id"])
             instance_storage.merge_instance_state(iid, {"in_position": True})
@@ -3637,6 +3885,10 @@ def _append_delta_closed_trade_to_file(
     snap_size: float,
     exit_price: float,
     strategy_name: str | None = None,
+    trade_symbol: str | None = None,
+    position_side: str | None = None,
+    local_close_reason_override: str | None = None,
+    entry_time_unix_override: float | None = None,
 ) -> None:
     """Append one closed trade row for Delta India (shown on Closed Trades page)."""
     if not USE_DELTA:
@@ -3649,7 +3901,8 @@ def _append_delta_closed_trade_to_file(
         from delta_client import get_delta_contract_value
 
         cv = float(get_delta_contract_value())
-        side = (_last_position_side or "").strip()
+        sym_row = _norm_sym(trade_symbol or SYMBOL)
+        side = (position_side or _last_position_side or "").strip()
         side_upper = "BUY" if side == "Buy" else "SELL" if side == "Sell" else side.upper() or "–"
         entry_f = float(snap_entry) if snap_entry is not None and snap_entry > 0 else 0.0
         exit_f = float(exit_price) if exit_price and float(exit_price) > 0 else 0.0
@@ -3663,22 +3916,23 @@ def _append_delta_closed_trade_to_file(
                 closed_pnl = sz * cv * (exit_f - entry_f)
             elif side == "Sell":
                 closed_pnl = sz * cv * (entry_f - exit_f)
-        reason = (_local_close_reason or "").strip()
+        reason = (local_close_reason_override if local_close_reason_override is not None else _local_close_reason or "").strip()
         if reason == "SL":
             exit_reason = "Stop Loss"
         elif reason == "TP":
             exit_reason = "Take Profit"
         elif reason == "PARTIAL":
             exit_reason = "Partial"
-        elif _was_closed_by_sl(exit_price):
+        elif _was_closed_by_sl(exit_price, sym_row):
             exit_reason = "Stop Loss (exchange)"
         else:
             exit_reason = reason or "—"
-        created_ms = int(max(0.0, float(_entry_time)) * 1000) if _entry_time else int(time.time() * 1000)
+        et_src = entry_time_unix_override if entry_time_unix_override is not None else _entry_time
+        created_ms = int(max(0.0, float(et_src)) * 1000) if et_src else int(time.time() * 1000)
         updated_ms = int(time.time() * 1000)
         row = {
             "exchange": "Delta India",
-            "symbol": SYMBOL,
+            "symbol": sym_row,
             "side": side_upper,
             "createdTime": str(created_ms),
             "updatedTime": str(updated_ms),
@@ -3726,7 +3980,7 @@ def _append_delta_closed_trade_to_file(
                 logging.info(
                     "[closed_trades] Appended row to %s (symbol=%s exitReason=%s pnl=%s)",
                     CLOSED_TRADES_JSON_PATH.resolve(),
-                    SYMBOL,
+                    sym_row,
                     exit_reason,
                     row.get("closedPnl"),
                 )
@@ -3782,67 +4036,82 @@ def _cancel_protective_orders_after_flat_sync(symbol: str | None = None) -> None
             )
 
 
-def on_position_closed(current_price: float) -> None:
+def on_position_closed(current_price: float, symbol: str | None = None) -> None:
     """
-    Run when position stream reports size 0 for SYMBOL (position closed).
-    Pass orderbook mid so exchange-executed SLs (empty _local_close_reason) still trigger reversal.
-    After SL: always queue reversal (opposite side, same signal candle range) — never superseded by a
-    fresh strategy signal at the same moment (momentum continuation / fake reversal logic).
-    Limit: if the *reversal* leg also hits SL, no second reverse (wait for next signal).
+    Run when position stream reports size 0 for ``symbol`` (position closed).
+    Pass orderbook mid so exchange-executed SLs (empty local_close_reason) still trigger reversal.
     """
-    global _monitor_had_position, _last_position_side, _last_signal_candle, _last_position_was_reverse, _loop, _signal_queue, _manual_reversal_allowed
-    if _last_position_side is None or _last_signal_candle is None or _loop is None or _signal_queue is None:
+    global _monitor_had_position, _loop, _signal_queue, _manual_reversal_allowed
+    sym = _norm_sym(symbol or SYMBOL)
+    tr = xst.tracker(sym, SYMBOL)
+    last_side = tr.get("last_position_side")
+    last_candle = tr.get("last_signal_candle")
+    was_rev = bool(tr.get("last_position_was_reverse"))
+    if last_side is None or last_candle is None or _loop is None or _signal_queue is None:
         return
-    if not _was_closed_by_sl(current_price):
+    if not _was_closed_by_sl(current_price, sym):
         return
-    if _last_position_was_reverse:
+    if was_rev:
         print("Reverse trade hit SL – no further reverse (limit 1 reverse per loss).")
         return
     rev_meta: dict | None = None
     iid = _active_order_instance_id
     if iid:
         inst = next((x for x in get_strategy_instances() if x.get("id") == iid), None)
+        if inst is not None and _norm_sym(str(inst.get("symbol") or SYMBOL)) != sym:
+            return
         if inst and str(inst.get("strategy_type") or "").strip().lower() == "ema_trap":
             print("EMA Trap: post-SL reversal disabled — position closed only.")
             return
         if inst and not bool((inst.get("params") or {}).get("enableReverse")):
             print("Strategy instance: enableReverse OFF — skipping post-SL reversal.")
             return
-        rev_meta = {"instance_id": iid, "strategy_type": (inst or {}).get("strategy_type")}
+        rev_meta = {
+            "instance_id": iid,
+            "strategy_type": (inst or {}).get("strategy_type"),
+            "symbol": sym,
+        }
     if not _is_autotrade_enabled() and not _manual_reversal_allowed:
         print("Auto Trade is OFF and manual reversal not allowed; skipping post-SL reversal.")
         return
-    reverse_side = "Sell" if _last_position_side == "Buy" else "Buy"
+    ls = str(last_side).strip().lower()
+    reverse_side = "Sell" if ls in ("buy", "long") else "Buy"
     print(
-        f"Stop loss on {_last_position_side} — queueing REVERSAL {reverse_side} "
+        f"Stop loss on {last_side} ({sym}) — queueing REVERSAL {reverse_side} "
         "(priority over any concurrent strategy signals; same signal range)."
     )
     _loop.call_soon_threadsafe(
-        _signal_queue.put_nowait, ("entry", reverse_side, _last_signal_candle, True, rev_meta)
+        _signal_queue.put_nowait, ("entry", reverse_side, last_candle, True, rev_meta)
     )
     _manual_reversal_allowed = False
+    if sym == _norm_sym(SYMBOL):
+        _monitor_had_position = False
 
 
 def handle_position_message(message: dict) -> None:
-    """Handle private position stream: update _position_size and detect position closed."""
-    global _position_size, _monitor_had_position, _position_entry_price, _is_closing_position
+    """Private position WS: update ``exchange_state`` for every linear row; handle flat per symbol."""
     if _virtual_trading_enabled():
         _sync_position_risk_to_state()
         return
     data = message.get("data") or []
-    size_for_symbol = 0.0
-    entry_from_ws: float | None = None
-    symbol_seen = False
+    if not data:
+        _sync_position_risk_to_state()
+        return
     for item in data:
         if item.get("category") != "linear":
             continue
-        if item.get("symbol") != SYMBOL:
+        raw_sym = str(item.get("symbol") or "").strip()
+        if not raw_sym:
             continue
-        symbol_seen = True
+        sym = _norm_sym(raw_sym)
         try:
-            size_for_symbol = float(item.get("size") or 0)
+            raw_sz = item.get("size")
+            rz = float(raw_sz or 0)
+            size_new = abs(rz)
         except (TypeError, ValueError):
-            size_for_symbol = 0.0
+            rz = 0.0
+            size_new = 0.0
+        entry_from_ws: float | None = None
         for k in ("avgPrice", "entryPrice", "avg_entry_price", "entry_price"):
             v = item.get(k)
             if v is not None and str(v).strip() != "":
@@ -3850,61 +4119,91 @@ def handle_position_message(message: dict) -> None:
                     ep = float(v)
                     if ep > 0:
                         entry_from_ws = ep
+                        break
                 except (TypeError, ValueError):
                     pass
-        break
-    if not symbol_seen:
-        _sync_position_risk_to_state()
-        return
-    with _position_lock:
-        had_before = _position_size > 0
-        snap_size_at_close = float(_position_size) if had_before else 0.0
+        side_raw = str(item.get("side") or "").strip()
+        ps_buy_sell: str | None = None
+        if side_raw:
+            sl = side_raw.lower()
+            if sl in ("buy", "long"):
+                ps_buy_sell = "Buy"
+            elif sl in ("sell", "short"):
+                ps_buy_sell = "Sell"
+        if ps_buy_sell is None and size_new > 0:
+            if rz > 0:
+                ps_buy_sell = "Buy"
+            elif rz < 0:
+                ps_buy_sell = "Sell"
+        prev = xst.read_position_for_symbol(sym, SYMBOL)
+        had_before = float(prev.get("size") or 0) > 0
+        snap_size_at_close = float(prev.get("size") or 0) if had_before else 0.0
         snap_entry_at_close: float | None = None
-        if had_before and _position_entry_price is not None:
+        if had_before:
             try:
-                pe = float(_position_entry_price)
-                if pe > 0:
-                    snap_entry_at_close = pe
+                pe = prev.get("entry")
+                if pe is not None:
+                    pef = float(pe)
+                    if pef > 0:
+                        snap_entry_at_close = pef
             except (TypeError, ValueError):
                 snap_entry_at_close = None
-        has_now = size_for_symbol > 0
-        _position_size = size_for_symbol
-        if size_for_symbol <= 0:
-            _is_closing_position = False
-            # Defer clearing entry until after on_position_closed / _was_closed_by_sl (needs entry vs exit).
-            if not (had_before and size_for_symbol == 0):
-                _position_entry_price = None
-        elif entry_from_ws is not None:
-            _position_entry_price = entry_from_ws
+        tr_snap = dict(xst.tracker(sym, SYMBOL))
+        entry_side_tr = str(tr_snap.get("last_position_side") or prev.get("side") or "").strip()
+        if size_new <= 0:
+            xst.set_position_fields(sym, SYMBOL, size=0.0, entry=None, side=None)
+            xst.set_closing(sym, SYMBOL, False)
+        else:
+            xst.set_position_fields(
+                sym,
+                SYMBOL,
+                size=size_new,
+                entry=entry_from_ws if entry_from_ws is not None else prev.get("entry"),
+                side=ps_buy_sell or prev.get("side"),
+            )
+        has_now = size_new > 0
         if had_before != has_now:
-            print(f"[{datetime.now().isoformat()}] Position update {SYMBOL}: size={size_for_symbol} ({'open' if has_now else 'closed'})")
-        if had_before and size_for_symbol == 0:
-            with _orderbook_lock:
-                bb, ba = best_bid, best_ask
+            print(
+                f"[{datetime.now().isoformat()}] Position update {sym}: size={size_new} "
+                f"({'open' if has_now else 'closed'})"
+            )
+        if had_before and size_new <= 0:
+            bb, ba, _, _ = xst.get_orderbook_l1(sym, SYMBOL)
             mid = (bb + ba) / 2.0 if bb > 0 and ba > 0 else 0.0
-            sl_hit = _was_closed_by_sl(mid)
-            _monitor_had_position = False
-            _cancel_protective_orders_after_flat_sync(SYMBOL)
+            sl_hit = _was_closed_by_sl(mid, sym)
+            _cancel_protective_orders_after_flat_sync(sym)
             strat_snap = (_active_trade_strategy_name or "Manual / Unknown").strip()
-            on_position_closed(mid)
-            _clear_active_instance_on_flat(sl_loss=sl_hit)
+            lr_override = str(tr_snap.get("local_close_reason") or "")
+            et_ov = tr_snap.get("entry_time") or tr_snap.get("last_entry_time")
+            try:
+                et_f = float(et_ov) if et_ov is not None else None
+            except (TypeError, ValueError):
+                et_f = None
+            ps_closed = entry_side_tr or side_raw or "Buy"
+            if ps_closed not in ("Buy", "Sell"):
+                pll = ps_closed.lower()
+                ps_closed = "Buy" if pll in ("buy", "long") else "Sell" if pll in ("sell", "short") else "Buy"
+            on_position_closed(mid, sym)
+            _clear_active_instance_on_flat(sl_loss=sl_hit, symbol=sym)
             _append_delta_closed_trade_to_file(
                 snap_entry=snap_entry_at_close,
                 snap_size=snap_size_at_close,
                 exit_price=mid,
                 strategy_name=strat_snap,
+                trade_symbol=sym,
+                position_side=ps_closed,
+                local_close_reason_override=lr_override,
+                entry_time_unix_override=et_f,
             )
-            _clear_sl_tp_tracker_on_file_and_globals()
-            _position_entry_price = None
-        elif size_for_symbol > 0:
-            _monitor_had_position = True
-        elif (
-            not had_before
-            and size_for_symbol <= 0
-            and (_last_sl_price is not None or _last_tp_price is not None)
+            xst.clear_tracker(sym, SYMBOL)
+            if sym == _norm_sym(SYMBOL):
+                _clear_sl_tp_tracker_on_file_and_globals()
+        elif size_new > 0:
+            xst.set_tracker_fields(sym, SYMBOL, monitor_had_position=True)
+        elif not had_before and size_new <= 0 and (
+            tr_snap.get("last_tp_price") or tr_snap.get("last_sl_price")
         ):
-            # Stale tracker on disk while exchange reports flat (e.g. restart after close)
-            _clear_sl_tp_tracker_on_file_and_globals()
+            xst.clear_tracker(sym, SYMBOL)
     _sync_position_risk_to_state()
 
 
@@ -3954,10 +4253,9 @@ def _weak_momentum_prepare_eval_df(
 
 def _rebuild_instance_checks_live_state(symbol_normalized: str) -> None:
     """
-    Build per-instance entry rule checklists for the Live Monitor (``live_strategy_state["checks"]``).
+    Build per-instance entry rule checklists for the Live Monitor under ``live_strategy_state[sym]["checks"]``.
     Uses each instance's timeframe buffer and strategy_type (EMA Trap vs Weak Momentum).
     """
-    global live_strategy_state
     sym_u = _norm_sym(symbol_normalized)
     checks: dict[str, Any] = {}
     for inst in get_strategy_instances():
@@ -4042,17 +4340,23 @@ def _rebuild_instance_checks_live_state(symbol_normalized: str) -> None:
             }
 
     with _live_state_lock:
-        live_strategy_state["checks"] = checks
-        live_strategy_state["checks_updated_unix"] = time.time()
+        cur = dict(live_strategy_state.get(sym_u, _default_per_symbol_live_state(sym_u)))
+        cur["checks"] = checks
+        cur["checks_updated_unix"] = time.time()
+        live_strategy_state[sym_u] = cur
 
 
-def _clear_active_instance_on_flat(*, sl_loss: bool) -> None:
+def _clear_active_instance_on_flat(*, sl_loss: bool, symbol: str | None = None) -> None:
     """When flat, release instance lock + optional cooldown after SL."""
     global _active_order_instance_id, _active_instance_monitor_params, _active_trade_strategy_name
     iid = _active_order_instance_id
     if not iid:
         return
     inst = next((x for x in get_strategy_instances() if x.get("id") == iid), None)
+    if symbol is not None and inst is not None:
+        inst_sym = _norm_sym(str(inst.get("symbol") or SYMBOL))
+        if inst_sym != _norm_sym(symbol):
+            return
     patch: dict = {"in_position": False}
     if sl_loss and inst:
         strat = str(inst.get("strategy_type") or "").strip().lower()
@@ -4136,10 +4440,11 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
                 conf_start,
             )
             continue
-        if get_open_position():
+        if get_open_position(sym_u):
             logging.info(
-                "[instances] Skip %s signal — exchange position already open",
+                "[instances] Skip %s signal — position already open on %s",
                 inst.get("id"),
+                sym_u,
             )
             continue
 
@@ -4226,23 +4531,25 @@ def check_signals(df: pd.DataFrame) -> None:
 DISPLAY_COLUMNS = ["close", "volume", "volume_increasing", "RSI", "RSI_SMA"]
 
 
-def _persist_last_signal_candle_start(candle_start: int) -> None:
-    """Write LAST_SIGNAL_CANDLE_START to .live_strategy_state.json so restarts don't repeat signal on same candle."""
-    global live_strategy_state
+def _persist_last_signal_candle_start(candle_start: int, symbol: str | None = None) -> None:
+    """Persist last_signal_candle_start for a symbol and flush multi-symbol state file."""
+    global LAST_SIGNAL_CANDLE_START
+    sym = _norm_sym(symbol or SYMBOL)
     with _live_state_lock:
-        snapshot = dict(live_strategy_state)
-        snapshot["last_signal_candle_start"] = candle_start
-        _merge_sl_tp_tracker_into_dict(snapshot)
+        cur = dict(live_strategy_state.get(sym, _default_per_symbol_live_state(sym)))
+        cur["last_signal_candle_start"] = candle_start
+        live_strategy_state[sym] = cur
+    if sym == _norm_sym(SYMBOL):
+        LAST_SIGNAL_CANDLE_START = candle_start
     try:
-        with open(_LIVE_STATE_PATH, "w", encoding="utf-8") as f:
-            _json.dump(snapshot, f, indent=2)
+        _flush_live_state_file_with_tracker()
     except Exception as e:
         print(f"Warning: could not persist last_signal_candle_start: {e}")
 
 
-def _update_live_strategy_state(df: pd.DataFrame) -> None:
-    """Update live_strategy_state from latest closed candle; rules match entry logic (both candles same color, etc.)."""
-    global live_strategy_state, LAST_SIGNAL_CANDLE_START
+def _update_live_strategy_state(df: pd.DataFrame, symbol: str) -> None:
+    """Update ``live_strategy_state[symbol]`` from latest closed candle (legacy 1m rule display)."""
+    sym_u = _norm_sym(symbol)
     if len(df) < 3:
         return
     row = df.iloc[-2]
@@ -4302,7 +4609,7 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
     long_triggered = both_bearish and vd and rsi_oversold_ok and expected_profit_pct_ok
     short_triggered = both_bullish and vd and rsi_overbought_ok and expected_profit_pct_ok
 
-    if get_open_position():
+    if get_open_position(sym_u):
         status = "Position Open"
     elif long_triggered:
         status = "Long Signal"
@@ -4327,13 +4634,18 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
         "volume": round(float(row.get("volume", 0)), 2),
         "Expected_Profit_Pct": round(expected_profit_pct, 2),
     }
+    with _live_state_lock:
+        prev = dict(live_strategy_state.get(sym_u, _default_per_symbol_live_state(sym_u)))
+        prev_checks = prev.get("checks")
+        prev_checks_ts = prev.get("checks_updated_unix")
+        prev_lss = prev.get("last_signal_candle_start")
     state = {
-        "symbol": SYMBOL,
+        "symbol": sym_u,
         "price": round(close, 4),
         "indicators": indicators,
         "conditions": {"long": long_rules, "short": short_rules},
         "status": status,
-        "last_signal_candle_start": LAST_SIGNAL_CANDLE_START,
+        "last_signal_candle_start": prev_lss if prev_lss is not None else LAST_SIGNAL_CANDLE_START,
         # Top-panel RSI is from 1m buffer row iloc[-2] using *legacy* rule display — do not
         # confuse with instance cards, which use each instance's timeframe + pure WM sig bar RSI.
         "indicators_note": (
@@ -4342,15 +4654,14 @@ def _update_live_strategy_state(df: pd.DataFrame) -> None:
         ),
     }
     with _live_state_lock:
-        prev_checks = live_strategy_state.get("checks")
-        prev_checks_ts = live_strategy_state.get("checks_updated_unix")
-        live_strategy_state.clear()
-        live_strategy_state.update(state)
+        new = dict(prev)
+        new.update(state)
         if isinstance(prev_checks, dict):
-            live_strategy_state["checks"] = prev_checks
+            new["checks"] = prev_checks
         if prev_checks_ts is not None:
-            live_strategy_state["checks_updated_unix"] = prev_checks_ts
-        _apply_position_risk_to_state_dict(live_strategy_state)
+            new["checks_updated_unix"] = prev_checks_ts
+        _apply_position_risk_to_state_dict(new, sym_u)
+        live_strategy_state[sym_u] = new
     # Disk write: use _flush_live_state_file_with_tracker() after _rebuild_instance_checks_live_state
 
 
@@ -4375,7 +4686,7 @@ def handle_kline_message(message: dict, interval_minutes: int = 1) -> None:
         df = pd.DataFrame(KLINES)
         if not df.empty:
             df = compute_indicators(df)
-            _update_live_strategy_state(df)
+            _update_live_strategy_state(df, sym_u)
             last3 = df.tail(3)
             cols = [c for c in DISPLAY_COLUMNS if c in last3.columns]
             if cols:
@@ -4597,16 +4908,21 @@ async def main_async() -> None:
         )
     )
     logging.info("[instances] Subscribing kline intervals (minutes): %s", kline_ivs)
-    # Load last signal candle from file so we don't repeat signal on same candle after restart
+    # Load last signal candle from file (per-symbol under multi_v1, else legacy root key)
     try:
-        if _LIVE_STATE_PATH.exists():
-            with open(_LIVE_STATE_PATH, "r", encoding="utf-8") as f:
-                loaded = _json.load(f)
-            if isinstance(loaded, dict):
-                prev = loaded.get("last_signal_candle_start")
-                if prev is not None:
-                    LAST_SIGNAL_CANDLE_START = int(prev)
-                    print(f"[bot] Loaded last_signal_candle_start from file: {LAST_SIGNAL_CANDLE_START}")
+        boot_raw = _read_live_state_json_safe()
+        if boot_raw:
+            mp0 = _live_state_symbols_from_disk_raw(boot_raw)
+            pu = _norm_sym(SYMBOL)
+            rowp = mp0.get(pu)
+            if not isinstance(rowp, dict):
+                rowp = boot_raw if "_file_format" not in boot_raw else {}
+            prev = rowp.get("last_signal_candle_start") if isinstance(rowp, dict) else None
+            if prev is None:
+                prev = boot_raw.get("last_signal_candle_start")
+            if prev is not None:
+                LAST_SIGNAL_CANDLE_START = int(prev)
+                print(f"[bot] Loaded last_signal_candle_start from file: {LAST_SIGNAL_CANDLE_START}")
     except Exception as e:
         print(f"[bot] Could not load last_signal_candle_start: {e}")
     # Resurrection Protocol: before any websocket loops begin, verify whether the exchange has
@@ -4714,18 +5030,14 @@ async def main_async() -> None:
 
     _loop = asyncio.get_running_loop()
     _signal_queue = asyncio.Queue()
+    mp_boot = _live_state_symbols_from_disk_raw(_read_live_state_json_safe())
     with _live_state_lock:
         live_strategy_state.clear()
-        live_strategy_state.update({
-            "symbol": SYMBOL,
-            "price": 0.0,
-            "indicators": {},
-            "indicators_note": "",
-            "conditions": {"long": [], "short": []},
-            "checks": {},
-            "checks_updated_unix": 0.0,
-            "status": "Waiting",
-        })
+        for s, row in mp_boot.items():
+            live_strategy_state[_norm_sym(s)] = dict(row)
+        for u in {_norm_sym(SYMBOL)} | {_norm_sym(x) for x in get_active_symbols()}:
+            if u not in live_strategy_state:
+                live_strategy_state[u] = _default_per_symbol_live_state(u)
 
     ok_inst, qt, miq, mnv = fetch_instrument_info(
         SYMBOL, HTTP_CLIENT if not USE_DELTA else None
@@ -4743,16 +5055,13 @@ async def main_async() -> None:
     if KLINES:
         df_init = pd.DataFrame(KLINES)
         df_init = compute_indicators(df_init)
-        _update_live_strategy_state(df_init)
+        _update_live_strategy_state(df_init, _norm_sym(SYMBOL))
     _rebuild_instance_checks_live_state(_norm_sym(SYMBOL))
     live_stream = None
 
-    # Write initial live strategy state so dashboard can show symbol/status + instance checks before first kline
+    # Write initial multi-symbol live strategy state for dashboard
     try:
-        merged = {**_read_live_state_json_safe(), **dict(live_strategy_state)}
-        _merge_sl_tp_tracker_into_dict(merged)
-        with open(_LIVE_STATE_PATH, "w", encoding="utf-8") as f:
-            _json.dump(merged, f, indent=2)
+        _flush_live_state_file_with_tracker()
     except Exception as e:
         print(f"[bot] Initial state write failed: {e}")
 

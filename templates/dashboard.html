@@ -805,6 +805,17 @@
         return;
       }
 
+      /** Multi-symbol API: { symbols: { BTCUSDT: {...} }, primary_symbol }; legacy: flat object */
+      var statusRoot = data;
+      var symbolsMap = (data.symbols != null && typeof data.symbols === 'object' && !Array.isArray(data.symbols)) ? data.symbols : null;
+      var primarySym = (data.primary_symbol != null && String(data.primary_symbol).trim()) ? String(data.primary_symbol).trim() : '';
+      if (symbolsMap) {
+        var keys = Object.keys(symbolsMap);
+        if (!primarySym && keys.length) primarySym = keys.sort()[0];
+        data = symbolsMap[primarySym] || {};
+        if (!data.symbol && primarySym) data = Object.assign({ symbol: primarySym }, data);
+      }
+
       function escapeHtml(s) {
         if (s == null) return '';
         return String(s)
@@ -881,37 +892,27 @@
         }
       }
 
-      // Dynamic instance checklists: data.checks is an object keyed by instance id (not an array)
+      // Instance checklists: multi-symbol → iterate symbols; legacy → single data.checks
       var container = document.getElementById('instance-checks-container');
       if (container) {
         container.innerHTML = '';
-        var rawChecks = data.checks;
-        var checksDict = {};
-        if (rawChecks != null && typeof rawChecks === 'object' && !Array.isArray(rawChecks)) {
-          checksDict = rawChecks;
-        }
-        var instanceList = Object.values(checksDict);
-        var ts = Number(data.checks_updated_unix);
-        if (isFinite(ts) && ts > 0) window.__lastStrategyChecksTs = Math.max(window.__lastStrategyChecksTs, ts);
-        if (instanceList.length === 0) {
-          var staleHint = (!data.symbol || !String(data.symbol).trim())
-            ? ' (Bot may be off — last file merge also empty.)'
-            : '';
-          container.innerHTML = '<div class="text-slate-400 text-sm p-4 bg-slate-800/80 border border-slate-700 rounded-xl">No active strategy instances for this symbol. Enable one in the Strategy Hub.' + staleHint + '</div>';
-        } else {
-          function buildRules(rules) {
-            if (!rules || !rules.length) {
-              return '<p class="text-xs text-slate-500">No rules defined</p>';
-            }
-            return rules.map(function (r) {
-              var met = !!(r && r.met);
-              var label = (r && (r.text != null ? r.text : r.name)) ? String(r.text != null ? r.text : r.name) : '';
-              var textCls = met ? 'text-slate-100' : 'text-slate-400';
-              return '<div class="flex items-start mb-1.5 gap-2">' +
-                '<span class="mt-1.5 w-2.5 h-2.5 shrink-0 rounded-full ' + (met ? 'bg-emerald-500' : 'bg-red-500') + '" aria-hidden="true"></span>' +
-                '<span class="text-xs ' + textCls + '">' + escapeHtml(label) + '</span></div>';
-            }).join('');
+
+        function buildRules(rules) {
+          if (!rules || !rules.length) {
+            return '<p class="text-xs text-slate-500">No rules defined</p>';
           }
+          return rules.map(function (r) {
+            var met = !!(r && r.met);
+            var label = (r && (r.text != null ? r.text : r.name)) ? String(r.text != null ? r.text : r.name) : '';
+            var textCls = met ? 'text-slate-100' : 'text-slate-400';
+            return '<div class="flex items-start mb-1.5 gap-2">' +
+              '<span class="mt-1.5 w-2.5 h-2.5 shrink-0 rounded-full ' + (met ? 'bg-emerald-500' : 'bg-red-500') + '" aria-hidden="true"></span>' +
+              '<span class="text-xs ' + textCls + '">' + escapeHtml(label) + '</span></div>';
+          }).join('');
+        }
+
+        function renderInstanceCards(checksDict, symLabel) {
+          var instanceList = Object.values(checksDict);
           instanceList.forEach(function (instance) {
             if (!instance || typeof instance !== 'object') return;
             var name = instance.name || 'Unnamed instance';
@@ -957,6 +958,45 @@
               '</div></div></div>';
             container.insertAdjacentHTML('beforeend', cardHtml);
           });
+        }
+
+        var anyCards = false;
+        if (statusRoot && statusRoot.symbols && typeof statusRoot.symbols === 'object') {
+          var symKeys = Object.keys(statusRoot.symbols).sort();
+          for (var si = 0; si < symKeys.length; si++) {
+            var skey = symKeys[si];
+            var sub = statusRoot.symbols[skey];
+            if (!sub || typeof sub !== 'object') continue;
+            var rc = sub.checks;
+            var checksDict = {};
+            if (rc != null && typeof rc === 'object' && !Array.isArray(rc)) checksDict = rc;
+            var ts = Number(sub.checks_updated_unix);
+            if (isFinite(ts) && ts > 0) window.__lastStrategyChecksTs = Math.max(window.__lastStrategyChecksTs, ts);
+            if (Object.keys(checksDict).length === 0) continue;
+            anyCards = true;
+            container.insertAdjacentHTML('beforeend',
+              '<div class="text-xs font-mono text-slate-400 mb-2 mt-4 first:mt-0 border-b border-slate-700 pb-1">' +
+              escapeHtml(String(skey)) + '</div>');
+            renderInstanceCards(checksDict, skey);
+          }
+        }
+        if (!anyCards) {
+          var rawChecks = data.checks;
+          var checksDict = {};
+          if (rawChecks != null && typeof rawChecks === 'object' && !Array.isArray(rawChecks)) {
+            checksDict = rawChecks;
+          }
+          var instanceList = Object.values(checksDict);
+          var ts = Number(data.checks_updated_unix);
+          if (isFinite(ts) && ts > 0) window.__lastStrategyChecksTs = Math.max(window.__lastStrategyChecksTs, ts);
+          if (instanceList.length === 0) {
+            var staleHint = (!data.symbol || !String(data.symbol).trim())
+              ? ' (Bot may be off — last file merge also empty.)'
+              : '';
+            container.innerHTML = '<div class="text-slate-400 text-sm p-4 bg-slate-800/80 border border-slate-700 rounded-xl">No active strategy instances for this symbol. Enable one in the Strategy Hub.' + staleHint + '</div>';
+          } else {
+            renderInstanceCards(checksDict, data.symbol || '');
+          }
         }
       }
 
