@@ -13,5 +13,35 @@
     "fees": 0,
     "exitReason": "Take Profit (paper)",
     "strategy_name": "EMA Trap 3m"
+  },
+  {
+    "exchange": "Virtual (Paper)",
+    "symbol": "BTCUSDT",
+    "side": "SELL",
+    "createdTime": "1774140247769",
+    "updatedTime": "1774140247769",
+    "avgEntryPrice": "68982.5",
+    "avgExitPrice": "69028.5",
+    "leverage": "5",
+    "marginUsed": "",
+    "closedPnl": "-0.046",
+    "fees": 0,
+    "exitReason": "Stop Loss (paper)",
+    "strategy_name": "Weak Momentum 1m"
+  },
+  {
+    "exchange": "Virtual (Paper)",
+    "symbol": "BTCUSDT",
+    "side": "BUY",
+    "createdTime": "1774140250752",
+    "updatedTime": "1774140250752",
+    "avgEntryPrice": "69029",
+    "avgExitPrice": "69042",
+    "leverage": "5",
+    "marginUsed": "",
+    "closedPnl": "0.013",
+    "fees": 0,
+    "exitReason": "Take Profit (paper)",
+    "strategy_name": "Weak Momentum 1m"
   }
 ]

@@ -1,15 +1,15 @@
 {
   "symbol": "BTCUSDT",
-  "price": 70260.5,
+  "price": 69166.5,
   "indicators": {
-    "RSI": 41.82,
-    "RSI_SMA": 37.5,
-    "volume_signal_vs_prev": true,
-    "body_size": 13.5,
-    "open": 70274.0,
-    "close": 70260.5,
-    "volume": 649.0,
-    "Expected_Profit_Pct": 0.03
+    "RSI": 51.45,
+    "RSI_SMA": 54.44,
+    "volume_signal_vs_prev": false,
+    "body_size": 11.0,
+    "open": 69177.5,
+    "close": 69166.5,
+    "volume": 2381.0,
+    "Expected_Profit_Pct": 0.02
   },
   "conditions": {
     "long": [
@@ -19,15 +19,15 @@
       },
       {
         "name": "Previous Candle Bearish",
-        "met": false
+        "met": true
       },
       {
         "name": "Both Bearish",
-        "met": false
+        "met": true
       },
       {
         "name": "Volume: signal > previous",
-        "met": true
+        "met": false
       },
       {
         "name": "RSI < 40.0",
@@ -45,7 +45,7 @@
       },
       {
         "name": "Previous Candle Bullish",
-        "met": true
+        "met": false
       },
       {
         "name": "Both Bullish",
@@ -53,7 +53,7 @@
       },
       {
         "name": "Volume: signal > previous",
-        "met": true
+        "met": false
       },
       {
         "name": "RSI > 60.0",
@@ -87,7 +87,7 @@
           "met": true
         },
         {
-          "text": "Prev RSI < 40.0 (was 33.68)",
+          "text": "Prev RSI < 40.0 (was 30.99)",
           "met": true
         },
         {
@@ -105,7 +105,7 @@
           "met": true
         },
         {
-          "text": "Prev RSI > 60.0 (was 33.68)",
+          "text": "Prev RSI > 60.0 (was 30.99)",
           "met": false
         },
         {
@@ -125,7 +125,7 @@
       "rules_long": [
         {
           "text": "Prev Close < EMA Low",
-          "met": true
+          "met": false
         },
         {
           "text": "Prev RSI < 40.0",
@@ -133,7 +133,7 @@
         },
         {
           "text": "Curr Close > EMA Low",
-          "met": false
+          "met": true
         },
         {
           "text": "Range Filter Uptrend",
