@@ -18,6 +18,20 @@
       box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.1);
       border: 1px solid rgb(30, 41, 59);
     }
+    /* Wrapper keeps SL/TP text inside padded bounds so parent overflow-hidden does not clip labels */
+    .risk-bar-outer {
+      position: relative;
+      width: 100%;
+      max-width: 100%;
+      padding-left: 0.25rem;
+      padding-right: 0.25rem;
+      margin-top: 0.5rem;
+      margin-bottom: 0.25rem;
+      overflow: visible;
+    }
+    @media (min-width: 640px) {
+      .risk-bar-outer { padding-left: 0.5rem; padding-right: 0.5rem; }
+    }
     .risk-bar-track {
       position: relative;
       height: 32px;
@@ -25,6 +39,7 @@
       background: rgba(30, 41, 59, 0.9);
       border: 1px solid rgb(51, 65, 85);
       margin-top: 0.25rem;
+      overflow: visible;
     }
     .risk-bar-zone-sl {
       position: absolute;
@@ -924,6 +939,48 @@
       }
     }
 
+    /** Parse API SL/TP fields (handles "-", "–", commas). */
+    function parsePriceField(v) {
+      if (v == null || v === false) return NaN;
+      var s = String(v).trim();
+      if (s === '' || s === '–' || s === '-' || s.toLowerCase() === 'nan') return NaN;
+      s = s.replace(/,/g, '');
+      var n = Number(s);
+      return (isFinite(n) && n > 0) ? n : NaN;
+    }
+
+    function extractPositionSl(p) {
+      if (!p) return NaN;
+      var pr = p.position_risk || {};
+      var candidates = [
+        p.stop_loss, p.sl, p.sl_price,
+        pr.sl_price, pr.sl_max_price, pr.tracker_sl_max, pr.last_sl_price
+      ];
+      var i;
+      for (i = 0; i < candidates.length; i++) {
+        var n = parsePriceField(candidates[i]);
+        if (isFinite(n)) return n;
+      }
+      return NaN;
+    }
+
+    function extractPositionTp(p) {
+      if (!p) return NaN;
+      var pr = p.position_risk || {};
+      var candidates = [p.take_profit, p.tp, p.tp_price, pr.tp_price, pr.last_tp_price];
+      var i;
+      for (i = 0; i < candidates.length; i++) {
+        var n = parsePriceField(candidates[i]);
+        if (isFinite(n)) return n;
+      }
+      return NaN;
+    }
+
+    function formatRiskPriceLabel(n) {
+      if (!isFinite(n) || n <= 0) return '–';
+      return formatNum(n);
+    }
+
     function findPositionForSymbol(positions, sym) {
       var i;
       for (i = 0; i < (positions || []).length; i++) {
@@ -951,8 +1008,10 @@
       var badgeClass = isManualStrat
         ? 'bg-emerald-500 text-slate-950 border-emerald-200 shadow-emerald-500/30'
         : 'bg-cyan-400 text-slate-950 border-cyan-200 shadow-cyan-500/30';
-      var slRaw = p.stop_loss;
-      var tpRaw = p.take_profit;
+      var slNum = extractPositionSl(p);
+      var tpNum = extractPositionTp(p);
+      var slRaw = formatRiskPriceLabel(slNum);
+      var tpRaw = formatRiskPriceLabel(tpNum);
       var entryN = Number(p.entryPrice);
       var midN = Number(p.markPrice);
       if (!isFinite(midN) || midN <= 0) midN = entryN;
@@ -966,22 +1025,31 @@
         '<div class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">' +
         '<span class="text-slate-500">Entry</span><span class="text-slate-200 font-mono">' + escapeHtmlUnified(p.entryPrice || '–') + '</span>' +
         '<span class="text-slate-500">Mark</span><span class="text-amber-200 font-mono">' + escapeHtmlUnified(isFinite(midN) ? String(midN) : (p.markPrice || '–')) + '</span>' +
-        '<span class="text-slate-500">SL</span><span class="text-red-300 font-mono">' + escapeHtmlUnified(slRaw || '–') + '</span>' +
-        '<span class="text-slate-500">TP</span><span class="text-emerald-300 font-mono">' + escapeHtmlUnified(tpRaw || '–') + '</span>' +
+        '<span class="text-slate-500">SL</span><span class="text-red-300 font-mono">' + escapeHtmlUnified(slRaw) + '</span>' +
+        '<span class="text-slate-500">TP</span><span class="text-emerald-300 font-mono">' + escapeHtmlUnified(tpRaw) + '</span>' +
         (isManualStrat
           ? '<span class="col-span-2 text-[10px] text-slate-500 mt-1">SL/TP = bot default (1% / 2%), not instance candle × multipliers.</span>'
           : '') +
         '<span class="text-slate-500">Size</span><span class="text-slate-200 font-mono">' + escapeHtmlUnified(p.size || '–') + '</span>' +
         '<span class="text-slate-500">uPNL</span><span class="' + uPnlClass + ' font-semibold font-mono">' + (isFinite(uPnl) ? ((uPnl >= 0 ? '+' : '') + formatNum(p.unrealisedPnl)) : '–') + '</span>' +
         '</div>' +
-        '<div class="risk-bar-track mt-1" data-risk-bar-root>' +
+        '<div class="risk-bar-outer">' +
+        '<div class="flex justify-between items-end gap-3 mb-1 min-h-[2.5rem]">' +
+        '<div class="min-w-0 shrink text-left">' +
+        '<div class="text-[9px] font-bold uppercase tracking-wider text-red-400 leading-none mb-0.5">SL</div>' +
+        '<div class="text-[11px] sm:text-xs font-mono text-red-200 tabular-nums truncate max-w-full" title="Stop loss">' + escapeHtmlUnified(slRaw) + '</div></div>' +
+        '<div class="min-w-0 shrink text-right">' +
+        '<div class="text-[9px] font-bold uppercase tracking-wider text-emerald-400 leading-none mb-0.5">TP</div>' +
+        '<div class="text-[11px] sm:text-xs font-mono text-emerald-200 tabular-nums truncate max-w-full" title="Take profit">' + escapeHtmlUnified(tpRaw) + '</div></div>' +
+        '</div>' +
+        '<div class="risk-bar-track mt-0" data-risk-bar-root>' +
         '<div data-rb="zone-sl" class="risk-bar-zone-sl" style="width:0%"></div>' +
         '<div data-rb="zone-tp" class="risk-bar-zone-tp" style="left:0%;width:0%"></div>' +
         '<div data-rb="fill-green" class="risk-bar-fill risk-bar-fill-green" style="left:0%;width:0%;display:none"></div>' +
         '<div data-rb="fill-red" class="risk-bar-fill risk-bar-fill-red" style="left:0%;width:0%;display:none"></div>' +
         '<div data-rb="entry-line" class="risk-bar-entry" style="left:50%"></div>' +
-        '<div data-rb="dot" class="risk-bar-dot" style="left:50%"></div></div>' +
-        '<p class="text-[10px] text-slate-500">Bar: SL–TP · line = entry · dot = mark</p>' +
+        '<div data-rb="dot" class="risk-bar-dot" style="left:50%"></div></div></div>' +
+        '<p class="text-[10px] text-slate-500">Bar: red zone = SL side · green = TP side · line = entry · dot = mark</p>' +
         '<button type="button" class="closePos w-full rounded-lg bg-slate-700 hover:bg-slate-600 text-white text-sm font-medium py-2 px-3 transition" data-symbol="' + escapeHtmlUnified(p.symbol || sym) + '" data-side="' + escapeHtmlUnified(p.side || '') + '">Close position</button>' +
         '</div>';
     }
@@ -1088,8 +1156,8 @@
         var p2 = findPositionForSymbol(positions, symAttr);
         if (!p2) continue;
         var rbRoot = row.querySelector('[data-risk-bar-root]');
-        var slN = Number(p2.stop_loss);
-        var tpN = Number(p2.take_profit);
+        var slN = extractPositionSl(p2);
+        var tpN = extractPositionTp(p2);
         var entryN = Number(p2.entryPrice);
         var midN = Number(p2.markPrice);
         if (!isFinite(midN) || midN <= 0) midN = entryN;
