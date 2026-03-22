@@ -58,7 +58,6 @@ from main import (
     get_live_strategy_status_for_api,
     get_paper_position_rows_for_ui,
     get_virtual_wallet,
-    get_active_symbols,
     register_manual_trade,
     reload_active_strategies_from_env,
     reload_strategy_instances_cache,
@@ -265,6 +264,7 @@ def _delta_positions_to_ui_rows(raw: dict | list | None) -> list[dict]:
         side = "Buy" if sz > 0 else "Sell"
         entry = str(p.get("entry_price") or "0")
         unreal = p.get("unrealized_pnl") or p.get("unrealised_pnl") or p.get("realized_pnl") or "0"
+        mark = p.get("mark_price") or p.get("index_price") or p.get("close_price") or ""
         out.append({
             "symbol": sym_ui,
             "side": side,
@@ -274,6 +274,7 @@ def _delta_positions_to_ui_rows(raw: dict | list | None) -> list[dict]:
             "liqPrice": str(p.get("liquidation_price") or ""),
             "stop_loss": "-",
             "take_profit": "-",
+            "markPrice": str(mark) if mark not in (None, "") else "",
             "unrealisedPnl": str(unreal),
             "createdTime": str(p.get("updated_at") or p.get("timestamp") or "0"),
         })
@@ -331,26 +332,6 @@ def _load_local_sl_tp_for_position_symbol(pos_symbol: str) -> tuple[float | None
     except Exception as e:
         print(f"[api/positions] local SL/TP state read skipped: {e}")
         return None, None, ""
-
-
-def _tracked_symbols_for_positions() -> set[str]:
-    """Symbols we monitor (instances + any open position in exchange_state)."""
-    out = {str(s).strip().upper() for s in get_active_symbols()}
-    out |= set(_xst.all_symbols_with_positions(BOT_SYMBOL))
-    out.discard("")
-    if not out:
-        out.add(str(BOT_SYMBOL or "").strip().upper())
-    return out
-
-
-def _position_row_matches_tracked(pos_symbol: str, tracked: set[str]) -> bool:
-    ps = str(pos_symbol or "").strip()
-    if not ps:
-        return False
-    for t in tracked:
-        if _symbol_matches_state(ps, t):
-            return True
-    return False
 
 
 def _strategy_name_from_live_state(pos_symbol: str) -> str:
@@ -691,7 +672,6 @@ async def api_positions():
     if _virtual_trading_from_env():
         rows = await asyncio.to_thread(get_paper_position_rows_for_ui, "")
         return rows
-    tracked = _tracked_symbols_for_positions()
     if _app_exchange_id() == "delta_india":
         k, s = _delta_keys()
         if not k or not s:
@@ -705,12 +685,6 @@ async def api_positions():
                     msg = msg.get("message") or raw
                 return JSONResponse(status_code=502, content={"error": str(msg or "Delta positions error")})
             rows = _delta_positions_to_ui_rows(raw)
-            rows = [
-                r
-                for r in rows
-                if isinstance(r, dict)
-                and _position_row_matches_tracked(str(r.get("symbol") or ""), tracked)
-            ]
             return _inject_local_sl_tp_into_positions(rows, is_delta=True)
         except Exception as e:
             print(f"[api/positions] Delta: {e}")
@@ -723,16 +697,12 @@ async def api_positions():
             print(f"[api/positions] Bybit retCode != 0: {msg}")
             return JSONResponse(status_code=502, content={"error": msg})
         positions = response.get("result", {}).get("list", [])
-        active_positions = [
-            p
-            for p in positions
-            if float(p.get("size", 0) or 0) > 0
-            and _position_row_matches_tracked(str(p.get("symbol") or ""), tracked)
-        ]
+        active_positions = [p for p in positions if float(p.get("size", 0) or 0) > 0]
         out = []
         for p in active_positions:
             sl = p.get("stopLoss") or "0"
             tp = p.get("takeProfit") or "0"
+            mk = p.get("markPrice") or p.get("mark_price") or ""
             out.append({
                 "symbol": p.get("symbol", ""),
                 "side": p.get("side", ""),
@@ -742,6 +712,7 @@ async def api_positions():
                 "liqPrice": p.get("liqPrice") or "",
                 "stop_loss": "-" if (not sl or sl == "0" or str(sl).strip() == "") else str(sl),
                 "take_profit": "-" if (not tp or tp == "0" or str(tp).strip() == "") else str(tp),
+                "markPrice": str(mk) if mk not in (None, "") else "",
                 "unrealisedPnl": p.get("unrealisedPnl", "0"),
                 "createdTime": p.get("createdTime", "0"),
             })
@@ -1070,6 +1041,14 @@ async def api_trade_manual(body: ManualTradeBody):
                 status_code=400,
                 detail="Strategy instance is stopped (enable it in Strategy Hub)",
             )
+    trade_sym = (body.symbol or "").strip().upper()
+    if inst:
+        isym = str((inst or {}).get("symbol") or "").strip().upper()
+        if isym:
+            trade_sym = isym
+    if not trade_sym:
+        raise HTTPException(status_code=400, detail="symbol is required (e.g. ETHUSDT)")
+    body = body.model_copy(update={"symbol": trade_sym})
     p = dict((inst or {}).get("params") or {})
     if inst:
         try:
@@ -1094,17 +1073,10 @@ async def api_trade_manual(body: ManualTradeBody):
     try:
         async with _initial_sl_setting_guard():
             if _virtual_trading_from_env():
-                sym_u = (body.symbol or "").strip().upper()
-                bot_u = (BOT_SYMBOL or "").strip().upper()
-                if sym_u != bot_u:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Paper trading uses configured bot symbol {BOT_SYMBOL}",
-                    )
                 vw = await asyncio.to_thread(get_virtual_wallet)
                 if float(vw.get("balance", 0)) < float(trade_usd):
                     raise HTTPException(status_code=400, detail="Insufficient virtual balance")
-                bb, ba, mid, _ = await asyncio.to_thread(_get_orderbook_l1)
+                bb, ba, mid, _ = await asyncio.to_thread(_get_orderbook_l1, body.symbol)
                 if body.side == "Buy":
                     base = float(ba) if ba and float(ba) > 0 else float(mid or 0)
                 else:
@@ -1372,19 +1344,16 @@ async def api_trade_close(body: CloseTradeBody):
     try:
         if _virtual_trading_from_env():
             sym_u = (body.symbol or "").strip().upper()
-            if sym_u != (BOT_SYMBOL or "").strip().upper():
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Paper mode: use configured symbol {BOT_SYMBOL}",
-                )
-            bb, ba, mid, _ = await asyncio.to_thread(_get_orderbook_l1)
+            if not sym_u:
+                raise HTTPException(status_code=400, detail="symbol is required")
+            bb, ba, mid, _ = await asyncio.to_thread(_get_orderbook_l1, sym_u)
             exit_p = (bb + ba) / 2.0 if bb > 0 and ba > 0 else float(mid or 0)
             if exit_p <= 0:
                 raise HTTPException(
                     status_code=502,
                     detail="No mid price — start the bot for orderbook data",
                 )
-            r = await asyncio.to_thread(virtual_market_close_sync, float(exit_p))
+            r = await asyncio.to_thread(virtual_market_close_sync, float(exit_p), sym_u)
             if not r.get("ok"):
                 raise HTTPException(
                     status_code=400,
@@ -1478,12 +1447,9 @@ async def api_trade_mock_signal(body: MockSignalBody):
         raise HTTPException(status_code=400, detail="usd_amount must be positive")
     if _virtual_trading_from_env():
         sym_u = (body.symbol or "").strip().upper()
-        if sym_u != (BOT_SYMBOL or "").strip().upper():
-            raise HTTPException(
-                status_code=400,
-                detail=f"Paper mock: symbol must be {BOT_SYMBOL}",
-            )
-        bb, ba, mid, _ = await asyncio.to_thread(_get_orderbook_l1)
+        if not sym_u:
+            raise HTTPException(status_code=400, detail="symbol is required")
+        bb, ba, mid, _ = await asyncio.to_thread(_get_orderbook_l1, sym_u)
         if body.side == "Buy":
             cp = float(ba) if ba and float(ba) > 0 else float(mid or 0)
         else:

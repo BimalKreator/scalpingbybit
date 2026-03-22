@@ -838,6 +838,12 @@ def get_paper_position_rows_for_ui(symbol: str = "") -> list[dict]:
         except (TypeError, ValueError):
             ct_ms = "0"
         strat_nm = str(tr.get("strategy_name") or "").strip() or "Manual"
+        mid_s = ""
+        try:
+            if bb > 0 and ba > 0:
+                mid_s = f"{(bb + ba) / 2.0:.8f}".rstrip("0").rstrip(".")
+        except (TypeError, ValueError):
+            mid_s = ""
         rows.append(
             {
                 "symbol": sym,
@@ -848,6 +854,7 @@ def get_paper_position_rows_for_ui(symbol: str = "") -> list[dict]:
                 "liqPrice": "",
                 "stop_loss": str(sl) if sl is not None else "-",
                 "take_profit": str(tp) if tp is not None else "-",
+                "markPrice": mid_s,
                 "unrealisedPnl": upnl,
                 "createdTime": ct_ms,
                 "paper": True,
@@ -907,14 +914,15 @@ def _finalize_virtual_position_close(
         pass
 
 
-def virtual_market_close_sync(exit_price: float) -> dict:
-    """API/manual: close full paper position at exit_price."""
+def virtual_market_close_sync(exit_price: float, symbol: str | None = None) -> dict:
+    """API/manual: close paper position for ``symbol`` (or primary SYMBOL) at exit_price."""
     if not _virtual_trading_enabled():
         return {"ok": False, "error": "not_virtual_mode"}
-    with _position_lock:
-        if float(_position_size) <= 0:
-            return {"ok": False, "error": "no_open_position"}
-    _finalize_virtual_position_close(float(exit_price), "Manual close (paper)")
+    sym = _norm_sym(symbol or SYMBOL)
+    snap_sz, _, _ = _read_position_for_symbol(sym)
+    if snap_sz <= 1e-18:
+        return {"ok": False, "error": "no_open_position"}
+    _finalize_virtual_position_close(float(exit_price), "Manual close (paper)", symbol=sym)
     return {"ok": True}
 
 
@@ -3041,9 +3049,7 @@ async def execute_strategy_signal(
     global _sl_max_price, _sl_min_price, _last_sl_price, _last_tp_price, _position_entry_price
     global _entry_time, _breakeven_triggered, _half_target_exited, _half_target_reached
     global _last_active_sl_price, _last_position_was_reverse, _local_close_reason, _base_risk_dist, _exchange_sl_price
-    if symbol != SYMBOL:
-        print(f"[Mock Signal] Only configured symbol {SYMBOL} is supported; got {symbol}. Aborting.")
-        return
+    sym_u = _norm_sym(symbol)
     if current_price <= 0 or usd_amount <= 0 or leverage <= 0:
         print("[Mock Signal] Invalid current_price, usd_amount or leverage. Aborting.")
         return
@@ -3060,7 +3066,7 @@ async def execute_strategy_signal(
         range_ = max(current_price * MOCK_RANGE_PCT, 1e-12)
         high = current_price + range_ / 2
         low = current_price - range_ / 2
-    b_bid, b_ask, _, _ = _get_orderbook_l1()
+    b_bid, b_ask, _, _ = _get_orderbook_l1(sym_u)
     if side == "Buy":
         base = b_ask if b_ask and b_ask > 0 else current_price
         sl_wide = base - (range_ * sl_mx)
@@ -3077,16 +3083,39 @@ async def execute_strategy_signal(
     tp_str = f"{tp:.2f}"
 
     if USE_DELTA:
-        from delta_client import get_delta_contract_value
+        from delta_client import fetch_instrument_info_delta, get_delta_contract_value
 
-        total_qty = (usd_amount * leverage) / (
-            get_delta_contract_value(_norm_sym(SYMBOL)) * base
+        ok_inst, qty_step, min_order_qty, _mnv = fetch_instrument_info_delta(sym_u)
+        if (
+            not ok_inst
+            or qty_step is None
+            or min_order_qty is None
+            or float(qty_step) <= 0
+        ):
+            print(f"[Mock Signal] Delta instrument not available for {sym_u}.")
+            return
+        qty_step = float(qty_step)
+        min_order_qty = float(min_order_qty)
+        cv_f = float(get_delta_contract_value(sym_u))
+        raw_qty = (usd_amount * leverage) / (cv_f * base)
+        total_qty = max(
+            min_order_qty, float(math.floor(raw_qty / qty_step) * qty_step)
         )
+        if abs(qty_step - 1.0) < 1e-12:
+            total_qty = float(int(total_qty))
     else:
-        total_qty = (usd_amount * leverage) / base
-    total_qty = max(_min_order_qty, math.floor(total_qty / _qty_step) * _qty_step)
-    if total_qty < _min_order_qty:
-        print(f"[Mock Signal] Abort: total_qty {total_qty} below minOrderQty {_min_order_qty}.")
+        from bybit_client import _get_instrument_lot
+
+        try:
+            qs, mo = _get_instrument_lot(sym_u)
+        except Exception:
+            qs, mo = _qty_step, _min_order_qty
+        raw_qty = (usd_amount * leverage) / base
+        total_qty = max(mo, math.floor(raw_qty / qs) * qs)
+        min_order_qty = float(mo)
+    mo_chk = float(min_order_qty)
+    if total_qty < mo_chk:
+        print(f"[Mock Signal] Abort: total_qty {total_qty} below min {mo_chk}.")
         return
 
     print("[Mock Signal] Mock Signal Received.")
@@ -3099,28 +3128,51 @@ async def execute_strategy_signal(
         if float(vw.get("balance", 0)) < float(usd_amount):
             print(f"[VIRTUAL] Mock: insufficient paper balance ({vw.get('balance')}).")
             return
-        with _position_lock:
-            _position_size = float(total_qty)
-        _monitor_had_position = True
-        _last_position_side = side
-        _last_signal_candle = {"high": high, "low": low, "close": float(base)}
-        _sl_max_price, _sl_min_price = sl_wide, sl_tight
-        _last_sl_price = sl_wide
-        _last_tp_price = tp
-        _position_entry_price = float(base)
-        _entry_time = time.time()
-        _breakeven_triggered = False
-        _half_target_exited = False
-        _half_target_reached = False
-        _local_close_reason = ""
-        _last_active_sl_price = sl_wide
-        _last_position_was_reverse = False
-        _base_risk_dist = abs(float(base) - float(sl_wide)) / max(float(sl_mx), 1e-12)
-        _exchange_sl_price = float(sl_wide)
+        _xst_record_filled_entry(
+            sym_u,
+            side=side,
+            high=high,
+            low=low,
+            close=float(base),
+            is_reverse=False,
+            total_qty=float(total_qty),
+            ent=float(base),
+            sl_wide=float(sl_wide),
+            sl_tight=float(sl_tight),
+            tp=float(tp),
+            sl_mx=float(sl_mx),
+            exchange_sl_ok=True,
+        )
+        if sym_u == _norm_sym(SYMBOL):
+            with _position_lock:
+                _position_size = float(total_qty)
+            _monitor_had_position = True
+            _last_position_side = side
+            _last_signal_candle = {"high": high, "low": low, "close": float(base)}
+            _sl_max_price, _sl_min_price = sl_wide, sl_tight
+            _last_sl_price = sl_wide
+            _last_tp_price = tp
+            _position_entry_price = float(base)
+            _entry_time = time.time()
+            _breakeven_triggered = False
+            _half_target_exited = False
+            _half_target_reached = False
+            _local_close_reason = ""
+            _last_active_sl_price = sl_wide
+            _last_position_was_reverse = False
+            _base_risk_dist = abs(float(base) - float(sl_wide)) / max(float(sl_mx), 1e-12)
+            _exchange_sl_price = float(sl_wide)
         _set_exchange_sl_health("ok", "")
         _sync_position_risk_to_state()
         _flush_live_state_file_with_tracker()
         print("[VIRTUAL] Mock signal paper fill complete (no exchange orders).")
+        return
+
+    if sym_u != _norm_sym(SYMBOL):
+        print(
+            f"[Mock Signal] Live mock orders only run on primary {SYMBOL}; got {sym_u}. "
+            "Use paper mode for other symbols."
+        )
         return
 
     if not USE_DELTA:
