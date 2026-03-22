@@ -1,7 +1,7 @@
 """
 Multi-strategy backtest engine (Weak Momentum, EMA Trap + RF).
 
-Web/API backtests load OHLCV only from ``logs/market_data_1m.json`` (see ``load_backtest_df_from_candle_cache``).
+Web/API backtests load OHLCV from ``logs/market_data_{SYMBOL}_1m.json`` (legacy ``market_data_1m.json`` fallback; see ``load_backtest_df_from_candle_cache``).
 Optional CCXT/REST fetch helpers remain for CLI tools (e.g. ``run_heavy_backtest.py``).
 Fees + reversal behaviour aligned with the live bot where applicable.
 """
@@ -25,7 +25,18 @@ import requests
 import ccxt
 
 # Persistent 1m candle store (shared with live bot in main.py)
-CANDLE_CACHE_PATH = Path(__file__).resolve().parent / "logs" / "market_data_1m.json"
+# Legacy single-file 1m cache (pre multi-coin). Kept for one-time migration reads.
+LEGACY_CANDLE_CACHE_1M_PATH = Path(__file__).resolve().parent / "logs" / "market_data_1m.json"
+CANDLE_CACHE_PATH = LEGACY_CANDLE_CACHE_1M_PATH  # backward-compat alias
+
+
+def candle_cache_json_path(symbol: str, interval_minutes: int = 1) -> Path:
+    """Per-symbol interval candle JSON under logs/ (e.g. market_data_BTCUSDT_1m.json)."""
+    sym = (symbol or "").strip().upper().replace("/", "_").replace("\\", "_")
+    if not sym:
+        sym = "UNKNOWN"
+    iv = max(1, int(interval_minutes))
+    return Path(__file__).resolve().parent / "logs" / f"market_data_{sym}_{iv}m.json"
 
 TAKER_ENTRY_FEE = 0.00055  # 0.055%
 TAKER_EXIT_FEE_BYBIT = 0.00055
@@ -230,8 +241,8 @@ def _parse_candle_cache_json(raw: object) -> tuple[list[dict], str | None, str |
 def read_candle_cache_file(
     path: Path | None = None,
 ) -> tuple[list[dict], str | None, str | None]:
-    """Read and parse logs/market_data_1m.json (or given path). Returns (candles, symbol, exchange_id)."""
-    p = path or CANDLE_CACHE_PATH
+    """Read and parse a market_data_{SYMBOL}_{N}m.json payload (or given path). Returns (candles, symbol, exchange_id)."""
+    p = path or LEGACY_CANDLE_CACHE_1M_PATH
     if not p.is_file():
         return [], None, None
     try:
@@ -252,21 +263,36 @@ def load_backtest_df_from_candle_cache(
     exchange_id: str | None = None,
 ) -> tuple[pd.DataFrame | None, str | None]:
     """
-    Load 1m OHLCV strictly from CANDLE_CACHE_PATH (no exchange HTTP).
+    Load 1m OHLCV from per-symbol cache logs/market_data_{SYMBOL}_1m.json (no exchange HTTP).
+    Falls back to legacy logs/market_data_1m.json when the new file is missing and symbols match.
     Returns (df, None) on success, or (None, error_message).
     """
-    path = CANDLE_CACHE_PATH
-    if not path.is_file():
+    sym_u = (symbol or "").strip().upper()
+    path = candle_cache_json_path(sym_u, 1)
+    candles: list[dict] = []
+    file_sym: str | None = None
+    file_ex: str | None = None
+
+    if path.is_file():
+        candles, file_sym, file_ex = read_candle_cache_file(path)
+    if not candles and LEGACY_CANDLE_CACHE_1M_PATH.is_file():
+        leg_c, leg_sym, leg_ex = read_candle_cache_file(LEGACY_CANDLE_CACHE_1M_PATH)
+        if leg_c and leg_sym and str(leg_sym).strip().upper() == sym_u:
+            candles, file_sym, file_ex = leg_c, leg_sym, leg_ex
+            path = LEGACY_CANDLE_CACHE_1M_PATH
+
+    if not path.is_file() and not candles:
         return None, (
             "No local candle database found. Start the live bot first to build the historical database "
-            f"({path.name})."
+            f"({candle_cache_json_path(sym_u, 1).name} or legacy {LEGACY_CANDLE_CACHE_1M_PATH.name})."
         )
 
-    candles, file_sym, file_ex = read_candle_cache_file(path)
     if not candles:
-        return None, "Candle cache is empty or unreadable. Run the live bot to populate logs/market_data_1m.json."
+        return None, (
+            "Candle cache is empty or unreadable. Run the live bot to populate "
+            f"{candle_cache_json_path(sym_u, 1).name}."
+        )
 
-    sym_u = (symbol or "").strip().upper()
     if file_sym and file_sym.strip().upper() != sym_u:
         return None, (
             f"Cached symbol ({file_sym}) does not match requested symbol ({sym_u}). "

@@ -285,7 +285,9 @@ except ValueError:
     KLINES_MAX = 1000
 # Multi-timeframe buffers: key (symbol_upper, interval_minutes) -> list of candle dicts
 KLINES_BY_KEY: dict[tuple[str, int], list] = {}
-# Legacy alias: primary symbol 1m buffer (rebound in fetch_historical_klines_multi)
+# Closed-bar indicator DataFrames per (symbol, interval); synced on WS/history updates (no cross-symbol mixing)
+_CLOSED_KLINE_DF_BY_KEY: dict[tuple[str, int], pd.DataFrame] = {}
+# Legacy alias: primary .env SYMBOL 1m buffer only (rebound after history load / each kline tick)
 KLINES: list = []
 _instances_runtime_lock = threading.Lock()
 _STRATEGY_INSTANCES_CACHE: list[dict] = []
@@ -452,7 +454,11 @@ def _bump_instance_bar_state(instance_id: str, conf_start: int, state: dict) -> 
     return st
 
 
-from backtest_engine import CANDLE_CACHE_PATH, read_candle_cache_file
+from backtest_engine import (
+    LEGACY_CANDLE_CACHE_1M_PATH,
+    candle_cache_json_path,
+    read_candle_cache_file,
+)
 
 try:
     CANDLE_CACHE_MAX_BARS = max(10_000, min(2_000_000, int(os.getenv("CANDLE_CACHE_MAX_BARS", "300000"))))
@@ -460,8 +466,8 @@ except ValueError:
     CANDLE_CACHE_MAX_BARS = 300_000
 
 _candle_cache_lock = threading.Lock()
-_cache_high_water_ms: int = 0
-_pending_cache_writes: list[dict] = []
+_cache_high_water_ms: dict[tuple[str, int], int] = {}
+_pending_cache_writes: dict[tuple[str, int], list[dict]] = {}
 _last_candle_cache_flush_ts: float = 0.0
 
 # Track last candle we signaled on (start timestamp) so we only print once per closed candle
@@ -1407,18 +1413,20 @@ def _normalize_candle_dict_for_cache(c: dict) -> dict:
     }
 
 
-def _write_candle_cache_payload(candles: list[dict], symbol: str, exchange_id: str) -> None:
-    CANDLE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+def _write_candle_cache_payload(
+    path: Path, candles: list[dict], symbol: str, exchange_id: str
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "version": 1,
         "symbol": (symbol or "").strip().upper(),
         "exchange_id": (exchange_id or "bybit").strip().lower(),
         "candles": candles,
     }
-    tmp = CANDLE_CACHE_PATH.with_suffix(".tmp.json")
+    tmp = path.with_suffix(".tmp.json")
     with open(tmp, "w", encoding="utf-8") as f:
         _json.dump(payload, f, indent=2, ensure_ascii=False)
-    os.replace(tmp, CANDLE_CACHE_PATH)
+    os.replace(tmp, path)
 
 
 def _is_ws_kline_fully_closed(row: dict) -> bool:
@@ -1433,53 +1441,73 @@ def _is_ws_kline_fully_closed(row: dict) -> bool:
 
 def _flush_pending_candle_cache_writes(force: bool = False) -> None:
     global _pending_cache_writes, _last_candle_cache_flush_ts, _cache_high_water_ms
-    if not _pending_cache_writes:
+    total_pending = sum(len(v) for v in _pending_cache_writes.values())
+    if total_pending == 0:
         return
     now = time.time()
-    if not force and len(_pending_cache_writes) < 5 and (now - _last_candle_cache_flush_ts) < 45.0:
+    if not force and total_pending < 5 and (now - _last_candle_cache_flush_ts) < 45.0:
         return
     with _candle_cache_lock:
-        pending = list(_pending_cache_writes)
-        _pending_cache_writes.clear()
-    disk, fsym, fex = read_candle_cache_file(CANDLE_CACHE_PATH)
-    by_start: dict[int, dict] = {}
-    for c in disk:
-        if isinstance(c, dict) and c.get("start") is not None:
-            try:
-                st = int(c["start"])
-                by_start[st] = _normalize_candle_dict_for_cache(c)
-            except Exception:
-                continue
-    for nw in pending:
-        try:
-            by_start[int(nw["start"])] = nw
-        except Exception:
-            continue
-    merged = sorted(by_start.values(), key=lambda r: r["start"])
-    if len(merged) > CANDLE_CACHE_MAX_BARS:
-        merged = merged[-CANDLE_CACHE_MAX_BARS:]
-    sym = (fsym or SYMBOL).strip().upper()
-    ex = (fex or _exchange_id_for_cache()).strip().lower()
+        pending_by_key: dict[tuple[str, int], list[dict]] = {
+            k: list(v) for k, v in _pending_cache_writes.items() if v
+        }
+        for k in pending_by_key:
+            _pending_cache_writes[k].clear()
+    ex_default = _exchange_id_for_cache()
     try:
-        _write_candle_cache_payload(merged, sym, ex)
+        for (sym_u, iv), pending in pending_by_key.items():
+            if not pending:
+                continue
+            path = candle_cache_json_path(sym_u, iv)
+            disk, fsym, fex = read_candle_cache_file(path)
+            by_start: dict[int, dict] = {}
+            for c in disk:
+                if isinstance(c, dict) and c.get("start") is not None:
+                    try:
+                        st = int(c["start"])
+                        by_start[st] = _normalize_candle_dict_for_cache(c)
+                    except Exception:
+                        continue
+            for nw in pending:
+                try:
+                    by_start[int(nw["start"])] = nw
+                except Exception:
+                    continue
+            merged = sorted(by_start.values(), key=lambda r: r["start"])
+            if len(merged) > CANDLE_CACHE_MAX_BARS:
+                merged = merged[-CANDLE_CACHE_MAX_BARS:]
+            sym = (fsym or sym_u).strip().upper()
+            if sym != sym_u.strip().upper():
+                sym = sym_u.strip().upper()
+            ex = (fex or ex_default).strip().lower()
+            _write_candle_cache_payload(path, merged, sym, ex)
+            cache_key = (sym_u, iv)
+            if merged:
+                _cache_high_water_ms[cache_key] = merged[-1]["start"]
+            logging.info(
+                "[candle_cache] Flushed %s WS candle row(s) → %s (total bars=%s)",
+                len(pending),
+                path.name,
+                len(merged),
+            )
         _last_candle_cache_flush_ts = time.time()
-        if merged:
-            _cache_high_water_ms = merged[-1]["start"]
-        logging.info(
-            "[candle_cache] Flushed %s WS candle row(s) → %s (total bars=%s)",
-            len(pending),
-            CANDLE_CACHE_PATH.name,
-            len(merged),
-        )
     except Exception as e:
         logging.error("[candle_cache] Flush failed: %s", e, exc_info=True)
         with _candle_cache_lock:
-            _pending_cache_writes = pending + _pending_cache_writes
+            for k, rows in pending_by_key.items():
+                if rows:
+                    _pending_cache_writes.setdefault(k, []).extend(rows)
 
 
-def _queue_closed_candle_rows_for_cache(rows: list[dict]) -> None:
-    """Persist fully closed 1m candles from WS into logs/market_data_1m.json (batched)."""
+def _queue_closed_candle_rows_for_cache(
+    rows: list[dict], symbol: str, interval_minutes: int = 1
+) -> None:
+    """Persist fully closed candles from WS into logs/market_data_{SYMBOL}_{N}m.json (batched)."""
     global _cache_high_water_ms
+    sym_u = _norm_sym(symbol)
+    iv = max(1, int(interval_minutes))
+    cache_key = (sym_u, iv)
+    hw = int(_cache_high_water_ms.get(cache_key, 0))
     new_norm: list[dict] = []
     for r in rows:
         if not _is_ws_kline_fully_closed(r) or r.get("start") is None:
@@ -1488,7 +1516,7 @@ def _queue_closed_candle_rows_for_cache(rows: list[dict]) -> None:
             st = int(r["start"])
         except (TypeError, ValueError):
             continue
-        if st <= _cache_high_water_ms:
+        if st <= hw:
             continue
         try:
             new_norm.append(_normalize_candle_dict_for_cache(r))
@@ -1498,15 +1526,16 @@ def _queue_closed_candle_rows_for_cache(rows: list[dict]) -> None:
         return
     new_norm.sort(key=lambda x: x["start"])
     with _candle_cache_lock:
-        _pending_cache_writes.extend(new_norm)
-        _cache_high_water_ms = max(_cache_high_water_ms, new_norm[-1]["start"])
+        _pending_cache_writes.setdefault(cache_key, []).extend(new_norm)
+        _cache_high_water_ms[cache_key] = max(hw, new_norm[-1]["start"])
     _flush_pending_candle_cache_writes(force=False)
 
 
 def fetch_historical_klines() -> bool:
     """
     Load history for every enabled instance timeframe + default 1m primary chart.
-    For the primary (SYMBOL, 1m) buffer, also merge logs/market_data_1m.json candle cache.
+    For each symbol's 1m buffer, merge logs/market_data_{SYMBOL}_1m.json (and legacy
+    market_data_1m.json when symbol matches), then REST gap fill.
     """
     global KLINES, KLINES_MAX, RSI_SMA_LENGTH, _cache_high_water_ms, KLINES_BY_KEY
     load_dotenv(override=True)
@@ -1523,15 +1552,19 @@ def fetch_historical_klines() -> bool:
     reload_strategy_instances_cache()
     keys = _required_kline_keys_from_instances()
     ex_id = _exchange_id_for_cache()
-    sym_u = _norm_sym(SYMBOL)
     any_ok = False
 
     for sym, tfm in sorted(keys):
         buf = kline_buffer(sym, tfm)
         buf.clear()
         seed: list = []
-        if sym == sym_u and tfm == 1:
-            disk_rows, file_sym, file_ex = read_candle_cache_file(CANDLE_CACHE_PATH)
+        if tfm == 1:
+            path_1m = candle_cache_json_path(sym, 1)
+            disk_rows, file_sym, file_ex = read_candle_cache_file(path_1m)
+            if not disk_rows:
+                leg_rows, leg_sym, leg_ex = read_candle_cache_file(LEGACY_CANDLE_CACHE_1M_PATH)
+                if leg_rows and leg_sym and _norm_sym(str(leg_sym)) == _norm_sym(sym):
+                    disk_rows, file_sym, file_ex = leg_rows, leg_sym, leg_ex
             merged_by_start: dict[int, dict] = {}
             for c in disk_rows:
                 if isinstance(c, dict) and c.get("start") is not None:
@@ -1541,7 +1574,7 @@ def fetch_historical_klines() -> bool:
                     except Exception:
                         continue
             stale = False
-            if file_sym and file_sym.strip().upper() != sym_u:
+            if file_sym and _norm_sym(str(file_sym)) != _norm_sym(sym):
                 stale = True
             if file_ex and file_ex.strip().lower() != ex_id.lower():
                 stale = True
@@ -1583,10 +1616,10 @@ def fetch_historical_klines() -> bool:
                 merged_list = merged_list[-CANDLE_CACHE_MAX_BARS:]
             if merged_list:
                 try:
-                    _write_candle_cache_payload(merged_list, sym, ex_id)
-                    _cache_high_water_ms = merged_list[-1]["start"]
+                    _write_candle_cache_payload(path_1m, merged_list, sym, ex_id)
+                    _cache_high_water_ms[(_norm_sym(sym), 1)] = merged_list[-1]["start"]
                 except Exception as e:
-                    logging.error("[candle_cache] Could not write %s: %s", CANDLE_CACHE_PATH, e)
+                    logging.error("[candle_cache] Could not write %s: %s", path_1m, e)
             buf.extend(merged_list[-KLINES_MAX:] if merged_list else [])
         else:
             if USE_DELTA:
@@ -1605,6 +1638,7 @@ def fetch_historical_klines() -> bool:
         if buf:
             any_ok = True
             print(f"Loaded {len(buf)} klines in RAM for {sym} ({tfm}m).")
+        _sync_closed_kline_df_cache(sym, tfm)
 
     KLINES = kline_buffer(SYMBOL, 1)
     if not any_ok:
@@ -1632,6 +1666,7 @@ def ensure_updated(rows: list) -> None:
     global KLINES
     KLINES = kline_buffer(SYMBOL, 1)
     ensure_updated_into(KLINES, rows)
+    _sync_closed_kline_df_cache(_norm_sym(SYMBOL), 1)
 
 
 def compute_indicators(
@@ -4237,14 +4272,27 @@ def _closed_kline_dataframe(buf: list) -> pd.DataFrame:
     return df
 
 
+def _sync_closed_kline_df_cache(symbol: str, interval_minutes: int) -> None:
+    """Refresh closed-bar DataFrame for this symbol/interval from the RAM kline buffer."""
+    sym_u = _norm_sym(symbol)
+    iv = max(1, int(interval_minutes))
+    buf = kline_buffer(sym_u, iv)
+    _CLOSED_KLINE_DF_BY_KEY[(sym_u, iv)] = _closed_kline_dataframe(list(buf))
+
+
 def _instance_closed_kline_df(symbol_normalized: str, interval_minutes: int) -> pd.DataFrame:
     """
     Same closed-bar slice used by instance evaluation and Live Monitor checklists.
     Must stay in sync with _run_strategy_instances_for_kline / evaluate_weak_momentum_instance.
     """
     sym_u = _norm_sym(symbol_normalized)
-    buf = kline_buffer(sym_u, max(1, int(interval_minutes)))
-    return _closed_kline_dataframe(list(buf))
+    iv = max(1, int(interval_minutes))
+    key = (sym_u, iv)
+    cached = _CLOSED_KLINE_DF_BY_KEY.get(key)
+    if cached is not None:
+        return cached
+    _sync_closed_kline_df_cache(sym_u, iv)
+    return _CLOSED_KLINE_DF_BY_KEY[key]
 
 
 def _weak_momentum_prepare_eval_df(
@@ -4676,32 +4724,41 @@ def _update_live_strategy_state(df: pd.DataFrame, symbol: str) -> None:
     # Disk write: use _flush_live_state_file_with_tracker() after _rebuild_instance_checks_live_state
 
 
-def handle_kline_message(message: dict, interval_minutes: int = 1) -> None:
+def handle_kline_message(
+    message: dict, interval_minutes: int = 1, ws_symbol: str | None = None
+) -> None:
     """Handle kline WebSocket message: update multi-TF store, run instance engines, refresh dashboard (1m)."""
     if "data" not in message or not message["data"]:
         return
     rows = [kline_to_row(d) for d in message["data"]]
     iv = max(1, int(interval_minutes))
-    sym_u = _norm_sym(SYMBOL)
+    raw_sym = ws_symbol or message.get("symbol")
+    sym_u = _norm_sym(str(raw_sym) if raw_sym else SYMBOL)
     buf = kline_buffer(sym_u, iv)
     ensure_updated_into(buf, rows)
+    _sync_closed_kline_df_cache(sym_u, iv)
     global KLINES
-    KLINES = kline_buffer(sym_u, 1)
+    KLINES = kline_buffer(_norm_sym(SYMBOL), 1)
     try:
         if iv == 1:
-            _queue_closed_candle_rows_for_cache(rows)
+            _queue_closed_candle_rows_for_cache(rows, sym_u, interval_minutes=1)
     except Exception as e:
         logging.debug("[candle_cache] WS persist skip: %s", e)
     _run_strategy_instances_for_kline(sym_u, iv)
     if iv == 1:
-        df = pd.DataFrame(KLINES)
+        buf1m = kline_buffer(sym_u, 1)
+        df = pd.DataFrame(buf1m)
         if not df.empty:
             df = compute_indicators(df)
             _update_live_strategy_state(df, sym_u)
             last3 = df.tail(3)
             cols = [c for c in DISPLAY_COLUMNS if c in last3.columns]
             if cols:
-                print("\n--- Last 3 klines (1m " + SYMBOL + ") – Weak Momentum Reversal ---")
+                print(
+                    "\n--- Last 3 klines (1m "
+                    + sym_u
+                    + ") – Weak Momentum Reversal ---"
+                )
                 print(last3[cols].to_string())
             if len(df) >= 2:
                 sig = df.iloc[-2]
@@ -5063,11 +5120,14 @@ async def main_async() -> None:
 
     # Load historical klines before WebSocket so RSI/indicators have data from first second
     fetch_historical_klines()
-    if KLINES:
-        df_init = pd.DataFrame(KLINES)
-        df_init = compute_indicators(df_init)
-        _update_live_strategy_state(df_init, _norm_sym(SYMBOL))
-    _rebuild_instance_checks_live_state(_norm_sym(SYMBOL))
+    for s in get_active_symbols():
+        sym_n = _norm_sym(s)
+        buf1 = kline_buffer(sym_n, 1)
+        if buf1:
+            df_init = pd.DataFrame(buf1)
+            df_init = compute_indicators(df_init)
+            _update_live_strategy_state(df_init, sym_n)
+        _rebuild_instance_checks_live_state(sym_n)
     live_stream = None
 
     # Write initial multi-symbol live strategy state for dashboard

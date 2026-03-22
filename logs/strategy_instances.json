@@ -28,11 +28,11 @@
       "partialTpEnabled": true
     },
     "state": {
-      "in_position": false,
+      "in_position": true,
       "cooldown_until_bar": 0,
-      "bar_seq": 537,
-      "last_evaluated_start": 1774209420000,
-      "last_signal_start": 1774181700000
+      "bar_seq": 541,
+      "last_evaluated_start": 1774211940000,
+      "last_signal_start": 1774211580000
     }
   },
   {

@@ -55,7 +55,7 @@
             <option value="ema_trap">EMA Trap + Range Filter</option>
           </select>
         </div>
-        <p class="text-xs text-slate-500">OHLCV is read only from <code class="text-slate-400">logs/market_data_1m.json</code> (local bot cache). No exchange fetch during backtest.</p>
+        <p class="text-xs text-slate-500">OHLCV is read from <code class="text-slate-400">logs/market_data_{SYMBOL}_1m.json</code> (local bot cache; legacy <code class="text-slate-400">market_data_1m.json</code> if symbol matches). No exchange fetch during backtest.</p>
       </div>
 
       <div id="params-weak-momentum" class="bg-slate-900/80 rounded-2xl p-5 border border-slate-800 space-y-4">

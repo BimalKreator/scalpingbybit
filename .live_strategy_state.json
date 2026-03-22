@@ -3,22 +3,22 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 68381.5,
+      "price": 2060.0,
       "indicators": {
-        "RSI": 86.73,
-        "RSI_SMA": 65.79,
+        "RSI": 29.27,
+        "RSI_SMA": 36.9,
         "volume_signal_vs_prev": true,
-        "body_size": 29.5,
-        "open": 68352.0,
-        "close": 68381.5,
-        "volume": 3765.0,
-        "Expected_Profit_Pct": 0.07
+        "body_size": 1.35,
+        "open": 2061.35,
+        "close": 2060.0,
+        "volume": 6915.0,
+        "Expected_Profit_Pct": 0.13
       },
       "conditions": {
         "long": [
           {
             "name": "Signal Candle Bearish (open > close)",
-            "met": false
+            "met": true
           },
           {
             "name": "Previous Candle Bearish",
@@ -26,7 +26,7 @@
           },
           {
             "name": "Both Bearish",
-            "met": false
+            "met": true
           },
           {
             "name": "Volume: signal > previous",
@@ -34,7 +34,7 @@
           },
           {
             "name": "RSI < 40.0",
-            "met": false
+            "met": true
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -44,7 +44,7 @@
         "short": [
           {
             "name": "Signal Candle Bullish (close > open)",
-            "met": true
+            "met": false
           },
           {
             "name": "Previous Candle Bullish",
@@ -60,7 +60,7 @@
           },
           {
             "name": "RSI > 60.0",
-            "met": true
+            "met": false
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -68,7 +68,7 @@
           }
         ]
       },
-      "status": "Waiting",
+      "status": "Position Open",
       "last_signal_candle_start": 1774111200000,
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "checks": {
@@ -79,7 +79,7 @@
           "rules_long": [
             {
               "text": "Prev Close < EMA Low",
-              "met": true
+              "met": false
             },
             {
               "text": "Prev RSI < 40.0",
@@ -101,7 +101,7 @@
           "rules_short": [
             {
               "text": "Prev Close > EMA High",
-              "met": false
+              "met": true
             },
             {
               "text": "Prev RSI > 60.0",
@@ -122,26 +122,39 @@
           ]
         }
       },
-      "checks_updated_unix": 1774210902.1429203,
+      "checks_updated_unix": 1774212031.5838404,
       "position_risk": {
-        "open": false
+        "open": true,
+        "has_levels": true,
+        "side": "Buy",
+        "entry_price": 68305.0,
+        "size": 14.0,
+        "sl_price": 35184.2,
+        "tp_price": 200788.2,
+        "sl_amount_usd": -463691.2,
+        "tp_amount_usd": 1854764.8,
+        "position_value_usd": 100.0,
+        "live_mid": 68252.0,
+        "entry_pct": 20.0,
+        "live_mid_pct": 19.97,
+        "breakeven_buffer_active": false
       },
-      "sl_price": null,
-      "tp_price": null,
-      "entry_price": null,
-      "position_size": 0.0,
-      "sl_amount_usd": null,
-      "tp_amount_usd": null,
-      "last_sl_price": 0.0,
-      "last_tp_price": 0.0,
-      "last_position_side": "",
-      "tracker_sl_max": 0.0,
-      "tracker_sl_min": 0.0,
-      "sl_entry_time_unix": 0.0,
+      "sl_price": 35184.2,
+      "tp_price": 200788.2,
+      "entry_price": 68305.0,
+      "position_size": 14.0,
+      "sl_amount_usd": -463691.2,
+      "tp_amount_usd": 1854764.8,
+      "last_sl_price": 35184.2,
+      "last_tp_price": 200788.2,
+      "last_position_side": "Buy",
+      "tracker_sl_max": 35184.2,
+      "tracker_sl_min": 35184.2,
+      "sl_entry_time_unix": 1774211586.9996324,
       "sl_breakeven_triggered": false,
       "sl_half_target_exited": false,
       "sl_half_target_reached": false,
-      "base_risk_dist": 0.0
+      "base_risk_dist": 16560.4
     },
     "ETHUSDT": {
       "symbol": "ETHUSDT",
