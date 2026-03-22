@@ -163,7 +163,8 @@
     <!-- Row 3: 60% Live Monitor | 40% Manual Trade -->
     <div class="grid grid-cols-1 lg:grid-cols-5 gap-6 mb-6">
       <section class="card lg:col-span-3">
-        <h2 class="text-sm font-semibold text-slate-200 mb-4">Live Monitor</h2>
+        <h2 class="text-sm font-semibold text-slate-200 mb-1">Live Monitor</h2>
+        <p id="liveMonitorFocusLabel" class="text-[11px] text-slate-500 mb-3">Waiting for bot…</p>
         <div class="space-y-4">
           <div class="grid grid-cols-2 gap-2 text-sm">
             <div>
@@ -270,55 +271,21 @@
       </section>
     </div>
 
-    <!-- Row 4: Global Config | Power Station -->
+    <!-- Row 4: Bot settings note | Power Station -->
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
       <section class="card">
-        <h2 class="text-sm font-semibold text-slate-200 mb-2">Global Config</h2>
-        <p class="text-xs text-slate-500 mb-4">Defaults for naked manual trades, startup, and legacy paths. Per-strategy rules are edited only in <strong>Strategy Hub</strong> below.</p>
-        <form id="globalEnvForm" class="space-y-4">
-          <div>
-            <label for="trading_symbol" class="block text-xs font-medium text-slate-400 mb-1">Trading symbol</label>
-            <input type="text" id="trading_symbol" name="trading_symbol" value="{{ trading_symbol }}"
-              class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="BTCUSDT" />
-          </div>
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label for="trade_amount_usd" class="block text-xs font-medium text-slate-400 mb-1">Default trade amount (USD)</label>
-              <input type="text" id="trade_amount_usd" name="trade_amount_usd" value="{{ trade_amount_usd }}"
-                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" placeholder="100" />
-            </div>
-            <div>
-              <label for="leverage" class="block text-xs font-medium text-slate-400 mb-1">Default leverage (×)</label>
-              <input type="number" id="leverage" name="leverage" value="{{ leverage }}" min="1" max="100" step="1" placeholder="5"
-                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
-            </div>
-          </div>
-          <div>
-            <label for="historical_klines" class="block text-xs font-medium text-slate-400 mb-1">Historical bars at startup (1m buckets)</label>
-            <input type="number" id="historical_klines" name="historical_klines" min="500" max="5000" step="100" value="{{ historical_klines }}"
-              class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
-          </div>
-          <div>
-            <label for="sl_delay_ms" class="block text-xs font-medium text-slate-400 mb-1">SL trigger delay (ms)</label>
-            <input type="number" id="sl_delay_ms" name="sl_delay_ms" min="0" max="120000" step="50" value="{{ sl_delay_ms }}"
-              class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
-            <p class="text-xs text-slate-500 mt-1">0 = off. Re-check mid after delay to filter wicks.</p>
-          </div>
-          <div>
-            <label for="rsi_sma_length" class="block text-xs font-medium text-slate-400 mb-1">RSI SMA length (dashboard chart)</label>
-            <input type="number" id="rsi_sma_length" name="rsi_sma_length" min="1" max="100" step="1" value="{{ rsi_sma_length }}"
-              class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
-          </div>
-          <div>
-            <label for="initial_capital" class="block text-xs font-medium text-slate-400 mb-1">Opening balance / initial capital (reference)</label>
-            <input type="text" id="initial_capital" name="initial_capital" value="{{ initial_capital }}"
-              class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
-          </div>
-          <button type="submit" class="w-full rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-3 px-4 transition active:scale-[0.98]">
-            Save global settings
-          </button>
-        </form>
-        <p id="saveStatus" class="mt-3 text-xs text-slate-500 hidden">Saved.</p>
+        <h2 class="text-sm font-semibold text-slate-200 mb-2">Bot settings</h2>
+        <p class="text-xs text-slate-400 mb-2">
+          <strong>Trade capital, leverage, and SL/TP geometry</strong> are configured per strategy instance in
+          <strong>Strategy Hub</strong> (and naked manual trades use the Manual Trade panel).
+        </p>
+        <p class="text-xs text-slate-500 mb-2">
+          Use <strong>Exchange &amp; API Setup</strong> below for <code class="text-slate-400">TRADING_SYMBOL</code>, keys, and exchange.
+          Advanced tuning (historical bars, SL delay, RSI SMA, initial capital reference) stays in <code class="text-slate-400">.env</code> only.
+        </p>
+        <p class="text-xs text-amber-400/90">
+          To wipe corrupted paper/live UI state once, set <code class="text-amber-200/90">RESET_PAPER_LIVE_STATE_ON_STARTUP=true</code> in <code class="text-slate-400">.env</code>, restart the bot, then remove it.
+        </p>
       </section>
       <section class="card">
         <h2 class="text-sm font-semibold text-slate-200 mb-4">Power Station</h2>
@@ -393,6 +360,12 @@
             <option value="delta_india" {% if exchange_id == 'delta_india' %}selected{% endif %}>delta_india</option>
           </select>
         </div>
+        <div>
+          <label for="trading_symbol" class="block text-xs font-medium text-slate-400 mb-1">Primary trading symbol (.env TRADING_SYMBOL)</label>
+          <input type="text" id="trading_symbol" name="trading_symbol" value="{{ trading_symbol }}"
+            class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white placeholder-slate-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition font-mono text-sm" placeholder="BTCUSDT" autocomplete="off" />
+          <p class="text-[11px] text-slate-500 mt-1">Multi-coin uses Strategy Hub symbols; this remains the default / primary.</p>
+        </div>
         <div class="rounded-xl border border-slate-700 bg-slate-800/50 p-4 space-y-3">
           <p class="text-xs font-semibold text-slate-300">API Keys</p>
           <div>
@@ -457,10 +430,8 @@
     }
 
     const botToggle = document.getElementById('botToggle');
-    const globalEnvForm = document.getElementById('globalEnvForm');
     const exchangeForm = document.getElementById('exchangeForm');
     const manualMonitorInstance = document.getElementById('manualMonitorInstance');
-    const saveStatus = document.getElementById('saveStatus');
     const availableBalanceEl = document.getElementById('availableBalance');
     const overallProfitEl = document.getElementById('overallProfit');
     const positionsGrid = document.getElementById('positions-grid');
@@ -797,6 +768,50 @@
     /** Monotonic guard: detect stuck / empty strategy payloads from cache or bot-down states */
     window.__lastStrategyChecksTs = window.__lastStrategyChecksTs || 0;
 
+    function _symbolBase(sym) {
+      var s = String(sym || '').trim().toUpperCase();
+      if (!s) return '';
+      if (s.endsWith('USDT')) return s.slice(0, -4);
+      if (s.endsWith('USD')) return s.slice(0, -3);
+      if (s.endsWith('PERP')) return s.replace(/PERP$/i, '');
+      return s;
+    }
+
+    /** Pick which symbol row drives the Live Monitor top bar + active-position card (nested `symbols` API). */
+    function _pickLiveFocusRow(symbolsMap, primarySym) {
+      if (!symbolsMap || typeof symbolsMap !== 'object' || Array.isArray(symbolsMap)) {
+        return { row: null, focusKey: '', reason: '' };
+      }
+      var keys = Object.keys(symbolsMap);
+      if (!keys.length) return { row: null, focusKey: '', reason: '' };
+      var i;
+      for (i = 0; i < keys.length; i++) {
+        var k = keys[i];
+        var row = symbolsMap[k];
+        if (!row || typeof row !== 'object') continue;
+        var pr0 = row.position_risk || {};
+        if (pr0.open) {
+          return { row: row, focusKey: k, reason: 'open position' };
+        }
+      }
+      var p = String(primarySym || '').trim().toUpperCase();
+      if (p && symbolsMap[p]) {
+        return { row: symbolsMap[p], focusKey: p, reason: 'primary' };
+      }
+      var pb = _symbolBase(p);
+      if (pb) {
+        for (i = 0; i < keys.length; i++) {
+          var k2 = keys[i];
+          if (_symbolBase(k2) === pb) {
+            return { row: symbolsMap[k2], focusKey: k2, reason: 'primary ≈ ' + k2 };
+          }
+        }
+      }
+      keys = keys.slice().sort();
+      var kFirst = keys[0];
+      return { row: symbolsMap[kFirst], focusKey: kFirst, reason: 'first symbol' };
+    }
+
     function updateLiveStrategyPanel(data) {
       if (data == null || typeof data !== 'object') {
         var stBad = document.getElementById('liveStatus');
@@ -812,11 +827,29 @@
       var statusRoot = data;
       var symbolsMap = (data.symbols != null && typeof data.symbols === 'object' && !Array.isArray(data.symbols)) ? data.symbols : null;
       var primarySym = (data.primary_symbol != null && String(data.primary_symbol).trim()) ? String(data.primary_symbol).trim() : '';
+      var focusKey = '';
+      var focusReason = '';
       if (symbolsMap) {
-        var keys = Object.keys(symbolsMap);
-        if (!primarySym && keys.length) primarySym = keys.sort()[0];
-        data = symbolsMap[primarySym] || {};
-        if (!data.symbol && primarySym) data = Object.assign({ symbol: primarySym }, data);
+        var mapKeys = Object.keys(symbolsMap);
+        if (!primarySym && mapKeys.length) {
+          var sortedPk = mapKeys.slice().sort();
+          primarySym = sortedPk[0];
+        }
+        var picked = _pickLiveFocusRow(symbolsMap, primarySym);
+        data = picked.row || {};
+        focusKey = picked.focusKey;
+        focusReason = picked.reason;
+        if (data && !data.symbol && focusKey) data = Object.assign({ symbol: focusKey }, data);
+      }
+      var focusLbl = document.getElementById('liveMonitorFocusLabel');
+      if (focusLbl) {
+        if (symbolsMap && focusKey) {
+          focusLbl.textContent = 'Global summary · focused: ' + focusKey + (focusReason ? ' · ' + focusReason : '');
+        } else if (data.symbol && String(data.symbol).trim()) {
+          focusLbl.textContent = 'Symbol · ' + String(data.symbol).trim();
+        } else {
+          focusLbl.textContent = 'Waiting for bot…';
+        }
       }
 
       function escapeHtml(s) {
@@ -1016,6 +1049,9 @@
         if (stratName) {
           stratBadge.textContent = stratName;
           stratBadge.classList.remove('hidden');
+        } else if (pr.open && pr.has_levels) {
+          stratBadge.textContent = 'Manual';
+          stratBadge.classList.remove('hidden');
         } else {
           stratBadge.textContent = '';
           stratBadge.classList.add('hidden');
@@ -1140,10 +1176,8 @@
           const entryTimeIST = (ct && ct !== '0') ? new Date(parseInt(ct)).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '–';
           const card = document.createElement('div');
           card.className = 'rounded-xl bg-slate-800/90 border border-slate-700 p-4 flex flex-col gap-3';
-          var strat = (p.strategy_name != null && String(p.strategy_name).trim()) ? String(p.strategy_name).trim() : '';
-          var stratHtml = strat
-            ? '<span class="text-[10px] font-semibold uppercase tracking-wide rounded-full px-2 py-0.5 bg-sky-900/80 text-sky-200 border border-sky-700/60 shrink-0">' + escapeHtmlStr(strat) + '</span>'
-            : '';
+          var strat = (p.strategy_name != null && String(p.strategy_name).trim()) ? String(p.strategy_name).trim() : 'Manual';
+          var stratHtml = '<span class="text-[10px] font-semibold uppercase tracking-wide rounded-full px-2 py-0.5 bg-sky-900/80 text-sky-200 border border-sky-700/60 shrink-0">' + escapeHtmlStr(strat) + '</span>';
           card.innerHTML =
             '<div class="flex justify-between items-center gap-2 flex-wrap">' +
               '<span class="text-lg font-bold text-white">' + (p.symbol || '') + '</span>' +
@@ -1167,6 +1201,27 @@
         positionsGrid.querySelectorAll('.closePos').forEach(function (btn) {
           btn.addEventListener('click', closePosition);
         });
+        (function syncMainStrategyBadgeFromPositions(posList) {
+          var badge = document.getElementById('activePositionStrategyBadge');
+          var card = document.getElementById('activePositionCard');
+          if (!badge || !card || card.classList.contains('hidden')) return;
+          var tokEl = document.getElementById('liveToken');
+          var tok = tokEl && tokEl.textContent ? String(tokEl.textContent).trim().toUpperCase() : '';
+          var pick = null;
+          var pi;
+          if (tok && tok !== '–' && tok !== '-' && tok.length > 1) {
+            for (pi = 0; pi < posList.length; pi++) {
+              if (String(posList[pi].symbol || '').toUpperCase() === tok) {
+                pick = posList[pi];
+                break;
+              }
+            }
+          }
+          if (!pick) pick = posList[0];
+          var nm = (pick.strategy_name != null && String(pick.strategy_name).trim()) ? String(pick.strategy_name).trim() : 'Manual';
+          badge.textContent = nm;
+          badge.classList.remove('hidden');
+        })(list);
       } catch (e) {
         positionsGrid.innerHTML = '<p class="text-slate-500 text-sm col-span-full">Error loading positions</p>';
       }
@@ -1513,19 +1568,6 @@
       }
     });
 
-    if (globalEnvForm) {
-      globalEnvForm.addEventListener('submit', async function (e) {
-        e.preventDefault();
-        const fd = new FormData(globalEnvForm);
-        const res = await fetch('/api/env', { method: 'POST', body: fd });
-        const data = await res.json();
-        if (data.ok) {
-          saveStatus.textContent = 'Saved.';
-          saveStatus.classList.remove('hidden');
-          setTimeout(function () { saveStatus.classList.add('hidden'); }, 2000);
-        }
-      });
-    }
   </script>
 </body>
 </html>

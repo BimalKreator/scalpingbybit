@@ -153,7 +153,7 @@
         var pnlClass = pnl >= 0 ? 'text-success' : 'text-danger';
         var side = (row.side || '').toUpperCase();
         var sideClass = side === 'BUY' ? 'text-success' : 'text-danger';
-        var strat = (row.strategy_name != null && row.strategy_name !== '') ? row.strategy_name : 'Manual / Unknown';
+        var strat = (row.strategy_name != null && row.strategy_name !== '') ? row.strategy_name : 'Manual';
         return '<tr>' +
           '<td class="text-white fw-medium">' + (row.symbol || '–') + '</td>' +
           '<td class="' + sideClass + ' fw-medium">' + (row.side || '–') + '</td>' +

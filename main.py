@@ -349,7 +349,7 @@ def load_active_instance_execution(instance_id: str | None, *, strategy_name: st
     if not instance_id:
         _active_order_instance_id = None
         _active_instance_monitor_params = None
-        _active_trade_strategy_name = strategy_name or "Manual / Unknown"
+        _active_trade_strategy_name = strategy_name or "Manual"
         return
     inst = instance_storage.get_instance_by_id(str(instance_id).strip())
     if not inst:
@@ -770,7 +770,7 @@ def _append_virtual_closed_trade_row(
             "closedPnl": str(round(float(pnl), 6)),
             "fees": 0,
             "exitReason": exit_reason,
-            "strategy_name": (strategy_name or "Manual / Unknown").strip(),
+            "strategy_name": (strategy_name or "Manual").strip(),
         }
         with _closed_trades_file_lock:
             existing: list = []
@@ -837,7 +837,7 @@ def get_paper_position_rows_for_ui(symbol: str = "") -> list[dict]:
             ct_ms = str(int(ct_f * 1000)) if ct_f > 0 else "0"
         except (TypeError, ValueError):
             ct_ms = "0"
-        strat_nm = str(tr.get("strategy_name") or "").strip() or "Manual / Unknown"
+        strat_nm = str(tr.get("strategy_name") or "").strip() or "Manual"
         rows.append(
             {
                 "symbol": sym,
@@ -874,7 +874,7 @@ def _finalize_virtual_position_close(
         entry, float(exit_price), snap_sz, ps, contract_symbol=sym
     )
     update_virtual_wallet(pnl)
-    strat_snap = (_active_trade_strategy_name or "Manual / Unknown").strip()
+    strat_snap = (_active_trade_strategy_name or "Manual").strip()
     _append_virtual_closed_trade_row(
         entry_price=entry,
         exit_price=float(exit_price),
@@ -1129,6 +1129,48 @@ def _load_sl_tp_tracker_from_file_on_startup() -> None:
             )
     except Exception as e:
         print(f"[bot] SL/TP tracker load error (using defaults): {e}")
+
+
+def _purge_stale_live_and_paper_state_if_requested() -> None:
+    """
+    One-shot wipe when env RESET_PAPER_LIVE_STATE_ON_STARTUP is true (1/yes/on).
+    Removes corrupted .live_strategy_state.json, virtual_wallet.json, virtual_closed_trades.json
+    and clears per-symbol exchange_state trackers/positions. Unset the var after use.
+    """
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
+    flag = (os.getenv("RESET_PAPER_LIVE_STATE_ON_STARTUP") or "").strip().lower()
+    if flag not in ("1", "true", "yes", "on"):
+        return
+    paths = [
+        _LIVE_STATE_PATH,
+        VIRTUAL_WALLET_PATH,
+        VIRTUAL_CLOSED_TRADES_JSON_PATH,
+    ]
+    for p in paths:
+        try:
+            if p.is_file():
+                p.unlink()
+                logging.warning("[startup] RESET_PAPER_LIVE_STATE_ON_STARTUP removed %s", p)
+        except OSError as e:
+            logging.error("[startup] Could not remove %s: %s", p, e)
+    syms: set[str] = (
+        {_norm_sym(SYMBOL)}
+        | {_norm_sym(x) for x in get_active_symbols()}
+        | set(xst.all_symbols_with_positions(SYMBOL))
+    )
+    for u in syms:
+        if not u:
+            continue
+        try:
+            xst.tracker_reset_flat(u, SYMBOL)
+            xst.set_position_fields(u, SYMBOL, size=0.0, entry=None, side=None)
+        except Exception as e:
+            logging.debug("[startup] tracker reset %s: %s", u, e)
+    print(
+        "[startup] RESET_PAPER_LIVE_STATE_ON_STARTUP — wiped live state / virtual files and "
+        "in-memory paper trackers. Remove or set to 0 for normal restarts."
+    )
 
 
 def _clear_sl_tp_tracker_on_file_and_globals() -> None:
@@ -2707,7 +2749,7 @@ def _position_risk_payload(symbol: str | None = None) -> dict:
         (_active_trade_strategy_name or "").strip() if sym == _norm_sym(SYMBOL) else ""
     )
     if not strat_label:
-        strat_label = "Manual / Unknown"
+        strat_label = "Manual"
     if not has_levels:
         return {
             "open": True,
@@ -3182,7 +3224,7 @@ def _xst_record_filled_entry(
         last_position_was_reverse=bool(is_reverse),
         base_risk_dist=abs(float(ent) - float(sl_wide)) / max(float(sl_mx), 1e-12),
         monitor_had_position=True,
-        strategy_name=str(_active_trade_strategy_name or "Manual / Unknown").strip(),
+        strategy_name=str(_active_trade_strategy_name or "Manual").strip(),
     )
 
 
@@ -3930,7 +3972,7 @@ def register_manual_trade(
         xst.tracker_update(
             tsym,
             SYMBOL,
-            strategy_name=str(_active_trade_strategy_name or "Manual / Unknown").strip(),
+            strategy_name=str(_active_trade_strategy_name or "Manual").strip(),
         )
     except Exception:
         pass
@@ -4080,7 +4122,7 @@ def _append_delta_closed_trade_to_file(
             "closedPnl": str(round(closed_pnl, 6)),
             "fees": 0,
             "exitReason": exit_reason,
-            "strategy_name": (strategy_name or "Manual / Unknown").strip(),
+            "strategy_name": (strategy_name or "Manual").strip(),
         }
         with _closed_trades_file_lock:
             existing: list = []
@@ -4309,7 +4351,7 @@ def handle_position_message(message: dict) -> None:
             mid = (bb + ba) / 2.0 if bb > 0 and ba > 0 else 0.0
             sl_hit = _was_closed_by_sl(mid, sym)
             _cancel_protective_orders_after_flat_sync(sym)
-            strat_snap = (_active_trade_strategy_name or "Manual / Unknown").strip()
+            strat_snap = (_active_trade_strategy_name or "Manual").strip()
             lr_override = str(tr_snap.get("local_close_reason") or "")
             et_ov = tr_snap.get("entry_time") or tr_snap.get("last_entry_time")
             try:
@@ -5058,6 +5100,7 @@ async def main_async() -> None:
 
     print(f"STRATEGY START: [{EXCHANGE_ID}] Monitoring {SYMBOL}")
     reload_strategy_instances_cache()
+    _purge_stale_live_and_paper_state_if_requested()
     kline_ivs = tuple(
         sorted(
             {1}

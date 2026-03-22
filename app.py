@@ -452,12 +452,6 @@ async def dashboard_page():
         delta_api_key=vars.get("DELTA_API_KEY", ""),
         delta_api_secret=vars.get("DELTA_API_SECRET", ""),
         trading_symbol=vars.get("TRADING_SYMBOL", vars.get("SYMBOL", "BTCUSDT")),
-        trade_amount_usd=vars.get("TRADE_AMOUNT_USD", vars.get("TRADE_QTY", "100")),
-        leverage=vars.get("LEVERAGE", "5"),
-        historical_klines=vars.get("HISTORICAL_KLINES", "1000"),
-        sl_delay_ms=vars.get("SL_DELAY_MS", "0"),
-        rsi_sma_length=vars.get("RSI_SMA_LENGTH", "14"),
-        initial_capital=vars.get("INITIAL_CAPITAL", "0.0"),
         bot_running=BOT_RUNNING,
         autotrade_enabled=_autotrade_enabled_from_env(),
         virtual_trading_enabled=_virtual_trading_from_env(),
@@ -480,7 +474,11 @@ async def api_update_env(
     rsi_sma_length: str = Form(None),
     initial_capital: str = Form(None),
 ):
-    """Persist exchange credentials + global bot settings only. Strategy rules live in Strategy Hub."""
+    """Persist exchange credentials + primary symbol from the dashboard.
+
+    Optional form fields (trade_amount_usd, leverage, historical_klines, etc.) are ignored when
+    omitted so older clients or partial forms do not overwrite .env.
+    """
     print("[env] POST /api/env: updating .env (global + exchange)")
     updates = {}
     if exchange_id is not None:
@@ -832,7 +830,7 @@ async def api_closed_trades():
                 "closedPnl": r.get("closedPnl", "0"),
                 "fees": round(fees, 6),
                 "exitReason": _map_exit_reason(r),
-                "strategy_name": "Manual / Unknown",
+                "strategy_name": "Manual",
             })
         return _closed_trades_sorted_oldest_first(merged)
     except Exception as e:
