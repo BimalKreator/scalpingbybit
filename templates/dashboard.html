@@ -541,16 +541,17 @@
       );
     }
 
-    /** EMA Trap: single SL mult for strategy geometry; monitoring uses .env for SL max/min/decay if unset */
+    /** EMA Trap: params keys must be slMultiplier / tpMultiplier (data-p=…); never slMultiplierMax/Min (Weak Momentum only). */
     function emaTrapExecutionBlock(p) {
       p = p || {};
       return (
         '<p class="text-xs font-semibold text-slate-400 mt-3">Trade size &amp; risk (this instance)</p>' +
+        '<p class="text-[10px] text-slate-500 mb-2">Risk uses signal-bar range × <code class="text-slate-400">slMultiplier</code> / <code class="text-slate-400">tpMultiplier</code> only (saved as those JSON keys).</p>' +
         '<div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">' +
         numFieldL('Trade capital (USD)', 'tradeCapitalUsd', p.tradeCapitalUsd, 100) +
         numFieldL('Leverage (×)', 'leverage', p.leverage, 5) +
-        numFieldL('SL multiplier', 'slMultiplier', p.slMultiplier, 1.25) +
-        numFieldL('TP multiplier', 'tpMultiplier', p.tpMultiplier, 1.5) +
+        numFieldL('SL multiplier', 'slMultiplier', p.slMultiplier, 0.5) +
+        numFieldL('TP multiplier', 'tpMultiplier', p.tpMultiplier, 2) +
         numFieldL('EMA length', 'emaLength', p.emaLength, 20) +
         numFieldL('RSI length', 'rsiLength', p.rsiLength, 14) +
         numFieldL('RSI overbought', 'rsiOverbought', p.rsiOverbought, 60) +
@@ -648,6 +649,7 @@
         });
       }
       root.querySelector('[data-hub-save]')?.addEventListener('click', async function () {
+        /* EMA Trap forms only expose slMultiplier/tpMultiplier; Weak Momentum adds slMultiplierMax/Min etc. */
         var params = {};
         root.querySelectorAll('[data-p]').forEach(function (el) {
           var k = el.getAttribute('data-p');

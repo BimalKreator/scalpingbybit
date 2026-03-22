@@ -8,6 +8,8 @@ Closed candles only:
 
 from __future__ import annotations
 
+import logging
+import math
 from typing import Any
 
 import numpy as np
@@ -40,6 +42,58 @@ def _f(params: dict, key: str, default: Any) -> Any:
     if v is None:
         return default
     return v
+
+
+_LOG = logging.getLogger(__name__)
+
+
+def _resolved_ema_trap_risk_multipliers(
+    merged_params: dict[str, Any], *, log_risk: bool = True
+) -> tuple[float, float]:
+    """
+    Parse slMultiplier / tpMultiplier from merged instance+defaults.
+    Falls back to 0.5 / 2.0 when missing, non-finite, <= 0, or absurdly large.
+    Corrects legacy corrupted saves where both multipliers are exactly 1.0 (1:1 R:R).
+    """
+    raw_sl = merged_params.get("slMultiplier")
+    raw_tp = merged_params.get("tpMultiplier")
+    if log_risk:
+        print(f"[EMA Trap Risk] Received Params - SL Mult: {raw_sl!r}, TP Mult: {raw_tp!r}")
+        _LOG.info("[EMA Trap Risk] Received Params - SL Mult: %r, TP Mult: %r", raw_sl, raw_tp)
+
+    def _to_positive_float(v: Any, fallback: float) -> float:
+        try:
+            if v is None or v == "":
+                return fallback
+            x = float(v)
+        except (TypeError, ValueError):
+            return fallback
+        if not math.isfinite(x) or x <= 0:
+            return fallback
+        if x > 100.0:
+            return fallback
+        return x
+
+    try:
+        sl_m = _to_positive_float(merged_params.get("slMultiplier"), 0.5)
+        tp_m = _to_positive_float(merged_params.get("tpMultiplier"), 2.0)
+    except Exception:
+        sl_m, tp_m = 0.5, 2.0
+
+    if abs(sl_m - tp_m) < 1e-12 and abs(sl_m - 1.0) < 1e-9:
+        msg = (
+            "[EMA Trap Risk] Correcting symmetric 1.0× multipliers → SL 0.5, TP 2.0 "
+            "(stale strategy_instances.json; re-save instance in Strategy Hub if needed)"
+        )
+        if log_risk:
+            print(msg)
+        _LOG.warning(msg)
+        sl_m, tp_m = 0.5, 2.0
+
+    if log_risk:
+        print(f"[EMA Trap Risk] Effective multipliers — SL: {sl_m}, TP: {tp_m}")
+        _LOG.info("[EMA Trap Risk] Effective multipliers — SL: %s, TP: %s", sl_m, tp_m)
+    return sl_m, tp_m
 
 
 def _compute_range_filter(close: np.ndarray, atr: np.ndarray, mult: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -96,8 +150,7 @@ def evaluate(
     rng_mult = float(_f(p, "rangeMultiplier", 1.1))
     rsi_ob = float(_f(p, "rsiOverbought", 60))
     rsi_os = float(_f(p, "rsiOversold", 40))
-    sl_mult = float(_f(p, "slMultiplier", 0.5))
-    tp_mult = float(_f(p, "tpMultiplier", 2.0))
+    sl_mult, tp_mult = _resolved_ema_trap_risk_multipliers(p)
     min_profit = float(_f(p, "minProfitPerc", 0.09))
 
     state_updates: dict[str, Any] = {}
@@ -268,7 +321,7 @@ def build_entry_checklists(
     rng_mult = float(_f(p, "rangeMultiplier", 1.1))
     rsi_ob = float(_f(p, "rsiOverbought", 60))
     rsi_os = float(_f(p, "rsiOversold", 40))
-    tp_m = float(_f(p, "tpMultiplier", 2.0))
+    _sl_m, tp_m = _resolved_ema_trap_risk_multipliers(p, log_risk=False)
     min_profit = float(_f(p, "minProfitPerc", 0.09))
     need = max(ema_len, rsi_len, rng_len) + 2
 

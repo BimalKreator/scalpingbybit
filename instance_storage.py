@@ -1,10 +1,15 @@
 """
 Persistent strategy instances: logs/strategy_instances.json
+
+EMA Trap: on load, instances with slMultiplier == tpMultiplier == 1.0 (stale 1:1 saves)
+are rewritten to 0.5 / 2.0. To fully reset, you may delete logs/strategy_instances.json
+and recreate instances in the Strategy Hub (see project docs).
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -16,6 +21,7 @@ from strategies.ema_trap import DEFAULT_PARAMS as EMA_TRAP_DEFAULTS
 ROOT = Path(__file__).resolve().parent
 INSTANCES_PATH = ROOT / "logs" / "strategy_instances.json"
 _lock = threading.Lock()
+_log = logging.getLogger(__name__)
 
 # Per-instance execution + risk (replaces former global Strategy Parameters for automation)
 EXECUTION_DEFAULT_PARAMS: dict[str, float | bool] = {
@@ -88,12 +94,46 @@ def ensure_instances_file(symbol: str | None = None) -> None:
         save_instances_raw(seed)
 
 
+def _repair_ema_trap_instances_params(instances: list) -> bool:
+    """Fix corrupted EMA Trap params (1.0/1.0 multipliers) and strip stray WMR-only keys."""
+    changed = False
+    for row in instances:
+        if str(row.get("strategy_type") or "").strip().lower() != "ema_trap":
+            continue
+        params = row.get("params")
+        if not isinstance(params, dict):
+            continue
+        for k in ("slMultiplierMax", "slMultiplierMin", "slDecaySeconds"):
+            if k in params:
+                params.pop(k, None)
+                changed = True
+        sl_raw = params.get("slMultiplier")
+        tp_raw = params.get("tpMultiplier")
+        try:
+            sf = float(sl_raw)
+            tf = float(tp_raw)
+        except (TypeError, ValueError):
+            continue
+        if abs(sf - 1.0) < 1e-9 and abs(tf - 1.0) < 1e-9:
+            params["slMultiplier"] = 0.5
+            params["tpMultiplier"] = 2.0
+            changed = True
+    if changed:
+        _log.warning(
+            "[strategy_instances] Repaired EMA Trap params in %s (see module docstring)",
+            INSTANCES_PATH,
+        )
+    return changed
+
+
 def load_instances_raw() -> list[dict]:
     ensure_instances_file()
     try:
         with open(INSTANCES_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, list):
+            if _repair_ema_trap_instances_params(data):
+                save_instances_raw(data)
             return data
     except Exception:
         pass
