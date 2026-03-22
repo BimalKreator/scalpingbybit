@@ -3,27 +3,27 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 67796.0,
+      "price": 67871.5,
       "indicators": {
-        "RSI": 44.71,
-        "RSI_SMA": 56.84,
-        "volume_signal_vs_prev": false,
-        "body_size": 36.0,
-        "open": 67832.0,
-        "close": 67796.0,
-        "volume": 3736.0,
-        "Expected_Profit_Pct": 0.16
+        "RSI": 72.23,
+        "RSI_SMA": 47.95,
+        "volume_signal_vs_prev": true,
+        "body_size": 69.5,
+        "open": 67802.0,
+        "close": 67871.5,
+        "volume": 2800.0,
+        "Expected_Profit_Pct": 0.15
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
         "long": [
           {
             "name": "Signal Candle Bearish (open > close)",
-            "met": true
+            "met": false
           },
           {
             "name": "Previous Candle Bearish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bearish",
@@ -31,7 +31,7 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": false
+            "met": true
           },
           {
             "name": "RSI < 40.0",
@@ -45,11 +45,11 @@
         "short": [
           {
             "name": "Signal Candle Bullish (close > open)",
-            "met": false
+            "met": true
           },
           {
             "name": "Previous Candle Bullish",
-            "met": true
+            "met": false
           },
           {
             "name": "Both Bullish",
@@ -57,11 +57,11 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": false
+            "met": true
           },
           {
             "name": "RSI > 60.0",
-            "met": false
+            "met": true
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -111,7 +111,7 @@
             },
             {
               "text": "Range Filter Downtrend",
-              "met": false
+              "met": true
             },
             {
               "text": "Expected Profit >= 0.08%",
@@ -120,7 +120,7 @@
           ]
         }
       },
-      "checks_updated_unix": 1774216292.0909975,
+      "checks_updated_unix": 1774216859.5855339,
       "status": "Position Open",
       "sl_price": null,
       "tp_price": null,
@@ -149,23 +149,23 @@
     },
     "ETHUSDT": {
       "symbol": "ETHUSDT",
-      "price": 2042.75,
+      "price": 2045.3,
       "indicators": {
-        "RSI": 58.46,
-        "RSI_SMA": 70.16,
-        "volume_signal_vs_prev": false,
-        "body_size": 0.05,
-        "open": 2042.8,
-        "close": 2042.75,
-        "volume": 5059.0,
-        "Expected_Profit_Pct": 0.14
+        "RSI": 76.42,
+        "RSI_SMA": null,
+        "volume_signal_vs_prev": true,
+        "body_size": 1.05,
+        "open": 2044.25,
+        "close": 2045.3,
+        "volume": 4577.0,
+        "Expected_Profit_Pct": 0.09
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
         "long": [
           {
             "name": "Signal Candle Bearish (open > close)",
-            "met": true
+            "met": false
           },
           {
             "name": "Previous Candle Bearish",
@@ -177,7 +177,7 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": false
+            "met": true
           },
           {
             "name": "RSI < 40.0",
@@ -191,7 +191,7 @@
         "short": [
           {
             "name": "Signal Candle Bullish (close > open)",
-            "met": false
+            "met": true
           },
           {
             "name": "Previous Candle Bullish",
@@ -199,15 +199,15 @@
           },
           {
             "name": "Both Bullish",
-            "met": false
+            "met": true
           },
           {
             "name": "Volume: signal > previous",
-            "met": false
+            "met": true
           },
           {
             "name": "RSI > 60.0",
-            "met": false
+            "met": true
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -231,7 +231,7 @@
             },
             {
               "text": "Curr Close > EMA Low",
-              "met": true
+              "met": false
             },
             {
               "text": "Range Filter Uptrend",
@@ -249,7 +249,7 @@
             },
             {
               "text": "Prev RSI > 60.0",
-              "met": false
+              "met": true
             },
             {
               "text": "Curr Close < EMA High",
@@ -266,7 +266,7 @@
           ]
         }
       },
-      "checks_updated_unix": 1774216290.5773852,
+      "checks_updated_unix": 1774216859.6133635,
       "status": "Position Open",
       "sl_price": null,
       "tp_price": null,

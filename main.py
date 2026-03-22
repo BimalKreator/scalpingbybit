@@ -3961,6 +3961,81 @@ def has_valid_entry_signal_now(df: pd.DataFrame) -> tuple[str | None, pd.Series 
     return (None, None)
 
 
+def _round_price_to_instrument_tick(sym: str, price: float) -> float:
+    """Round a price to the symbol's tick (Delta: REST tick_size; else tiered Bybit-style fallback)."""
+    try:
+        p = float(price)
+    except (TypeError, ValueError):
+        return float(price)
+    if math.isnan(p) or p <= 0:
+        return p
+    u = _norm_sym(sym)
+    if USE_DELTA:
+        try:
+            from delta_client import get_delta_tick_size
+
+            tick = float(get_delta_tick_size(u))
+            if tick > 0:
+                return round(round(p / tick) * tick, 12)
+        except Exception:
+            pass
+    ap = abs(p)
+    if ap >= 10_000:
+        step = 1.0
+    elif ap >= 1_000:
+        step = 0.1
+    elif ap >= 100:
+        step = 0.01
+    elif ap >= 1:
+        step = 0.0001
+    else:
+        step = 1e-6
+    return round(round(p / step) * step, 12)
+
+
+def _manual_sl_tp_geometry_ok(
+    side: str, ent: float, slw: float, sln: float, tp: float
+) -> bool:
+    """True if SL band and TP are on the correct side of entry for the position side."""
+    if ent <= 0 or tp <= 0 or slw <= 0 or sln <= 0:
+        return False
+    if math.isnan(ent) or math.isnan(tp) or math.isnan(slw) or math.isnan(sln):
+        return False
+    s = str(side or "").strip().lower()
+    tol = 1e-9 * max(ent, 1.0)
+    if s == "buy":
+        return bool(
+            slw < ent - tol
+            and sln < ent - tol
+            and tp > ent + tol
+            and slw <= sln + tol
+        )
+    if s == "sell":
+        return bool(
+            slw > ent + tol
+            and sln > ent + tol
+            and tp < ent - tol
+            and slw >= sln - tol
+        )
+    return False
+
+
+def _manual_default_sl_tp(sym: str, side: str, ent: float) -> tuple[float, float, float]:
+    """Default static SL (1%) and TP (2%), tick-rounded. Returns (sl_max, sl_min, tp) with max==min."""
+    default_sl_pct = 0.01
+    default_tp_pct = 0.02
+    s = str(side or "").strip().upper()
+    if s in ("BUY", "LONG"):
+        sl_raw = ent * (1.0 - default_sl_pct)
+        tp_raw = ent * (1.0 + default_tp_pct)
+    else:
+        sl_raw = ent * (1.0 + default_sl_pct)
+        tp_raw = ent * (1.0 - default_tp_pct)
+    slf = _round_price_to_instrument_tick(sym, sl_raw)
+    tpf = _round_price_to_instrument_tick(sym, tp_raw)
+    return (slf, slf, tpf)
+
+
 def register_manual_trade(
     side: str,
     entry_price: float,
@@ -3990,13 +4065,36 @@ def register_manual_trade(
     tsym = _norm_sym(trade_symbol or SYMBOL)
     _last_position_side = side
     ep = float(entry_price)
+
     if sl_max_price is not None and sl_min_price is not None:
-        _sl_max_price = float(sl_max_price)
-        _sl_min_price = float(sl_min_price)
+        try:
+            _sl_max_price = float(sl_max_price)
+            _sl_min_price = float(sl_min_price)
+        except (TypeError, ValueError):
+            try:
+                _sl_max_price = _sl_min_price = float(sl_price)
+            except (TypeError, ValueError):
+                _sl_max_price = _sl_min_price = 0.0
     else:
-        _sl_max_price = _sl_min_price = float(sl_price)
+        try:
+            _sl_max_price = _sl_min_price = float(sl_price)
+        except (TypeError, ValueError):
+            _sl_max_price = _sl_min_price = 0.0
+
+    try:
+        _last_tp_price = float(tp_price)
+    except (TypeError, ValueError):
+        _last_tp_price = 0.0
+
+    _sl_max_price = _round_price_to_instrument_tick(tsym, _sl_max_price)
+    _sl_min_price = _round_price_to_instrument_tick(tsym, _sl_min_price)
+    _last_tp_price = _round_price_to_instrument_tick(tsym, _last_tp_price)
+
+    if not _manual_sl_tp_geometry_ok(side, ep, _sl_max_price, _sl_min_price, _last_tp_price):
+        smx_d, smn_d, tp_d = _manual_default_sl_tp(tsym, side, ep)
+        _sl_max_price, _sl_min_price, _last_tp_price = smx_d, smn_d, tp_d
+
     _last_sl_price = _sl_max_price
-    _last_tp_price = float(tp_price)
     _last_position_was_reverse = False
     _manual_reversal_allowed = allow_reversal
     _position_entry_price = ep
@@ -4017,20 +4115,14 @@ def register_manual_trade(
         }
     else:
         smx, smn = _sl_multipliers_for_position()
-        sl_dist = abs(ep - float(sl_price))
+        sl_dist = abs(ep - float(_sl_max_price))
         fake_range = sl_dist / smx if smx > 1e-12 else sl_dist
-        _last_signal_candle = {"high": float(entry_price) + fake_range, "low": float(entry_price), "close": float(entry_price)}
-    try:
-        xst.tracker_update(
-            tsym,
-            SYMBOL,
-            strategy_name=str(_active_trade_strategy_name or "Manual").strip(),
-        )
-    except Exception:
-        pass
-    _sync_position_risk_to_state()
-    _flush_live_state_file_with_tracker()
-    _set_exchange_sl_health("ok", "")
+        _last_signal_candle = {
+            "high": float(entry_price) + fake_range,
+            "low": float(entry_price),
+            "close": float(entry_price),
+        }
+
     if filled_position_size is not None and _virtual_trading_enabled():
         try:
             fq = float(filled_position_size)
@@ -4047,6 +4139,39 @@ def register_manual_trade(
                 )
         except (TypeError, ValueError):
             pass
+
+    strat_nm = str(_active_trade_strategy_name or "Manual").strip() or "Manual"
+    try:
+        now = float(_entry_time)
+        xst.set_tracker_fields(
+            tsym,
+            SYMBOL,
+            last_signal_candle=dict(_last_signal_candle),
+            last_position_side=str(side),
+            last_sl_price=float(_sl_max_price),
+            last_tp_price=float(_last_tp_price),
+            sl_max_price=float(_sl_max_price),
+            sl_min_price=float(_sl_min_price),
+            tp_price_pos=float(_last_tp_price),
+            entry_time=now,
+            last_entry_time=now,
+            breakeven_triggered=False,
+            half_target_exited=False,
+            half_target_reached=False,
+            local_close_reason="",
+            last_active_sl_price=float(_sl_max_price),
+            exchange_sl_price=float(_sl_max_price),
+            last_position_was_reverse=False,
+            base_risk_dist=float(_base_risk_dist),
+            monitor_had_position=True,
+            strategy_name=strat_nm,
+        )
+    except Exception:
+        pass
+
+    _sync_position_risk_to_state()
+    _flush_live_state_file_with_tracker()
+    _set_exchange_sl_health("ok", "")
 
 
 def _was_closed_by_sl(current_price: float, symbol: str | None = None) -> bool:

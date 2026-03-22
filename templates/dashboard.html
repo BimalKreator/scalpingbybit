@@ -1069,12 +1069,12 @@
         if (!subRow && !sm && root.symbol && _symMatches(root.symbol, sym)) subRow = root;
         if (!subRow) subRow = { symbol: sym, checks: {}, indicators: {}, price: null, status: '' };
         var p = findPositionForSymbol(positions, sym);
-        html += '<div class="unified-token-row w-full rounded-xl bg-slate-800/90 border border-slate-700 overflow-hidden flex flex-col md:flex-row shadow-lg shadow-black/20" data-unified-symbol="' + escapeHtmlUnified(sym) + '">';
-        html += '<div class="w-full md:w-1/3 p-4 border-b md:border-b-0 md:border-r border-slate-700 bg-slate-900/40">';
+        html += '<div class="unified-token-row w-full rounded-xl bg-slate-800/90 border border-slate-700 overflow-hidden flex flex-col lg:flex-row shadow-lg shadow-black/20" data-unified-symbol="' + escapeHtmlUnified(sym) + '">';
+        html += '<div class="w-full lg:w-1/3 flex-shrink-0 p-4 border-b lg:border-b-0 lg:border-r border-slate-700 bg-slate-900/40">';
         html += '<p class="text-[10px] font-semibold text-cyan-400/90 uppercase tracking-wider mb-2">Position</p>';
         html += renderPositionLeftHtml(sym, p);
         html += '</div>';
-        html += '<div class="w-full md:w-2/3 p-4 flex flex-col justify-start">';
+        html += '<div class="w-full lg:w-2/3 flex-grow p-4 flex flex-col justify-center">';
         html += '<p class="text-[10px] font-semibold text-sky-400/90 uppercase tracking-wider mb-2">Strategy scanner</p>';
         html += renderScannerRightHtml(sym, subRow, sm ? null : root);
         html += '</div></div>';
