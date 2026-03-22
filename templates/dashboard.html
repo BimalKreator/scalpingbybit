@@ -176,7 +176,10 @@
             </div>
           </div>
           <div id="activePositionCard" class="hidden rounded-xl border border-amber-900/50 bg-slate-900/70 p-4 space-y-3">
-            <p class="text-xs font-semibold text-amber-400 uppercase tracking-wide">Active Position</p>
+            <div class="flex flex-wrap items-center gap-2">
+              <p class="text-xs font-semibold text-amber-400 uppercase tracking-wide m-0">Active Position</p>
+              <span id="activePositionStrategyBadge" class="hidden text-[10px] font-semibold uppercase tracking-wide rounded-full px-2 py-0.5 bg-sky-900/80 text-sky-200 border border-sky-700/60"></span>
+            </div>
             <div id="exchangeSlHealthWrap" class="hidden rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-2">
               <div class="flex items-center justify-between gap-2">
                 <span id="exchangeSlHealthBadge" class="inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold border-slate-600 bg-slate-700 text-slate-200">Exchange SL: N/A</span>
@@ -1003,6 +1006,21 @@
       var pr = data.position_risk || {};
       var card = document.getElementById('activePositionCard');
       if (!card) return;
+      var stratBadge = document.getElementById('activePositionStrategyBadge');
+      var stratName = (data.strategy_name != null && String(data.strategy_name).trim())
+        ? String(data.strategy_name).trim()
+        : (pr.strategy_name != null && String(pr.strategy_name).trim())
+          ? String(pr.strategy_name).trim()
+          : '';
+      if (stratBadge) {
+        if (stratName) {
+          stratBadge.textContent = stratName;
+          stratBadge.classList.remove('hidden');
+        } else {
+          stratBadge.textContent = '';
+          stratBadge.classList.add('hidden');
+        }
+      }
       if (pr.open && pr.has_levels) {
         card.classList.remove('hidden');
         document.getElementById('riskSlPriceDisplay').textContent = formatNum(pr.sl_price);
@@ -1040,6 +1058,10 @@
         }
       } else {
         card.classList.add('hidden');
+        if (stratBadge) {
+          stratBadge.textContent = '';
+          stratBadge.classList.add('hidden');
+        }
       }
     }
 
@@ -1067,6 +1089,15 @@
       if (x >= 1) return x.toFixed(2);
       if (x >= 0.01) return x.toFixed(4);
       return x.toFixed(6);
+    }
+
+    function escapeHtmlStr(s) {
+      if (s == null) return '';
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
     }
 
     async function pollAccount() {
@@ -1109,11 +1140,17 @@
           const entryTimeIST = (ct && ct !== '0') ? new Date(parseInt(ct)).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '–';
           const card = document.createElement('div');
           card.className = 'rounded-xl bg-slate-800/90 border border-slate-700 p-4 flex flex-col gap-3';
+          var strat = (p.strategy_name != null && String(p.strategy_name).trim()) ? String(p.strategy_name).trim() : '';
+          var stratHtml = strat
+            ? '<span class="text-[10px] font-semibold uppercase tracking-wide rounded-full px-2 py-0.5 bg-sky-900/80 text-sky-200 border border-sky-700/60 shrink-0">' + escapeHtmlStr(strat) + '</span>'
+            : '';
           card.innerHTML =
-            '<div class="flex justify-between items-baseline">' +
+            '<div class="flex justify-between items-center gap-2 flex-wrap">' +
               '<span class="text-lg font-bold text-white">' + (p.symbol || '') + '</span>' +
+              '<div class="flex items-center gap-2">' +
+              stratHtml +
               '<span class="font-medium ' + sideClass + '">' + (p.side || '') + '</span>' +
-            '</div>' +
+              '</div></div>' +
             '<p class="text-xs text-slate-400"><strong>Entry Time:</strong> ' + entryTimeIST + '</p>' +
             '<div class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">' +
               '<span class="text-slate-500">Entry</span><span class="text-slate-200">' + (p.entryPrice || '–') + '</span>' +

@@ -582,6 +582,7 @@ def _default_per_symbol_live_state(sym: str) -> dict:
         "tp_amount_usd": None,
         "position_risk": {"open": False},
         "last_signal_candle_start": None,
+        "strategy_name": None,
     }
 
 
@@ -836,6 +837,7 @@ def get_paper_position_rows_for_ui(symbol: str = "") -> list[dict]:
             ct_ms = str(int(ct_f * 1000)) if ct_f > 0 else "0"
         except (TypeError, ValueError):
             ct_ms = "0"
+        strat_nm = str(tr.get("strategy_name") or "").strip() or "Manual / Unknown"
         rows.append(
             {
                 "symbol": sym,
@@ -849,6 +851,7 @@ def get_paper_position_rows_for_ui(symbol: str = "") -> list[dict]:
                 "unrealisedPnl": upnl,
                 "createdTime": ct_ms,
                 "paper": True,
+                "strategy_name": strat_nm,
             }
         )
     return rows
@@ -2646,6 +2649,35 @@ async def _async_partial_tp_close(
             raise
 
 
+def _usd_pnl_at_exit_price(
+    sym: str,
+    entry: float,
+    exit_px: float,
+    size: float,
+    *,
+    is_short: bool,
+) -> float:
+    """
+    Signed USD PnL if position exits at exit_px (no extra leverage factor).
+    Delta: contracts × contract_value × (price move in direction of position).
+    Bybit linear: base qty × (price move).
+    """
+    if entry <= 0 or exit_px <= 0 or size <= 1e-18:
+        return 0.0
+    dpx = float(exit_px) - float(entry)
+    if is_short:
+        dpx = -dpx
+    if USE_DELTA:
+        try:
+            from delta_client import get_delta_contract_value
+
+            cv = float(get_delta_contract_value(sym))
+        except Exception:
+            cv = 0.001
+        return float(size) * cv * dpx
+    return float(size) * dpx
+
+
 def _position_risk_payload(symbol: str | None = None) -> dict:
     """Risk bar uses dynamic active SL and static TP (per-symbol exchange_state)."""
     sym = _norm_sym(symbol or SYMBOL)
@@ -2671,8 +2703,18 @@ def _position_risk_payload(symbol: str | None = None) -> dict:
         slf = float(tr["last_sl_price"])
     has_levels = bool(slf is not None and tpf is not None and slf > 0 and tpf > 0)
     side_raw = str(pos.get("side") or tr.get("last_position_side") or "").strip()
+    strat_label = str(tr.get("strategy_name") or "").strip() or (
+        (_active_trade_strategy_name or "").strip() if sym == _norm_sym(SYMBOL) else ""
+    )
+    if not strat_label:
+        strat_label = "Manual / Unknown"
     if not has_levels:
-        return {"open": True, "has_levels": False, "side": side_raw or None}
+        return {
+            "open": True,
+            "has_levels": False,
+            "side": side_raw or None,
+            "strategy_name": strat_label,
+        }
     size = float(pos.get("size") or 0)
     entry = pos.get("entry")
     mid = (bb + ba) / 2 if bb > 0 and ba > 0 else None
@@ -2686,34 +2728,56 @@ def _position_risk_payload(symbol: str | None = None) -> dict:
     if side.lower() not in ("buy", "sell"):
         side = "Buy" if side.lower() in ("long", "buy") else "Sell"
     ent = float(entry)
-    load_dotenv(override=True)
-    load_dotenv("env", override=True)
-    trade_amt = float(os.getenv("TRADE_AMOUNT_USD", os.getenv("trade_amount", "100")))
-    lev = float(os.getenv("LEVERAGE", os.getenv("leverage", "10")))
-    position_value_usd = trade_amt * lev
-    qstep, minq = _qty_constraints_for_symbol(sym)
-    if size <= 1e-18 and ent > 0:
-        size = max(minq, position_value_usd / ent)
+    if size <= 1e-18:
+        sz2, ep2, _ = _read_position_for_symbol(sym)
+        if sz2 > 1e-18:
+            size = float(sz2)
+        if (entry is None or float(entry or 0) <= 0) and ep2 is not None and float(ep2 or 0) > 0:
+            entry = ep2
+            ent = float(ep2)
     live_mid = float(mid)
     side_l = side.lower()
     is_short = side_l in ("sell", "short")
     breakeven_buffer_active = bool(tr.get("breakeven_triggered"))
-    # Progress bar + SL $: normal SL left of entry; breakeven+buffer SL is past entry (fee cushion).
+    # Notional / margin hint for UI (not used for SL/TP $ math)
+    try:
+        if USE_DELTA:
+            from delta_client import get_delta_contract_value
+
+            notional_est = abs(float(size) * float(get_delta_contract_value(sym)) * float(ent))
+        else:
+            notional_est = abs(float(size) * float(ent))
+    except Exception:
+        notional_est = 0.0
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
+    trade_amt = float(os.getenv("TRADE_AMOUNT_USD", os.getenv("trade_amount", "100")))
+    lev = max(1.0, float(os.getenv("LEVERAGE", os.getenv("leverage", "10"))))
+    position_value_usd = round(notional_est / lev, 2) if (notional_est > 0 and lev > 0) else round(
+        trade_amt, 2
+    )
+    # Progress bar + SL/TP $: use price distance × size (× Delta contract_value); no leverage in PnL.
     if breakeven_buffer_active and not is_short and slf >= ent - 1e-12 and tpf > ent + 1e-12:
         fr = tpf - ent
-        sl_risk_usd = (slf - ent) * size
-        tp_gain_usd = abs(tpf - ent) * size
+        sl_move_usd = _usd_pnl_at_exit_price(sym, ent, float(slf), size, is_short=is_short)
+        tp_move_usd = _usd_pnl_at_exit_price(sym, ent, float(tpf), size, is_short=is_short)
+        sl_risk_usd = abs(sl_move_usd)
+        tp_gain_usd = max(0.0, tp_move_usd)
         entry_pct = max(0.01, min(99.0, (slf - ent) / fr * 100.0))
         live_mid_pct = max(0.0, min(100.0, (live_mid - ent) / fr * 100.0))
     elif breakeven_buffer_active and is_short and slf <= ent + 1e-12 and ent > tpf + 1e-12:
         fr = ent - tpf
-        sl_risk_usd = (ent - slf) * size
-        tp_gain_usd = abs(ent - tpf) * size
+        sl_move_usd = _usd_pnl_at_exit_price(sym, ent, float(slf), size, is_short=is_short)
+        tp_move_usd = _usd_pnl_at_exit_price(sym, ent, float(tpf), size, is_short=is_short)
+        sl_risk_usd = abs(sl_move_usd)
+        tp_gain_usd = max(0.0, tp_move_usd)
         entry_pct = max(0.01, min(99.0, (ent - slf) / fr * 100.0))
         live_mid_pct = max(0.0, min(100.0, (ent - live_mid) / fr * 100.0))
     else:
-        sl_risk_usd = abs(ent - slf) * size
-        tp_gain_usd = abs(tpf - ent) * size
+        sl_move_usd = _usd_pnl_at_exit_price(sym, ent, float(slf), size, is_short=is_short)
+        tp_move_usd = _usd_pnl_at_exit_price(sym, ent, float(tpf), size, is_short=is_short)
+        sl_risk_usd = abs(sl_move_usd)
+        tp_gain_usd = max(0.0, tp_move_usd)
         if is_short:
             full_range = slf - tpf
             if full_range > 0:
@@ -2731,20 +2795,25 @@ def _position_risk_payload(symbol: str | None = None) -> dict:
                 entry_pct = 50.0
                 live_mid_pct = 50.0
         breakeven_buffer_active = False
+    # SL leg: signed USD at SL price (breakeven mode may be slightly positive = locked profit)
+    if breakeven_buffer_active:
+        sl_signed = float(sl_move_usd)
+    else:
+        sl_signed = float(
+            _usd_pnl_at_exit_price(sym, ent, float(slf), size, is_short=is_short)
+        )
     return {
         "open": True,
         "has_levels": True,
         "side": side,
+        "strategy_name": strat_label,
         "entry_price": round(ent, 4),
         "size": round(size, 6),
         "sl_price": round(slf, 4),
         "tp_price": round(tpf, 4),
-        "sl_amount_usd": round(
-            sl_risk_usd if breakeven_buffer_active else -sl_risk_usd,
-            6,
-        ),
-        "tp_amount_usd": round(tp_gain_usd, 6),
-        "position_value_usd": round(position_value_usd, 2),
+        "sl_amount_usd": round(sl_signed, 6),
+        "tp_amount_usd": round(tp_move_usd, 6),
+        "position_value_usd": float(position_value_usd),
         "live_mid": round(live_mid, 4),
         "entry_pct": round(float(entry_pct), 2),
         "live_mid_pct": round(float(live_mid_pct), 2),
@@ -2755,6 +2824,10 @@ def _position_risk_payload(symbol: str | None = None) -> dict:
 def _apply_position_risk_to_state_dict(d: dict, symbol: str) -> None:
     pr = _position_risk_payload(symbol)
     d["position_risk"] = pr
+    if pr.get("open"):
+        d["strategy_name"] = pr.get("strategy_name")
+    else:
+        d["strategy_name"] = None
     if pr.get("open") and pr.get("has_levels"):
         d["sl_price"] = pr.get("sl_price")
         d["tp_price"] = pr.get("tp_price")
@@ -3109,6 +3182,7 @@ def _xst_record_filled_entry(
         last_position_was_reverse=bool(is_reverse),
         base_risk_dist=abs(float(ent) - float(sl_wide)) / max(float(sl_mx), 1e-12),
         monitor_had_position=True,
+        strategy_name=str(_active_trade_strategy_name or "Manual / Unknown").strip(),
     )
 
 
@@ -3806,6 +3880,7 @@ def register_manual_trade(
     sl_min_price: float | None = None,
     filled_position_size: float | None = None,
     instance_id: str | None = None,
+    trade_symbol: str | None = None,
 ) -> None:
     """Register manual trade; optional sl_max/sl_min for dynamic SL (else single sl_price).
 
@@ -3818,6 +3893,7 @@ def register_manual_trade(
     global _last_entry_time, _base_risk_dist
     iid = str(instance_id).strip() if instance_id else None
     load_active_instance_execution(iid)
+    tsym = _norm_sym(trade_symbol or SYMBOL)
     _last_position_side = side
     ep = float(entry_price)
     if sl_max_price is not None and sl_min_price is not None:
@@ -3850,6 +3926,14 @@ def register_manual_trade(
         sl_dist = abs(ep - float(sl_price))
         fake_range = sl_dist / smx if smx > 1e-12 else sl_dist
         _last_signal_candle = {"high": float(entry_price) + fake_range, "low": float(entry_price), "close": float(entry_price)}
+    try:
+        xst.tracker_update(
+            tsym,
+            SYMBOL,
+            strategy_name=str(_active_trade_strategy_name or "Manual / Unknown").strip(),
+        )
+    except Exception:
+        pass
     _sync_position_risk_to_state()
     _flush_live_state_file_with_tracker()
     _set_exchange_sl_health("ok", "")
@@ -3860,6 +3944,13 @@ def register_manual_trade(
                 with _position_lock:
                     _position_size = fq
                 _monitor_had_position = True
+                xst.set_position_fields(
+                    tsym,
+                    SYMBOL,
+                    size=float(fq),
+                    entry=float(entry_price),
+                    side=str(side),
+                )
         except (TypeError, ValueError):
             pass
 
@@ -4440,6 +4531,10 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
     if len(df_closed) < 3 or _loop is None or _signal_queue is None:
         return
     conf_start = int(df_closed.iloc[-1]["start"])
+    sym_row0 = xst.read_position_for_symbol(sym_u, SYMBOL)
+    sym_sz0 = float(sym_row0.get("size") or 0)
+    symbol_has_open_position = sym_sz0 > 1e-12 or get_open_position(sym_u)
+    entry_queued_this_message = False
     for inst in get_strategy_instances():
         if not inst.get("enabled", True):
             continue
@@ -4451,6 +4546,10 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
         st_new = _bump_instance_bar_state(inst["id"], conf_start, st0)
         inst = {**inst, "state": st_new}
         st = st_new
+        if symbol_has_open_position:
+            continue
+        if entry_queued_this_message:
+            continue
         strat = str(inst.get("strategy_type") or "").strip().lower()
         meta_base = {
             "instance_id": inst["id"],
@@ -4499,13 +4598,6 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
                 conf_start,
             )
             continue
-        if get_open_position(sym_u):
-            logging.info(
-                "[instances] Skip %s signal — position already open on %s",
-                inst.get("id"),
-                sym_u,
-            )
-            continue
 
         label = AVAILABLE_STRATEGIES.get(strat, strat)
         emoji = "🟢" if signal == "Buy" else "🔴"
@@ -4534,6 +4626,7 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             _signal_queue.put_nowait,
             ("entry", signal, row_dict, False, meta),
         )
+        entry_queued_this_message = True
 
 
 def check_signals(df: pd.DataFrame) -> None:

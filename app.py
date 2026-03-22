@@ -353,6 +353,31 @@ def _position_row_matches_tracked(pos_symbol: str, tracked: set[str]) -> bool:
     return False
 
 
+def _strategy_name_from_live_state(pos_symbol: str) -> str:
+    """Best-effort strategy label for positions card (from bot live_strategy JSON)."""
+    try:
+        if not _LIVE_STATE_JSON_PATH.is_file():
+            return ""
+        raw = _read_live_state_json_safe()
+        mp = _live_state_symbols_from_disk_raw(raw)
+        for state_sym, row in mp.items():
+            if not isinstance(row, dict):
+                continue
+            if not _symbol_matches_state(pos_symbol, state_sym):
+                continue
+            sn = row.get("strategy_name")
+            if sn is not None and str(sn).strip():
+                return str(sn).strip()
+            pr = row.get("position_risk") or {}
+            if isinstance(pr, dict):
+                sn2 = pr.get("strategy_name")
+                if sn2 is not None and str(sn2).strip():
+                    return str(sn2).strip()
+        return ""
+    except Exception:
+        return ""
+
+
 def _inject_local_sl_tp_into_positions(positions: list, *, is_delta: bool) -> list:
     """Override stop_loss / take_profit from bot-local tracker when appropriate (per symbol)."""
     if not positions:
@@ -361,6 +386,9 @@ def _inject_local_sl_tp_into_positions(positions: list, *, is_delta: bool) -> li
         if not isinstance(p, dict):
             continue
         psym = str(p.get("symbol") or "")
+        sn = _strategy_name_from_live_state(psym)
+        if sn and not str(p.get("strategy_name") or "").strip():
+            p["strategy_name"] = sn
         slf, tpf, _state_sym = _load_local_sl_tp_for_position_symbol(psym)
         if slf is None or tpf is None:
             continue
@@ -828,6 +856,7 @@ _DEFAULT_STRATEGY_STATE = {
     "checks": {},
     "checks_updated_unix": 0.0,
     "status": "No data",
+    "strategy_name": None,
     "position_risk": {"open": False},
 }
 
@@ -1149,6 +1178,7 @@ async def api_trade_manual(body: ManualTradeBody):
                     sl_min_price=float(sl_tight),
                     filled_position_size=float(total_qty),
                     instance_id=iid_arg,
+                    trade_symbol=body.symbol,
                 )
                 return {"ok": True, "message": "Paper manual trade registered (no exchange orders)"}
 
@@ -1247,6 +1277,7 @@ async def api_trade_manual(body: ManualTradeBody):
                     sl_max_price=sl_wide,
                     sl_min_price=sl_tight,
                     instance_id=iid_arg,
+                    trade_symbol=body.symbol,
                 )
                 return {"ok": True, "message": "Trade executed (Delta)"}
 
@@ -1326,6 +1357,7 @@ async def api_trade_manual(body: ManualTradeBody):
                 sl_max_price=sl_wide,
                 sl_min_price=sl_tight,
                 instance_id=iid_arg,
+                trade_symbol=body.symbol,
             )
             return {"ok": True, "message": "Trade executed"}
     except HTTPException:
