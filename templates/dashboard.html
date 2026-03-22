@@ -924,10 +924,20 @@
             var syncBlock = '';
             if (ms && typeof ms === 'object') {
               var sr = ms.sig_rsi != null ? formatNum(ms.sig_rsi) : '—';
+              var atOn = ms.autotrade_enabled === true;
+              var pending = ms.order_pending_for_this_conf_bar === true;
+              var gateLine = '';
+              if (!atOn) {
+                gateLine = ' <span class="text-amber-400">Auto Trade OFF</span> — enable bot autotrade to execute.';
+              } else if (pending) {
+                gateLine = ' <span class="text-sky-300">Order already sent for this conf. candle</span> — next chance: next bar close.';
+              }
               syncBlock = '<p class="text-[11px] text-slate-400 mb-2 font-mono">Engine sync: sig_rsi=' + escapeHtml(sr) +
                 ' · conf_start=' + escapeHtml(ms.conf_bar_start != null ? String(ms.conf_bar_start) : '—') +
                 ' · buf_rows=' + escapeHtml(ms.rows_in_buffer != null ? String(ms.rows_in_buffer) : '—') +
-                '</p>';
+                ' · autotrade=' + (atOn ? 'ON' : 'OFF') +
+                '</p>' +
+                (gateLine ? '<p class="text-[11px] mb-2">' + gateLine + '</p>' : '');
             }
             var cardHtml = '<div class="rounded-xl bg-slate-800/80 border border-slate-700 p-4 mb-3">' +
               '<div class="flex flex-wrap justify-between items-center gap-2 mb-3">' +

@@ -25,8 +25,8 @@
     "state": {
       "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 888,
-      "last_evaluated_start": 1774164900000,
+      "bar_seq": 998,
+      "last_evaluated_start": 1774171500000,
       "last_signal_start": 1774140120000
     }
   },
@@ -61,8 +61,39 @@
     "state": {
       "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 289,
-      "last_evaluated_start": 1774164780000,
+      "bar_seq": 326,
+      "last_evaluated_start": 1774171440000,
+      "last_signal_start": null
+    }
+  },
+  {
+    "id": "inst_1774166651003_657a50",
+    "strategy_type": "ema_trap",
+    "name": "EMA Trap 3m",
+    "enabled": true,
+    "symbol": "BTCUSDT",
+    "timeframe": "5m",
+    "params": {
+      "emaLength": 30,
+      "rsiLength": 15,
+      "rsiOversold": 40,
+      "rsiOverbought": 60,
+      "slMultiplier": 0.5,
+      "tpMultiplier": 2,
+      "minProfitPerc": 0.08,
+      "rangeLength": 12,
+      "rangeMultiplier": 1,
+      "tradeCapitalUsd": 10,
+      "leverage": 10,
+      "trailingSlEnabled": true,
+      "partialTpEnabled": true,
+      "breakevenBufferPct": 0.02
+    },
+    "state": {
+      "in_position": false,
+      "cooldown_until_bar": 0,
+      "bar_seq": 2,
+      "last_evaluated_start": 1774166760000,
       "last_signal_start": null
     }
   }

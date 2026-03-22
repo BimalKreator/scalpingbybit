@@ -401,18 +401,22 @@ def _patch_instance_state_cache(instance_id: str, state_patch: dict) -> None:
             break
 
 
-def _bump_instance_bar_state(instance_id: str, conf_start: int, state: dict) -> dict | None:
+def _bump_instance_bar_state(instance_id: str, conf_start: int, state: dict) -> dict:
     """
-    If this confirmation bar is new for the instance, persist bar_seq and return updated state.
-    Otherwise return None.
+    Advance bar_seq once when the confirmation bar *start* changes.
+
+    Important: we must NOT skip instance evaluation on later WebSocket updates for the *same*
+    closed bar — the first tick can have a stale buffer / NaN RSI while the checklist (rebuilt
+    every message) shows a valid setup. Returning state every time keeps engine == Live Monitor.
     """
     st = dict(state or {})
-    if int(st.get("last_evaluated_start") or 0) == int(conf_start):
-        return None
-    st["last_evaluated_start"] = int(conf_start)
-    st["bar_seq"] = int(st.get("bar_seq") or 0) + 1
-    instance_storage.merge_instance_state(instance_id, st)
-    _patch_instance_state_cache(instance_id, st)
+    prev = int(st.get("last_evaluated_start") or 0)
+    cs = int(conf_start)
+    if cs != prev:
+        st["last_evaluated_start"] = cs
+        st["bar_seq"] = int(st.get("bar_seq") or 0) + 1
+        instance_storage.merge_instance_state(instance_id, st)
+        _patch_instance_state_cache(instance_id, st)
     return st
 
 
@@ -3830,7 +3834,19 @@ def _rebuild_instance_checks_live_state(symbol_normalized: str) -> None:
                 entry["note"] = built["note"]
             sync = built.get("sync")
             if isinstance(sync, dict):
-                entry["monitor_sync"] = sync
+                try:
+                    cstart = int(df_closed.iloc[-1]["start"]) if len(df_closed) >= 1 else None
+                except (TypeError, ValueError, KeyError):
+                    cstart = None
+                lss = int(st.get("last_signal_start") or 0)
+                entry["monitor_sync"] = {
+                    **sync,
+                    "last_signal_start": lss,
+                    "autotrade_enabled": _is_autotrade_enabled(),
+                    "order_pending_for_this_conf_bar": bool(
+                        cstart is not None and lss == cstart
+                    ),
+                }
             checks[iid] = entry
         else:
             checks[iid] = {
@@ -3896,8 +3912,6 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             continue
         st0 = dict(inst.get("state") or {})
         st_new = _bump_instance_bar_state(inst["id"], conf_start, st0)
-        if st_new is None:
-            continue
         inst = {**inst, "state": st_new}
         st = st_new
         strat = str(inst.get("strategy_type") or "").strip().lower()
@@ -3942,6 +3956,11 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
         if bool(st.get("in_position")):
             continue
         if int(st.get("last_signal_start") or 0) == conf_start:
+            logging.info(
+                "[instances] Skip %s — already queued signal for conf_start=%s (wait for next candle)",
+                inst.get("id"),
+                conf_start,
+            )
             continue
         if get_open_position():
             logging.info(
@@ -3956,11 +3975,15 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             f"[{datetime.now().isoformat()}] {emoji} {signal.upper()} ({sym_u} {interval_minutes}m) "
             f"[{label}] [{inst.get('name')}] {reason}"
         )
+        if not _is_autotrade_enabled():
+            print(
+                f"[instances] Signal for {inst.get('name')} ({inst.get('id')}) but Auto Trade is OFF — "
+                "not consuming this bar; turn Auto Trade ON to enter on the next closed bar."
+            )
+            continue
+        # Dedup: only after we are about to queue (avoids locking the bar when autotrade was off).
         instance_storage.merge_instance_state(inst["id"], {"last_signal_start": conf_start})
         _patch_instance_state_cache(inst["id"], {"last_signal_start": conf_start})
-        if not _is_autotrade_enabled():
-            print("Signal detected but Auto Trade is OFF. Skipping execution.")
-            continue
         meta = {
             **meta_base,
             "use_fixed_sl_tp": use_fixed,
