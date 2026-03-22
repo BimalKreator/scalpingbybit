@@ -30,8 +30,8 @@
     "state": {
       "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 601,
-      "last_evaluated_start": 1774222740000,
+      "bar_seq": 604,
+      "last_evaluated_start": 1774223280000,
       "last_signal_start": 1774211580000
     }
   },
@@ -59,10 +59,10 @@
       "breakevenBufferPct": 0.02
     },
     "state": {
-      "in_position": true,
+      "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 63,
-      "last_evaluated_start": 1774222740000,
+      "bar_seq": 66,
+      "last_evaluated_start": 1774223280000,
       "last_signal_start": 1774216980000
     }
   }

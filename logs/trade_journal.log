@@ -254,3 +254,5 @@
 {"event": "[PARTIAL EXIT]", "timestamp": "2026-03-22T23:12:58.238550", "symbol": "BTCUSDT", "side": "Long", "trigger_mid": 68416.0, "closed_qty": 7.0, "position_size_before": 14.0, "breakeven_triggered": true}
 {"event": "[PARTIAL EXIT]", "timestamp": "2026-03-22T23:32:42.365342", "symbol": "BTCUSDT", "side": "Short", "trigger_mid": 68047.5, "closed_qty": 7.0, "position_size_before": 14.0, "breakeven_triggered": true}
 {"event": "[PARTIAL EXIT]", "timestamp": "2026-03-22T23:32:54.248606", "symbol": "ETHUSDT", "side": "Short", "trigger_mid": 2059.75, "closed_qty": 24.0, "position_size_before": 48.0, "breakeven_triggered": true}
+{"event": "[PARTIAL EXIT]", "timestamp": "2026-03-22T23:45:46.666565", "symbol": "ETHUSDT", "side": "Short", "trigger_mid": 2056.55, "closed_qty": 24.0, "position_size_before": 48.0, "breakeven_triggered": true}
+{"event": "[PARTIAL EXIT]", "timestamp": "2026-03-22T23:45:48.905050", "symbol": "BTCUSDT", "side": "Short", "trigger_mid": 68033.0, "closed_qty": 7.0, "position_size_before": 14.0, "breakeven_triggered": true}

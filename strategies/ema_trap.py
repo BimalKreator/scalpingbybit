@@ -276,6 +276,10 @@ def evaluate(
     out["sl_min_price"] = None
     out["tp_price"] = None
     out["use_fixed_sl_tp"] = False
+    out["meta"] = {
+        "instance_sl_mult": float(sl_mult),
+        "instance_tp_mult": float(tp_mult),
+    }
     return out
 
 

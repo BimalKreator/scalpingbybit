@@ -1941,6 +1941,44 @@ def _tp_multiplier_for_order(meta: dict | None) -> float:
         return float(TP_MULTIPLIER)
 
 
+def _entry_risk_multipliers_for_place_order(meta: dict | None) -> tuple[float, float, float]:
+    """
+    SL wide, SL tight, TP multipliers for initial exchange stops.
+
+    When the queued entry carries instance/strategy multipliers (``instance_id`` or embedded
+    ``instance_*`` keys from evaluate), use those only — do not read live position globals or
+    re-fetch instance JSON (avoids .env / stale monitor snapshot overriding the signal bar).
+    """
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
+    emx, emn = _sl_multipliers_from_env()
+    try:
+        tp_def = float(os.getenv("TP_MULTIPLIER", str(TP_MULTIPLIER)) or TP_MULTIPLIER)
+    except (TypeError, ValueError):
+        tp_def = float(TP_MULTIPLIER)
+
+    m = meta or {}
+    use_embedded = bool(m.get("instance_id")) or (
+        m.get("instance_tp_mult") is not None
+        or m.get("instance_sl_mult") is not None
+        or m.get("instance_sl_mult_max") is not None
+        or m.get("instance_sl_mult_min") is not None
+    )
+    if use_embedded:
+        tp_m = float(m.get("instance_tp_mult", tp_def))
+        if m.get("instance_sl_mult_max") is not None or m.get("instance_sl_mult_min") is not None:
+            sl_mx = float(m.get("instance_sl_mult_max", m.get("instance_sl_mult", emx)))
+            sl_mn = float(m.get("instance_sl_mult_min", m.get("instance_sl_mult", emn)))
+        else:
+            s = float(m.get("instance_sl_mult", emx))
+            sl_mx = sl_mn = s
+        return max(sl_mx, 1e-12), max(sl_mn, 1e-12), max(tp_m, 1e-12)
+
+    sl_mx, sl_mn = _sl_multipliers_for_position()
+    tp_m = _tp_multiplier_for_order(meta)
+    return max(float(sl_mx), 1e-12), max(float(sl_mn), 1e-12), max(float(tp_m), 1e-12)
+
+
 def _set_position_sl_tp_sync_logged(
     *,
     sl_str: str,
@@ -3380,8 +3418,7 @@ async def _place_order_async(
     b_bid, b_ask = _apply_virtual_orderbook_fallback(
         b_bid, b_ask, close=close, high=high, low=low
     )
-    sl_mx, sl_mn = _sl_multipliers_for_position()
-    tp_m = _tp_multiplier_for_order(meta)
+    sl_mx, sl_mn, tp_m = _entry_risk_multipliers_for_place_order(meta)
 
     if is_reverse:
         if side == "Buy":
@@ -3819,6 +3856,11 @@ def evaluate_weak_momentum_instance(
     meta: dict[str, Any] = {
         "use_fixed_sl_tp": False,
         "signal_row": sig_row_dict,
+        "meta": {
+            "instance_sl_mult_max": float(sl_mx),
+            "instance_sl_mult_min": float(sl_mn),
+            "instance_tp_mult": float(tp_mult),
+        },
     }
     return (side, reason, meta)
 
@@ -4824,6 +4866,14 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
         instance_storage.merge_instance_state(inst["id"], {"last_signal_start": conf_start})
         _patch_instance_state_cache(inst["id"], {"last_signal_start": conf_start})
         meta = {**meta_base}
+        if strat == "ema_trap":
+            sub = ev.get("meta") if isinstance(ev.get("meta"), dict) else None
+            if sub:
+                meta.update(sub)
+        elif strat == "weak_momentum_reversal" and isinstance(wm_meta, dict):
+            sub = wm_meta.get("meta")
+            if isinstance(sub, dict):
+                meta.update(sub)
         _loop.call_soon_threadsafe(
             _signal_queue.put_nowait,
             ("entry", signal, row_dict, False, meta),
@@ -4870,7 +4920,15 @@ def check_signals(df: pd.DataFrame) -> None:
             return
         queue_meta = None
         if isinstance(sig_meta, dict):
-            queue_meta = {k: v for k, v in sig_meta.items() if k not in _meta_exec_drop}
+            inner = sig_meta.get("meta")
+            base_items = {
+                k: v
+                for k, v in sig_meta.items()
+                if k not in _meta_exec_drop and k != "meta"
+            }
+            queue_meta = dict(base_items)
+            if isinstance(inner, dict):
+                queue_meta.update(inner)
             sr = sig_meta.get("signal_row")
             if isinstance(sr, dict):
                 row_dict = sr
