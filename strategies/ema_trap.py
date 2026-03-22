@@ -19,8 +19,8 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "rsiLength": 14,
     "rsiOversold": 40,
     "rsiOverbought": 60,
-    "slMultiplier": 1.25,
-    "tpMultiplier": 1.5,
+    "slMultiplier": 0.5,
+    "tpMultiplier": 2.0,
     "minProfitPerc": 0.09,
     "rangeLength": 14,
     "rangeMultiplier": 1.1,
@@ -86,7 +86,8 @@ def evaluate(
       3. curr_close < curr_ema_high
       4. curr_rfTrendDown
 
-    Plus SL/TP from signal-candle extreme and minProfitPerc on expected TP move.
+    Plus SL/TP: base_risk = signal bar (high − low), entry = confirmation close,
+    SL/TP = entry ± base_risk × multipliers; minProfitPerc gates expected TP % move.
     """
     p = {**DEFAULT_PARAMS, **(params or {})}
     ema_len = int(_f(p, "emaLength", 20))
@@ -95,8 +96,8 @@ def evaluate(
     rng_mult = float(_f(p, "rangeMultiplier", 1.1))
     rsi_ob = float(_f(p, "rsiOverbought", 60))
     rsi_os = float(_f(p, "rsiOversold", 40))
-    sl_m = float(_f(p, "slMultiplier", 1.25))
-    tp_m = float(_f(p, "tpMultiplier", 1.5))
+    sl_mult = float(_f(p, "slMultiplier", 0.5))
+    tp_mult = float(_f(p, "tpMultiplier", 2.0))
     min_profit = float(_f(p, "minProfitPerc", 0.09))
 
     state_updates: dict[str, Any] = {}
@@ -105,7 +106,9 @@ def evaluate(
         "reason": "",
         "signal_row": None,
         "sl_price": None,
+        "sl_min_price": None,
         "tp_price": None,
+        "use_fixed_sl_tp": False,
         "entry_reference": None,
         "confirmation_start": None,
         "state_updates": state_updates,
@@ -203,23 +206,33 @@ def evaluate(
         out["reason"] = "invalid_entry_price"
         return out
 
+    # Base risk = full signal-candle range (bar that crossed EMA / satisfied RSI). Entry = conf bar close.
+    base_risk = float(sig_high) - float(sig_low)
+    if base_risk <= 0:
+        out["reason"] = "invalid_signal_bar_range"
+        return out
+
     if side == "Buy":
-        exact_sig_sl = float(sig_low)
-        base_risk = entry_price - exact_sig_sl
-        if base_risk <= 0:
-            out["reason"] = "invalid_long_geometry"
+        sl_price_max = entry_price - (base_risk * sl_mult)
+        sl_price_min = sl_price_max  # EMA trap: static SL band (no decay)
+        tp_price = entry_price + (base_risk * tp_mult)
+        if sl_price_max <= 0 or sl_price_max >= entry_price:
+            out["reason"] = "invalid_long_sl_geometry"
             return out
-        sl_price = entry_price - (base_risk * sl_m)
-        tp_price = entry_price + (base_risk * tp_m)
+        if tp_price <= entry_price:
+            out["reason"] = "invalid_long_tp_geometry"
+            return out
         expected_profit_pct = ((tp_price - entry_price) / entry_price) * 100.0
     else:
-        exact_sig_sl = float(sig_high)
-        base_risk = exact_sig_sl - entry_price
-        if base_risk <= 0:
-            out["reason"] = "invalid_short_geometry"
+        sl_price_max = entry_price + (base_risk * sl_mult)
+        sl_price_min = sl_price_max
+        tp_price = entry_price - (base_risk * tp_mult)
+        if sl_price_max <= entry_price:
+            out["reason"] = "invalid_short_sl_geometry"
             return out
-        sl_price = entry_price + (base_risk * sl_m)
-        tp_price = entry_price - (base_risk * tp_m)
+        if tp_price >= entry_price or tp_price <= 0:
+            out["reason"] = "invalid_short_tp_geometry"
+            return out
         expected_profit_pct = ((entry_price - tp_price) / entry_price) * 100.0
 
     if expected_profit_pct < min_profit:
@@ -228,15 +241,17 @@ def evaluate(
         )
         return out
 
-    conf_row = d.iloc[conf_i].to_dict()
+    sig_bar = d.iloc[sig_i]
     out["signal"] = "Buy" if side == "Buy" else "Sell"
     out["reason"] = (
-        f"ema_trap {side} base_risk={base_risk:.6f} exp_profit_pct={expected_profit_pct:.4f} "
-        f"rsi_sig={rsi_sig:.2f} rsi_conf={rsi_conf:.2f}"
+        f"ema_trap {side} base_risk={base_risk:.6f} (sig_H-L) sl×{sl_mult} tp×{tp_mult} "
+        f"exp_profit_pct={expected_profit_pct:.4f} rsi_sig={rsi_sig:.2f} rsi_conf={rsi_conf:.2f}"
     )
-    out["signal_row"] = conf_row
-    out["sl_price"] = float(sl_price)
+    out["signal_row"] = sig_bar.to_dict()
+    out["sl_price"] = float(sl_price_max)
+    out["sl_min_price"] = float(sl_price_min)
     out["tp_price"] = float(tp_price)
+    out["use_fixed_sl_tp"] = True
     return out
 
 
@@ -253,7 +268,7 @@ def build_entry_checklists(
     rng_mult = float(_f(p, "rangeMultiplier", 1.1))
     rsi_ob = float(_f(p, "rsiOverbought", 60))
     rsi_os = float(_f(p, "rsiOversold", 40))
-    tp_m = float(_f(p, "tpMultiplier", 1.5))
+    tp_m = float(_f(p, "tpMultiplier", 2.0))
     min_profit = float(_f(p, "minProfitPerc", 0.09))
     need = max(ema_len, rsi_len, rng_len) + 2
 
@@ -332,17 +347,17 @@ def build_entry_checklists(
 
     min_long = False
     if long_r1 and long_r2 and long_r3 and long_r4 and conf_close > 0:
-        base_risk = conf_close - float(sig_low)
-        if base_risk > 0:
-            tp_p = conf_close + base_risk * tp_m
+        br = float(sig_high) - float(sig_low)
+        if br > 0:
+            tp_p = conf_close + br * tp_m
             exp_pct = ((tp_p - conf_close) / conf_close) * 100.0
             min_long = exp_pct >= min_profit
 
     min_short = False
     if short_r1 and short_r2 and short_r3 and short_r4 and conf_close > 0:
-        base_risk = float(sig_high) - conf_close
-        if base_risk > 0:
-            tp_p = conf_close - base_risk * tp_m
+        br = float(sig_high) - float(sig_low)
+        if br > 0:
+            tp_p = conf_close - br * tp_m
             exp_pct = ((conf_close - tp_p) / conf_close) * 100.0
             min_short = exp_pct >= min_profit
 

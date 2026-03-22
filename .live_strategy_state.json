@@ -3,16 +3,16 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 67948.5,
+      "price": 68140.5,
       "indicators": {
-        "RSI": 51.34,
-        "RSI_SMA": 58.63,
+        "RSI": 25.18,
+        "RSI_SMA": 59.42,
         "volume_signal_vs_prev": true,
-        "body_size": 55.5,
-        "open": 68004.0,
-        "close": 67948.5,
-        "volume": 4688.0,
-        "Expected_Profit_Pct": 0.14
+        "body_size": 33.5,
+        "open": 68174.0,
+        "close": 68140.5,
+        "volume": 4784.0,
+        "Expected_Profit_Pct": 0.15
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -35,7 +35,7 @@
           },
           {
             "name": "RSI < 40.0",
-            "met": false
+            "met": true
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -99,7 +99,7 @@
           "rules_short": [
             {
               "text": "Prev Close > EMA High",
-              "met": false
+              "met": true
             },
             {
               "text": "Prev RSI > 60.0",
@@ -107,7 +107,7 @@
             },
             {
               "text": "Curr Close < EMA High",
-              "met": true
+              "met": false
             },
             {
               "text": "Range Filter Downtrend",
@@ -120,42 +120,56 @@
           ]
         }
       },
-      "checks_updated_unix": 1774218004.063424,
-      "status": "Waiting",
-      "sl_price": null,
-      "tp_price": null,
-      "entry_price": null,
-      "position_size": 0.0,
-      "sl_amount_usd": null,
-      "tp_amount_usd": null,
+      "checks_updated_unix": 1774219033.6220512,
+      "status": "Position Open",
+      "sl_price": 67940.0853,
+      "tp_price": 68358.5,
+      "entry_price": 67926.5,
+      "position_size": 7.0,
+      "sl_amount_usd": 0.095097,
+      "tp_amount_usd": 3.024,
       "position_risk": {
-        "open": false
+        "open": true,
+        "has_levels": true,
+        "side": "Buy",
+        "strategy_name": "EMA Trap 3m",
+        "entry_price": 67926.5,
+        "size": 7.0,
+        "sl_price": 67940.0853,
+        "tp_price": 68358.5,
+        "sl_amount_usd": 0.095097,
+        "tp_amount_usd": 3.024,
+        "position_value_usd": 95.1,
+        "live_mid": 68173.5,
+        "entry_pct": 3.14,
+        "live_mid_pct": 57.18,
+        "breakeven_buffer_active": true
       },
       "last_signal_candle_start": null,
-      "strategy_name": null,
-      "last_sl_price": 0.0,
-      "last_tp_price": 0.0,
-      "last_position_side": "",
-      "tracker_sl_max": 0.0,
-      "tracker_sl_min": 0.0,
-      "sl_entry_time_unix": 0.0,
-      "sl_breakeven_triggered": false,
-      "sl_half_target_exited": false,
-      "sl_half_target_reached": false,
-      "base_risk_dist": 0.0
+      "strategy_name": "EMA Trap 3m",
+      "last_sl_price": 67940.08529999999,
+      "last_tp_price": 68358.5,
+      "last_position_side": "Buy",
+      "tracker_sl_max": 67494.5,
+      "tracker_sl_min": 67818.5,
+      "sl_entry_time_unix": 1774218057.86684,
+      "sl_breakeven_triggered": true,
+      "sl_half_target_exited": true,
+      "sl_half_target_reached": true,
+      "base_risk_dist": 216.0
     },
     "ETHUSDT": {
       "symbol": "ETHUSDT",
-      "price": 2045.1,
+      "price": 2057.5,
       "indicators": {
-        "RSI": 57.98,
-        "RSI_SMA": 59.38,
-        "volume_signal_vs_prev": false,
-        "body_size": 1.7,
-        "open": 2046.8,
-        "close": 2045.1,
-        "volume": 7754.0,
-        "Expected_Profit_Pct": 0.19
+        "RSI": 42.97,
+        "RSI_SMA": 75.33,
+        "volume_signal_vs_prev": true,
+        "body_size": 0.9,
+        "open": 2058.4,
+        "close": 2057.5,
+        "volume": 10806.0,
+        "Expected_Profit_Pct": 0.16
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -174,7 +188,7 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": false
+            "met": true
           },
           {
             "name": "RSI < 40.0",
@@ -200,7 +214,7 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": false
+            "met": true
           },
           {
             "name": "RSI > 60.0",
@@ -242,15 +256,15 @@
           "rules_short": [
             {
               "text": "Prev Close > EMA High",
-              "met": false
+              "met": true
             },
             {
               "text": "Prev RSI > 60.0",
-              "met": false
+              "met": true
             },
             {
               "text": "Curr Close < EMA High",
-              "met": true
+              "met": false
             },
             {
               "text": "Range Filter Downtrend",
@@ -263,42 +277,42 @@
           ]
         }
       },
-      "checks_updated_unix": 1774218002.0668905,
+      "checks_updated_unix": 1774219034.5738375,
       "status": "Position Open",
-      "sl_price": 2039.0,
+      "sl_price": 2046.4592,
       "tp_price": 2076.5,
       "entry_price": 2046.05,
-      "position_size": 48.0,
-      "sl_amount_usd": -3.384,
-      "tp_amount_usd": 14.616,
+      "position_size": 24.0,
+      "sl_amount_usd": 0.09821,
+      "tp_amount_usd": 7.308,
       "position_risk": {
         "open": true,
         "has_levels": true,
         "side": "Buy",
-        "strategy_name": "ETH EMA Trap 3m",
+        "strategy_name": "Manual",
         "entry_price": 2046.05,
-        "size": 48.0,
-        "sl_price": 2039.0,
+        "size": 24.0,
+        "sl_price": 2046.4592,
         "tp_price": 2076.5,
-        "sl_amount_usd": -3.384,
-        "tp_amount_usd": 14.616,
-        "position_value_usd": 196.42,
-        "live_mid": 2044.45,
-        "entry_pct": 18.8,
-        "live_mid_pct": 14.53,
-        "breakeven_buffer_active": false
+        "sl_amount_usd": 0.09821,
+        "tp_amount_usd": 7.308,
+        "position_value_usd": 98.21,
+        "live_mid": 2058.85,
+        "entry_pct": 1.34,
+        "live_mid_pct": 42.04,
+        "breakeven_buffer_active": true
       },
       "last_signal_candle_start": null,
-      "strategy_name": "ETH EMA Trap 3m",
-      "last_sl_price": 2039.0,
+      "strategy_name": "Manual",
+      "last_sl_price": 2046.45921,
       "last_tp_price": 2076.5,
       "last_position_side": "Buy",
       "tracker_sl_max": 2039.0,
       "tracker_sl_min": 2039.0,
       "sl_entry_time_unix": 1774217052.4343722,
-      "sl_breakeven_triggered": false,
-      "sl_half_target_exited": false,
-      "sl_half_target_reached": false,
+      "sl_breakeven_triggered": true,
+      "sl_half_target_exited": true,
+      "sl_half_target_reached": true,
       "base_risk_dist": 3.5249999999999773
     }
   }

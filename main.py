@@ -4791,6 +4791,7 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
                 use_fixed = True
                 sl_p = float(ev["sl_price"])
                 tp_p = float(ev["tp_price"])
+                sl_min_p = float(ev.get("sl_min_price", sl_p))
         elif strat == "weak_momentum_reversal":
             wm_sig, wm_reason, wm_meta = evaluate_weak_momentum_instance(
                 df_closed, dict(inst.get("params") or {})

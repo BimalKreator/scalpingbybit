@@ -464,7 +464,7 @@ def _run_backtest_ema_trap(
 ) -> dict:
     """
     Backtest EMA Trap + RF using ema_trap.evaluate() on each growing slice.
-    SL/TP are the absolute prices from the strategy (anchored signal extremes + multipliers).
+    SL/TP are absolute prices from the strategy (base_risk = signal bar H−L, entry = conf close).
     """
     from strategies.ema_trap import DEFAULT_PARAMS as EMA_DEFAULTS
     from strategies.ema_trap import evaluate as ema_evaluate
