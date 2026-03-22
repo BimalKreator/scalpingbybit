@@ -1098,7 +1098,7 @@ async def api_trade_manual(body: ManualTradeBody):
                     tp = base - sig_range * tp_m
                     sl = sl_wide
                 if BOT_USE_DELTA:
-                    tick_f = float(get_delta_tick_size())
+                    tick_f = float(get_delta_tick_size(body.symbol))
                     sl_wide = _delta_round_price(sl_wide, tick_f)
                     sl_tight = _delta_round_price(sl_tight, tick_f)
                     tp = _delta_round_price(tp, tick_f)
@@ -1115,7 +1115,7 @@ async def api_trade_manual(body: ManualTradeBody):
                         raise HTTPException(status_code=502, detail="Delta product not found for symbol")
                     qty_step = float(qty_step)
                     min_order_qty = float(min_order_qty)
-                    cv_f = float(get_delta_contract_value())
+                    cv_f = float(get_delta_contract_value(body.symbol))
                     raw_qty = (trade_usd * lev) / (cv_f * base)
                     total_qty = max(
                         min_order_qty, float(math.floor(raw_qty / qty_step) * qty_step)
@@ -1168,9 +1168,9 @@ async def api_trade_manual(body: ManualTradeBody):
                     raise HTTPException(status_code=502, detail="Delta product not found for symbol")
                 qty_step = float(qty_step)
                 min_order_qty = float(min_order_qty)
-                tick_f = float(get_delta_tick_size())
-                cv_f = float(get_delta_contract_value())
-                pid = get_delta_product_id()
+                tick_f = float(get_delta_tick_size(body.symbol))
+                cv_f = float(get_delta_contract_value(body.symbol))
+                pid = get_delta_product_id(body.symbol)
                 dsym = normalize_delta_symbol(body.symbol)
                 l1 = await asyncio.to_thread(get_delta_ticker_l1, body.symbol)
                 if not l1:

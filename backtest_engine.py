@@ -368,7 +368,9 @@ def _exit_fee_rate(exchange: str) -> float:
     return TAKER_EXIT_FEE_BYBIT
 
 
-def _resolve_contract_value(exchange: str, override: float | None) -> float | None:
+def _resolve_contract_value(
+    exchange: str, override: float | None, symbol: str | None = None
+) -> float | None:
     """Delta: contracts = notional / (cv * price). Bybit: None (use price only)."""
     ex = (exchange or "bybit").lower()
     if ex != "delta_india":
@@ -378,7 +380,8 @@ def _resolve_contract_value(exchange: str, override: float | None) -> float | No
     try:
         from delta_client import get_delta_contract_value
 
-        v = float(get_delta_contract_value())
+        sym = (symbol or os.getenv("SYMBOL") or "BTCUSDT").strip()
+        v = float(get_delta_contract_value(sym))
         return v if v > 0 else 0.001
     except Exception:
         return 0.001

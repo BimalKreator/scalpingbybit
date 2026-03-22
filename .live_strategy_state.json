@@ -1,142 +1,180 @@
 {
-  "symbol": "BTCUSDT",
-  "price": 68198.5,
-  "indicators": {
-    "RSI": 51.93,
-    "RSI_SMA": 36.92,
-    "volume_signal_vs_prev": false,
-    "body_size": 0.0,
-    "open": 68198.5,
-    "close": 68198.5,
-    "volume": 1.0,
-    "Expected_Profit_Pct": 0.0
-  },
-  "conditions": {
-    "long": [
-      {
-        "name": "Signal Candle Bearish (open > close)",
-        "met": false
+  "_file_format": "live_strategy_multi_v1",
+  "symbols": {
+    "BTCUSDT": {
+      "symbol": "BTCUSDT",
+      "price": 68381.5,
+      "indicators": {
+        "RSI": 86.73,
+        "RSI_SMA": 65.79,
+        "volume_signal_vs_prev": true,
+        "body_size": 29.5,
+        "open": 68352.0,
+        "close": 68381.5,
+        "volume": 3765.0,
+        "Expected_Profit_Pct": 0.07
       },
-      {
-        "name": "Previous Candle Bearish",
-        "met": false
+      "conditions": {
+        "long": [
+          {
+            "name": "Signal Candle Bearish (open > close)",
+            "met": false
+          },
+          {
+            "name": "Previous Candle Bearish",
+            "met": true
+          },
+          {
+            "name": "Both Bearish",
+            "met": false
+          },
+          {
+            "name": "Volume: signal > previous",
+            "met": true
+          },
+          {
+            "name": "RSI < 40.0",
+            "met": false
+          },
+          {
+            "name": "Expected Profit >= 0.02%",
+            "met": true
+          }
+        ],
+        "short": [
+          {
+            "name": "Signal Candle Bullish (close > open)",
+            "met": true
+          },
+          {
+            "name": "Previous Candle Bullish",
+            "met": false
+          },
+          {
+            "name": "Both Bullish",
+            "met": false
+          },
+          {
+            "name": "Volume: signal > previous",
+            "met": true
+          },
+          {
+            "name": "RSI > 60.0",
+            "met": true
+          },
+          {
+            "name": "Expected Profit >= 0.02%",
+            "met": true
+          }
+        ]
       },
-      {
-        "name": "Both Bearish",
-        "met": false
-      },
-      {
-        "name": "Volume: signal > previous",
-        "met": false
-      },
-      {
-        "name": "RSI < 40.0",
-        "met": false
-      },
-      {
-        "name": "Expected Profit >= 0.02%",
-        "met": false
-      }
-    ],
-    "short": [
-      {
-        "name": "Signal Candle Bullish (close > open)",
-        "met": false
-      },
-      {
-        "name": "Previous Candle Bullish",
-        "met": false
-      },
-      {
-        "name": "Both Bullish",
-        "met": false
-      },
-      {
-        "name": "Volume: signal > previous",
-        "met": false
-      },
-      {
-        "name": "RSI > 60.0",
-        "met": false
-      },
-      {
-        "name": "Expected Profit >= 0.02%",
-        "met": false
-      }
-    ]
-  },
-  "status": "Waiting",
-  "last_signal_candle_start": 1774111200000,
-  "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
-  "checks": {
-    "inst_1774111627580_0eb580": {
-      "name": "EMA Trap 3m",
-      "interval": "3m",
-      "strategy_type": "ema_trap",
-      "rules_long": [
-        {
-          "text": "Prev Close < EMA Low",
-          "met": true
-        },
-        {
-          "text": "Prev RSI < 40.0",
-          "met": true
-        },
-        {
-          "text": "Curr Close > EMA Low",
-          "met": false
-        },
-        {
-          "text": "Range Filter Uptrend",
-          "met": false
-        },
-        {
-          "text": "Expected Profit >= 0.08%",
-          "met": false
+      "status": "Waiting",
+      "last_signal_candle_start": 1774111200000,
+      "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
+      "checks": {
+        "inst_1774111627580_0eb580": {
+          "name": "EMA Trap 3m",
+          "interval": "3m",
+          "strategy_type": "ema_trap",
+          "rules_long": [
+            {
+              "text": "Prev Close < EMA Low",
+              "met": true
+            },
+            {
+              "text": "Prev RSI < 40.0",
+              "met": false
+            },
+            {
+              "text": "Curr Close > EMA Low",
+              "met": true
+            },
+            {
+              "text": "Range Filter Uptrend",
+              "met": true
+            },
+            {
+              "text": "Expected Profit >= 0.08%",
+              "met": false
+            }
+          ],
+          "rules_short": [
+            {
+              "text": "Prev Close > EMA High",
+              "met": false
+            },
+            {
+              "text": "Prev RSI > 60.0",
+              "met": false
+            },
+            {
+              "text": "Curr Close < EMA High",
+              "met": false
+            },
+            {
+              "text": "Range Filter Downtrend",
+              "met": false
+            },
+            {
+              "text": "Expected Profit >= 0.08%",
+              "met": false
+            }
+          ]
         }
-      ],
-      "rules_short": [
-        {
-          "text": "Prev Close > EMA High",
-          "met": false
-        },
-        {
-          "text": "Prev RSI > 60.0",
-          "met": false
-        },
-        {
-          "text": "Curr Close < EMA High",
-          "met": true
-        },
-        {
-          "text": "Range Filter Downtrend",
-          "met": false
-        },
-        {
-          "text": "Expected Profit >= 0.08%",
-          "met": false
-        }
-      ]
+      },
+      "checks_updated_unix": 1774210902.1429203,
+      "position_risk": {
+        "open": false
+      },
+      "sl_price": null,
+      "tp_price": null,
+      "entry_price": null,
+      "position_size": 0.0,
+      "sl_amount_usd": null,
+      "tp_amount_usd": null,
+      "last_sl_price": 0.0,
+      "last_tp_price": 0.0,
+      "last_position_side": "",
+      "tracker_sl_max": 0.0,
+      "tracker_sl_min": 0.0,
+      "sl_entry_time_unix": 0.0,
+      "sl_breakeven_triggered": false,
+      "sl_half_target_exited": false,
+      "sl_half_target_reached": false,
+      "base_risk_dist": 0.0
+    },
+    "ETHUSDT": {
+      "symbol": "ETHUSDT",
+      "price": 0.0,
+      "indicators": {},
+      "indicators_note": "",
+      "conditions": {
+        "long": [],
+        "short": []
+      },
+      "checks": {},
+      "checks_updated_unix": 0.0,
+      "status": "Waiting",
+      "sl_price": null,
+      "tp_price": null,
+      "entry_price": null,
+      "position_size": 0.0,
+      "sl_amount_usd": null,
+      "tp_amount_usd": null,
+      "position_risk": {
+        "open": false
+      },
+      "last_signal_candle_start": null,
+      "last_sl_price": 0.0,
+      "last_tp_price": 0.0,
+      "last_position_side": "",
+      "tracker_sl_max": 0.0,
+      "tracker_sl_min": 0.0,
+      "sl_entry_time_unix": 0.0,
+      "sl_breakeven_triggered": false,
+      "sl_half_target_exited": false,
+      "sl_half_target_reached": false,
+      "base_risk_dist": 0.0
     }
-  },
-  "checks_updated_unix": 1774209477.627674,
-  "position_risk": {
-    "open": false
-  },
-  "sl_price": null,
-  "tp_price": null,
-  "entry_price": null,
-  "position_size": 0.0,
-  "sl_amount_usd": null,
-  "tp_amount_usd": null,
-  "last_sl_price": 0.0,
-  "last_tp_price": 0.0,
-  "last_position_side": "",
-  "tracker_sl_max": 0.0,
-  "tracker_sl_min": 0.0,
-  "sl_entry_time_unix": 0.0,
-  "sl_breakeven_triggered": false,
-  "sl_half_target_exited": false,
-  "sl_half_target_reached": false,
-  "base_risk_dist": 0.0
+  }
 }

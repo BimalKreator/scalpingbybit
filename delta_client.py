@@ -17,11 +17,8 @@ from typing import Any, Callable
 import requests
 import websockets
 
-# Product cache (set by fetch_instrument_info)
-_DELTA_PRODUCT_ID: int = 0
-_DELTA_SYMBOL: str = ""
-_DELTA_TICK_SIZE: float = 0.5
-_DELTA_CONTRACT_VALUE: float = 0.001
+# Per-symbol product cache (set by fetch_instrument_info), keyed by normalize_delta_symbol()
+_DELTA_CACHE: dict[str, dict[str, Any]] = {}
 _REST_BASE_INDIA = "https://api.india.delta.exchange"
 _WS_BASE_INDIA = "wss://socket.india.delta.exchange"
 
@@ -95,16 +92,34 @@ def _delta_request(
         return None
 
 
-def get_delta_product_id() -> int:
-    return _DELTA_PRODUCT_ID
+def _ensure_delta_cache(symbol: str) -> dict[str, Any]:
+    """Load instrument into _DELTA_CACHE if missing; return cache row (may be empty on failure)."""
+    dsym = normalize_delta_symbol(symbol)
+    if dsym not in _DELTA_CACHE:
+        fetch_instrument_info(symbol)
+    return _DELTA_CACHE.get(dsym, {})
 
 
-def get_delta_tick_size() -> float:
-    return float(_DELTA_TICK_SIZE)
+def get_delta_product_id(symbol: str) -> int:
+    ent = _ensure_delta_cache(symbol)
+    return int(ent.get("id") or 0)
 
 
-def get_delta_contract_value() -> float:
-    return max(float(_DELTA_CONTRACT_VALUE), 1e-9)
+def get_delta_tick_size(symbol: str) -> float:
+    ent = _ensure_delta_cache(symbol)
+    return float(ent.get("tick_size") or 0.5)
+
+
+def get_delta_contract_value(symbol: str) -> float:
+    ent = _ensure_delta_cache(symbol)
+    return max(float(ent.get("contract_value") or 0.001), 1e-9)
+
+
+def get_delta_product_symbol(symbol: str) -> str:
+    """Exchange product symbol string for REST bodies (from API or normalized key)."""
+    dsym = normalize_delta_symbol(symbol)
+    ent = _ensure_delta_cache(symbol)
+    return str(ent.get("product_symbol") or dsym)
 
 
 def normalize_delta_contract_size(raw_qty: float, qty_step: float, min_order_qty: float) -> int:
@@ -126,11 +141,10 @@ def normalize_delta_contract_size(raw_qty: float, qty_step: float, min_order_qty
 
 def fetch_instrument_info(symbol: str) -> tuple[bool, float | None, float | None, float | None]:
     """
-    GET /v2/products/{symbol} (public). Sets module product cache.
+    GET /v2/products/{symbol} (public). Sets per-symbol row in _DELTA_CACHE.
     Returns (ok, contract_qty_step, min_order_contracts, min_notional_usd).
-    Price tick and contract_value are available via get_delta_tick_size() / get_delta_contract_value().
+    Price tick and contract_value are available via get_delta_tick_size(sym) / get_delta_contract_value(sym).
     """
-    global _DELTA_PRODUCT_ID, _DELTA_SYMBOL, _DELTA_TICK_SIZE, _DELTA_CONTRACT_VALUE
     dsym = normalize_delta_symbol(symbol)
     try:
         r = requests.get(
@@ -142,10 +156,12 @@ def fetch_instrument_info(symbol: str) -> tuple[bool, float | None, float | None
         if not data.get("success") or not data.get("result"):
             return (False, None, None, None)
         p = data["result"]
-        _DELTA_PRODUCT_ID = int(p.get("id") or 0)
-        _DELTA_SYMBOL = p.get("symbol") or dsym
-        _DELTA_TICK_SIZE = float(p.get("tick_size") or 0.5)
-        _DELTA_CONTRACT_VALUE = float(p.get("contract_value") or 0.001)
+        _DELTA_CACHE[dsym] = {
+            "id": int(p.get("id") or 0),
+            "tick_size": float(p.get("tick_size") or 0.5),
+            "contract_value": float(p.get("contract_value") or 0.001),
+            "product_symbol": str(p.get("symbol") or dsym),
+        }
         st = p.get("order_size_step") or p.get("lot_size") or p.get("size_step")
         qty_step = float(st) if st is not None else 1.0
         if qty_step < 1e-12:
@@ -413,7 +429,8 @@ async def execute_chunk_order_ws(
     """Delta: entry = post_only limit + amend + market remainder; exit = market."""
     api_key = os.getenv("DELTA_API_KEY") or ""
     api_secret = os.getenv("DELTA_API_SECRET") or ""
-    if not api_key or not api_secret or _DELTA_PRODUCT_ID <= 0:
+    pid = int(get_delta_product_id(symbol))
+    if not api_key or not api_secret or pid <= 0:
         print("[Delta] Missing API keys or product_id; skip execute_chunk_order_ws.")
         return
 
@@ -432,8 +449,8 @@ async def execute_chunk_order_ws(
 
     d_side = "buy" if side == "Buy" else "sell"
     need = int(contracts)
-    tick = get_delta_tick_size()
-    pid = int(_DELTA_PRODUCT_ID)
+    tick = get_delta_tick_size(symbol)
+    psym_ex = get_delta_product_symbol(symbol)
 
     if is_entry:
         oid: int | None = None
@@ -451,7 +468,7 @@ async def execute_chunk_order_ws(
                 lp = _delta_tick_price_str(ba, tick)
             body = {
                 "product_id": pid,
-                "product_symbol": _DELTA_SYMBOL,
+                "product_symbol": psym_ex,
                 "size": need,
                 "side": d_side,
                 "order_type": "limit_order",
@@ -495,7 +512,7 @@ async def execute_chunk_order_ws(
                 )
                 batch = {
                     "product_id": pid,
-                    "product_symbol": _DELTA_SYMBOL,
+                    "product_symbol": psym_ex,
                     "orders": [
                         {
                             "id": oid,
@@ -529,7 +546,7 @@ async def execute_chunk_order_ws(
                 )
                 mb = {
                     "product_id": pid,
-                    "product_symbol": _DELTA_SYMBOL,
+                    "product_symbol": psym_ex,
                     "size": last_unfilled,
                     "side": d_side,
                     "order_type": "market_order",
@@ -563,7 +580,7 @@ async def execute_chunk_order_ws(
 
     body = {
         "product_id": pid,
-        "product_symbol": _DELTA_SYMBOL,
+        "product_symbol": psym_ex,
         "size": need,
         "side": d_side,
         "order_type": "market_order",
@@ -632,7 +649,7 @@ def _verify_open_stop_order(api_key: str, api_secret: str, symbol: str) -> bool:
     """
     if not api_key or not api_secret:
         return False
-    pid = int(get_delta_product_id())
+    pid = int(get_delta_product_id(symbol))
     if pid <= 0:
         return False
     sym_norm = normalize_delta_symbol(symbol)
@@ -693,17 +710,15 @@ def _cancel_open_stop_orders_for_product(api_key: str, api_secret: str, product_
 
 def cancel_open_stop_orders_for_symbol(symbol: str) -> None:
     """
-    Cancel open stop_loss / take_profit / bracket-linked orders for the configured product.
+    Cancel open stop_loss / take_profit / bracket-linked orders for this symbol's product.
     Call after the position is flat to remove orphaned protective orders.
-    `symbol` is reserved for future multi-product routing; routing uses TRADING_SYMBOL / product_id from env.
     """
-    _ = symbol
     api_key = os.getenv("DELTA_API_KEY") or ""
     api_secret = os.getenv("DELTA_API_SECRET") or ""
     if not api_key or not api_secret:
         return
     try:
-        pid = int(get_delta_product_id())
+        pid = int(get_delta_product_id(symbol))
     except (TypeError, ValueError):
         return
     if pid <= 0:
@@ -722,8 +737,10 @@ def _set_position_sl_tp_sync(
     """Bracket or separate stop_market / take_profit_market reduce-only orders."""
     api_key = os.getenv("DELTA_API_KEY") or ""
     api_secret = os.getenv("DELTA_API_SECRET") or ""
-    if not api_key or not api_secret or _DELTA_PRODUCT_ID <= 0:
+    pid_main = int(get_delta_product_id(symbol))
+    if not api_key or not api_secret or pid_main <= 0:
         return False
+    psym_ex = get_delta_product_symbol(symbol)
     close_side = "sell" if (entry_side or "Buy") == "Buy" else "buy"
     exact_size = 0
     for _ in range(3):
@@ -735,10 +752,10 @@ def _set_position_sl_tp_sync(
         print("[Delta] Refusing SL/TP placement: exact open size is 0 after retries.")
         return False
     try:
-        _cancel_open_stop_orders_for_product(api_key, api_secret, int(_DELTA_PRODUCT_ID))
+        _cancel_open_stop_orders_for_product(api_key, api_secret, pid_main)
     except Exception as e:
         print(f"[Delta] Warning: Could not clear old stops: {e}")
-    tick = get_delta_tick_size()
+    tick = get_delta_tick_size(symbol)
     try:
         sl_fmt = _delta_tick_price_str(float(stop_loss), tick)
         tp_fmt = _delta_tick_price_str(float(take_profit), tick)
@@ -746,8 +763,8 @@ def _set_position_sl_tp_sync(
         print(f"[Delta] Invalid stop/take values. stop_loss={stop_loss} take_profit={take_profit}")
         return False
     body = {
-        "product_id": int(_DELTA_PRODUCT_ID),
-        "product_symbol": _DELTA_SYMBOL,
+        "product_id": pid_main,
+        "product_symbol": psym_ex,
         "size": int(exact_size),
         "side": close_side,
         "stop_loss_order": {
@@ -782,8 +799,8 @@ def _set_position_sl_tp_sync(
     for ob, label in (
         (
             {
-                "product_id": int(_DELTA_PRODUCT_ID),
-                "product_symbol": _DELTA_SYMBOL,
+                "product_id": pid_main,
+                "product_symbol": psym_ex,
                 "size": int(exact_size),
                 "side": close_side,
                 "order_type": "market_order",
@@ -797,8 +814,8 @@ def _set_position_sl_tp_sync(
         ),
         (
             {
-                "product_id": int(_DELTA_PRODUCT_ID),
-                "product_symbol": _DELTA_SYMBOL,
+                "product_id": pid_main,
+                "product_symbol": psym_ex,
                 "size": int(exact_size),
                 "side": close_side,
                 "order_type": "market_order",
@@ -1075,6 +1092,11 @@ class DeltaLiveStream:
                             print(f"[Delta WS] on_position: {e}")
                 elif t == "orders":
                     if msg.get("action") == "snapshot":
+                        continue
+                    raw_o = msg.get("product_symbol") or msg.get("symbol")
+                    if raw_o is None or str(raw_o).strip() == "":
+                        continue
+                    if normalize_delta_symbol(str(raw_o)) not in set(self._delta_symbols):
                         continue
                     oid = msg.get("order_id")
                     if oid is None:

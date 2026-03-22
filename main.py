@@ -710,6 +710,8 @@ def _virtual_linear_pnl_usd(
     exit_: float,
     size: float,
     side: str,
+    *,
+    contract_symbol: str | None = None,
 ) -> float:
     """Signed USD-style PnL (same geometry as Delta closed row when USE_DELTA)."""
     if entry <= 0 or exit_ <= 0 or size <= 0:
@@ -719,7 +721,8 @@ def _virtual_linear_pnl_usd(
         try:
             from delta_client import get_delta_contract_value
 
-            cv = float(get_delta_contract_value())
+            sym_cv = _norm_sym(contract_symbol or SYMBOL)
+            cv = float(get_delta_contract_value(sym_cv))
         except Exception:
             cv = 0.001
         if ps == "buy":
@@ -811,9 +814,13 @@ def get_paper_position_rows_for_ui(symbol: str = "") -> list[dict]:
                 mid = (bb + ba) / 2.0
                 ps_l = ps.strip().lower()
                 if ps_l == "buy":
-                    u = _virtual_linear_pnl_usd(ent_f, mid, sz, "buy")
+                    u = _virtual_linear_pnl_usd(
+                        ent_f, mid, sz, "buy", contract_symbol=sym
+                    )
                 else:
-                    u = _virtual_linear_pnl_usd(ent_f, mid, sz, "sell")
+                    u = _virtual_linear_pnl_usd(
+                        ent_f, mid, sz, "sell", contract_symbol=sym
+                    )
                 upnl = f"{float(u):.6f}"
         except (TypeError, ValueError):
             pass
@@ -854,7 +861,9 @@ def _finalize_virtual_position_close(
     entry = float(entry_raw or 0.0)
     if snap_sz <= 0:
         return
-    pnl = _virtual_linear_pnl_usd(entry, float(exit_price), snap_sz, ps)
+    pnl = _virtual_linear_pnl_usd(
+        entry, float(exit_price), snap_sz, ps, contract_symbol=sym
+    )
     update_virtual_wallet(pnl)
     strat_snap = (_active_trade_strategy_name or "Manual / Unknown").strip()
     _append_virtual_closed_trade_row(
@@ -2920,7 +2929,9 @@ async def execute_strategy_signal(
     if USE_DELTA:
         from delta_client import get_delta_contract_value
 
-        total_qty = (usd_amount * leverage) / (get_delta_contract_value() * base)
+        total_qty = (usd_amount * leverage) / (
+            get_delta_contract_value(_norm_sym(SYMBOL)) * base
+        )
     else:
         total_qty = (usd_amount * leverage) / base
     total_qty = max(_min_order_qty, math.floor(total_qty / _qty_step) * _qty_step)
@@ -3197,7 +3208,7 @@ async def _place_order_async(
     if USE_DELTA:
         from delta_client import get_delta_contract_value as _delta_cv
 
-        cv = _delta_cv()
+        cv = _delta_cv(order_sym)
     else:
         cv = None
     if current_price <= 0:
@@ -3900,8 +3911,8 @@ def _append_delta_closed_trade_to_file(
             lev = 1.0
         from delta_client import get_delta_contract_value
 
-        cv = float(get_delta_contract_value())
         sym_row = _norm_sym(trade_symbol or SYMBOL)
+        cv = float(get_delta_contract_value(sym_row))
         side = (position_side or _last_position_side or "").strip()
         side_upper = "BUY" if side == "Buy" else "SELL" if side == "Sell" else side.upper() or "–"
         entry_f = float(snap_entry) if snap_entry is not None and snap_entry > 0 else 0.0
@@ -5075,12 +5086,13 @@ async def main_async() -> None:
                 _set_health_ok("Bot is running smoothly")
                 logging.info("Starting Exchange Websocket stream...")
 
+                active_symbols = get_active_symbols()
                 if USE_DELTA:
                     live_stream = DeltaLiveStream()
                     await live_stream.start(
                         api_key,
                         api_secret,
-                        SYMBOL,
+                        active_symbols,
                         handle_kline_message,
                         handle_orderbook_message,
                         handle_position_message,
@@ -5096,7 +5108,7 @@ async def main_async() -> None:
                     await live_stream.start(
                         api_key,
                         api_secret,
-                        SYMBOL,
+                        active_symbols,
                         handle_kline_message,
                         handle_orderbook_message,
                         handle_position_message,
