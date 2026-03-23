@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from dotenv import load_dotenv, dotenv_values
+from dotenv import load_dotenv
 
 from bybit_client import (
     _get_http_client,
@@ -91,34 +91,17 @@ def get_env_path() -> Path:
     return ENV_PATH_FALLBACK
 
 
-def _sl_tp_params_from_env_file() -> tuple[float, float, float]:
-    """Returns (sl_multiplier_max, sl_multiplier_min, tp_multiplier)."""
-    p = get_env_path()
-    v = dotenv_values(p) if p.is_file() else {}
-    leg = (v.get("SL_MULTIPLIER") or "").strip()
-    try:
-        leg_f = float(leg) if leg else None
-    except ValueError:
-        leg_f = None
-    try:
-        smx = float(v.get("SL_MULTIPLIER_MAX") or (leg_f if leg_f is not None else 3.0))
-    except (TypeError, ValueError):
-        smx = 3.0
-    try:
-        smn = float(v.get("SL_MULTIPLIER_MIN") or (leg_f if leg_f is not None else 0.5))
-    except (TypeError, ValueError):
-        smn = 0.5
-    try:
-        tpm = float(v.get("TP_MULTIPLIER") or 2.0)
-    except (TypeError, ValueError):
-        tpm = 2.0
-    return max(smx, 1e-12), max(smn, 1e-12), tpm
+def _sl_tp_triple_from_instance_params(
+    params: dict | None, *, strategy_type: str | None = None
+) -> tuple[float, float, float]:
+    """
+    SL wide, SL tight, TP multipliers from Strategy Hub JSON — same keys as auto-trade / main._place_order_async.
 
-
-def _sl_tp_triple_from_instance_params(params: dict | None) -> tuple[float, float, float]:
-    """Range-style SL max/min + TP multipliers from instance params (fallback: .env)."""
-    smx_e, smn_e, tpm_e = _sl_tp_params_from_env_file()
+    EMA Trap uses ``slMultiplier`` + ``tpMultiplier`` only (wide = tight). Weak Momentum uses
+    ``slMultiplierMax`` / ``slMultiplierMin`` / ``tpMultiplier``. No .env fallback for linked instances.
+    """
     p = params or {}
+    st = (strategy_type or "").strip().lower()
 
     def _f(key: str, default: float) -> float:
         if key not in p or p[key] is None or str(p[key]).strip() == "":
@@ -128,10 +111,15 @@ def _sl_tp_triple_from_instance_params(params: dict | None) -> tuple[float, floa
         except (TypeError, ValueError):
             return default
 
-    smx = _f("slMultiplierMax", smx_e)
-    smn = _f("slMultiplierMin", smn_e)
-    tpm = _f("tpMultiplier", tpm_e)
-    return max(smx, 1e-12), max(smn, 1e-12), tpm
+    if st == "ema_trap":
+        s = _f("slMultiplier", 0.5)
+        t = _f("tpMultiplier", 2.0)
+        s = max(s, 1e-12)
+        return s, s, max(t, 1e-12)
+    smx = _f("slMultiplierMax", 3.0)
+    smn = _f("slMultiplierMin", 0.5)
+    tpm = _f("tpMultiplier", 2.0)
+    return max(smx, 1e-12), max(smn, 1e-12), max(tpm, 1e-12)
 
 
 def _delta_resolution_for_minutes(minutes: int) -> str:
@@ -1036,7 +1024,7 @@ class CloseTradeBody(BaseModel):
 
 @app.post("/api/trade/manual")
 async def api_trade_manual(body: ManualTradeBody):
-    """Manual trade: SL/TP from last closed bar (instance timeframe when linked) × instance or .env multipliers."""
+    """Manual trade: SL/TP = signal range × instance multipliers when linked (EMA: slMultiplier/tpMultiplier; WM: max/min/tp). Naked: 0.5/2.0."""
     if body.side not in ("Buy", "Sell"):
         raise HTTPException(status_code=400, detail="side must be Buy or Sell")
     inst: dict | None = None
@@ -1069,7 +1057,9 @@ async def api_trade_manual(body: ManualTradeBody):
             lev = max(1.0, min(100.0, float(p.get("leverage") if p.get("leverage") is not None else body.leverage or 5)))
         except (TypeError, ValueError):
             lev = max(1.0, min(100.0, float(body.leverage or 5)))
-        sl_mx, sl_mn, tp_m = _sl_tp_triple_from_instance_params(p)
+        sl_mx, sl_mn, tp_m = _sl_tp_triple_from_instance_params(
+            p, strategy_type=str(inst.get("strategy_type") or "")
+        )
     else:
         if body.usd_amount <= 0:
             raise HTTPException(status_code=400, detail="usd_amount must be positive")

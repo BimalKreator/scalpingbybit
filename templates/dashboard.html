@@ -117,6 +117,23 @@
     @keyframes badgeBlink {
       to { opacity: 0.45; }
     }
+    .dash-action-shell {
+      max-width: 56rem;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .dash-action-card {
+      background: linear-gradient(145deg, rgba(15, 23, 42, 0.95) 0%, rgba(15, 23, 42, 0.85) 100%);
+      border-radius: 1.25rem;
+      border: 1px solid rgba(51, 65, 85, 0.9);
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(16, 185, 129, 0.06);
+    }
+    .dash-power-card {
+      background: linear-gradient(145deg, rgba(15, 23, 42, 0.92) 0%, rgba(30, 27, 75, 0.25) 100%);
+      border-radius: 1.25rem;
+      border: 1px solid rgba(99, 102, 241, 0.2);
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.4);
+    }
   </style>
 </head>
 <body class="min-h-screen bg-slate-950 text-slate-100 antialiased">
@@ -186,111 +203,98 @@
       <div id="unifiedTokenRows" class="flex flex-col gap-6"></div>
     </section>
 
-    <!-- Manual Trade -->
-    <div class="grid grid-cols-1 lg:grid-cols-5 gap-6 mb-6">
-      <section class="card lg:col-span-3 hidden lg:block border-dashed border-slate-700">
-        <h2 class="text-sm font-semibold text-slate-200 mb-2">Quick reference</h2>
-        <p class="text-xs text-slate-500">Default manual symbol = <strong class="text-slate-300">first row</strong> in the command center (or type a symbol). Indicators per token appear in each row’s scanner panel when the bot publishes them.</p>
-      </section>
-      <section class="card lg:col-span-2">
-        <h2 class="text-sm font-semibold text-slate-200 mb-3">Manual Trade</h2>
-        <form id="manualTradeForm" class="space-y-3">
-          <div>
-            <label for="manualSymbol" class="block text-xs font-medium text-slate-400 mb-1">Symbol</label>
-            <input type="text" id="manualSymbol" name="symbol" value="BTCUSDT"
-              class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition font-mono text-sm" placeholder="ETHUSDT" autocomplete="off" />
-            <p class="text-[11px] text-slate-500 mt-1">Leave blank to use the <strong class="text-slate-300">first token row</strong> in the Command Center (or type e.g. ETHUSDT).</p>
+    <!-- Manual Trade + Power Station: centered, responsive -->
+    <div class="dash-action-shell px-0 sm:px-2 mb-8">
+      <div class="grid grid-cols-1 xl:grid-cols-2 gap-6 lg:gap-8 items-stretch">
+        <section class="dash-action-card p-5 sm:p-6 order-2 xl:order-1">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="h-2 w-2 rounded-full bg-emerald-400 shadow shadow-emerald-500/50"></span>
+            <h2 class="text-base font-semibold text-white tracking-tight">Manual Trade</h2>
           </div>
-          <div class="grid grid-cols-2 gap-3">
+          <p class="text-[11px] text-slate-500 mb-5">Same SL/TP math as auto-trade: last closed bar on the instance timeframe × <span class="text-slate-400">slMultiplier</span> / <span class="text-slate-400">tpMultiplier</span> (EMA) or wide/min TP (Weak Momentum).</p>
+          <form id="manualTradeForm" class="space-y-4">
             <div>
-              <label for="manualAmount" class="block text-xs font-medium text-slate-400 mb-1">Amount (USD)</label>
-              <input type="number" id="manualAmount" name="usd_amount" step="0.01" min="0" placeholder="e.g. 10"
-                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
+              <label for="manualSymbol" class="block text-xs font-medium text-slate-400 mb-1">Symbol</label>
+              <input type="text" id="manualSymbol" name="symbol" value="BTCUSDT"
+                class="w-full rounded-xl bg-slate-900/80 border border-slate-600/80 px-4 py-3 text-white focus:border-emerald-500/80 focus:ring-2 focus:ring-emerald-500/30 outline-none transition font-mono text-sm" placeholder="ETHUSDT" autocomplete="off" />
+              <p class="text-[11px] text-slate-500 mt-1.5">Empty = <strong class="text-slate-400">first Command Center</strong> row, or type a symbol.</p>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label for="manualAmount" class="block text-xs font-medium text-slate-400 mb-1">Amount (USD)</label>
+                <input type="number" id="manualAmount" name="usd_amount" step="0.01" min="0" placeholder="e.g. 100"
+                  class="w-full rounded-xl bg-slate-900/80 border border-slate-600/80 px-4 py-3 text-white focus:border-emerald-500/80 focus:ring-2 focus:ring-emerald-500/30 outline-none transition" />
+              </div>
+              <div>
+                <label for="manualLeverage" class="block text-xs font-medium text-slate-400 mb-1">Leverage (×)</label>
+                <input type="number" id="manualLeverage" name="leverage" value="5" min="1" max="100" step="1" placeholder="5"
+                  class="w-full rounded-xl bg-slate-900/80 border border-slate-600/80 px-4 py-3 text-white focus:border-emerald-500/80 focus:ring-2 focus:ring-emerald-500/30 outline-none transition" />
+              </div>
             </div>
             <div>
-              <label for="manualLeverage" class="block text-xs font-medium text-slate-400 mb-1">Leverage (x)</label>
-              <input type="number" id="manualLeverage" name="leverage" value="5" min="1" max="100" step="1" placeholder="5"
-                class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition" />
+              <label for="manualMonitorInstance" class="block text-xs font-medium text-slate-400 mb-1">Monitor using Strategy Rules</label>
+              <select id="manualMonitorInstance"
+                class="w-full rounded-xl bg-slate-900/80 border border-slate-600/80 px-4 py-3 text-white focus:border-emerald-500/80 focus:ring-2 focus:ring-emerald-500/30 outline-none transition">
+                <option value="">None (naked — fixed 0.5× SL / 2× TP)</option>
+              </select>
+              <p class="text-[11px] text-slate-500 mt-1.5"><strong class="text-emerald-400/90">Linked:</strong> instance capital, leverage, decay, breakeven &amp; partial TP + <strong class="text-slate-300">strategy multipliers</strong> for SL/TP.</p>
             </div>
-          </div>
-          <div>
-            <label for="manualMonitorInstance" class="block text-xs font-medium text-slate-400 mb-1">Monitor using Strategy Rules</label>
-            <select id="manualMonitorInstance"
-              class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition">
-              <option value="">None (Naked Trade)</option>
-            </select>
-            <p class="text-[11px] text-slate-500 mt-1">Uses that instance’s capital, leverage, SL/TP multipliers, decay, breakeven &amp; partial TP. Signal range = last closed bar on the instance timeframe.</p>
-          </div>
-          <p class="text-xs text-slate-500">Naked: defaults from Global Config + .env fallbacks. Linked: instance JSON only.</p>
-          <div class="flex items-center gap-2">
-            <input type="checkbox" id="manualAllowReversal" name="allow_reversal" checked
-              class="rounded border-slate-600 bg-slate-800 text-emerald-500 focus:ring-emerald-500" />
-            <label for="manualAllowReversal" class="text-xs font-medium text-slate-400">Allow Reversal on SL</label>
-          </div>
-          <div class="flex gap-3">
-            <button type="button" id="btnLong" class="flex-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium py-3 px-4 transition active:scale-[0.98]">
-              LONG
-            </button>
-            <button type="button" id="btnShort" class="flex-1 rounded-xl bg-red-600 hover:bg-red-500 text-white font-medium py-3 px-4 transition active:scale-[0.98]">
-              SHORT
-            </button>
-          </div>
-        </form>
-      </section>
-    </div>
+            <div class="flex items-center gap-2">
+              <input type="checkbox" id="manualAllowReversal" name="allow_reversal" checked
+                class="rounded border-slate-600 bg-slate-800 text-emerald-500 focus:ring-emerald-500" />
+              <label for="manualAllowReversal" class="text-xs font-medium text-slate-400">Allow Reversal on SL</label>
+            </div>
+            <div class="flex flex-col sm:flex-row gap-3 pt-1">
+              <button type="button" id="btnLong" class="flex-1 rounded-xl bg-gradient-to-b from-emerald-500 to-emerald-700 hover:from-emerald-400 hover:to-emerald-600 text-white font-semibold py-3.5 px-4 transition shadow-lg shadow-emerald-900/30 active:scale-[0.98]">
+                LONG
+              </button>
+              <button type="button" id="btnShort" class="flex-1 rounded-xl bg-gradient-to-b from-red-500 to-red-700 hover:from-red-400 hover:to-red-600 text-white font-semibold py-3.5 px-4 transition shadow-lg shadow-red-900/30 active:scale-[0.98]">
+                SHORT
+              </button>
+            </div>
+          </form>
+        </section>
 
-    <!-- Row 4: Bot settings note | Power Station -->
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-      <section class="card">
-        <h2 class="text-sm font-semibold text-slate-200 mb-2">Bot settings</h2>
-        <p class="text-xs text-slate-400 mb-2">
-          <strong>Trade capital, leverage, and SL/TP geometry</strong> are configured per strategy instance in
-          <strong>Strategy Hub</strong> (and naked manual trades use the Manual Trade panel).
-        </p>
-        <p class="text-xs text-slate-500 mb-2">
-          Use <strong>Exchange &amp; API Setup</strong> below for <code class="text-slate-400">TRADING_SYMBOL</code>, keys, and exchange.
-          Advanced tuning (historical bars, SL delay, RSI SMA, initial capital reference) stays in <code class="text-slate-400">.env</code> only.
-        </p>
-        <p class="text-xs text-amber-400/90">
-          To wipe corrupted paper/live UI state once, set <code class="text-amber-200/90">RESET_PAPER_LIVE_STATE_ON_STARTUP=true</code> in <code class="text-slate-400">.env</code>, restart the bot, then remove it.
-        </p>
-      </section>
-      <section class="card">
-        <h2 class="text-sm font-semibold text-slate-200 mb-4">Power Station</h2>
-        <p class="text-xs text-slate-500 mb-4">System power and auto-execution toggles.</p>
-        <div class="space-y-6">
-          <div class="flex items-center justify-between rounded-xl bg-slate-800/80 border border-slate-700 p-4">
-            <div>
-              <p class="text-sm font-medium text-slate-200">System Power</p>
-              <p class="text-xs text-slate-500">Start / stop main.py</p>
-            </div>
-            <button type="button" id="botToggle" role="switch" aria-checked="{{ 'true' if bot_running else 'false' }}"
-              class="relative inline-flex h-8 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 focus:ring-offset-slate-900 {% if bot_running %}bg-emerald-500{% else %}bg-slate-600{% endif %}">
-              <span class="pointer-events-none inline-block h-7 w-7 transform rounded-full bg-white shadow ring-0 transition {% if bot_running %}translate-x-6{% else %}translate-x-1{% endif %}"></span>
-            </button>
+        <section class="dash-power-card p-5 sm:p-6 order-1 xl:order-2">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="h-2 w-2 rounded-full bg-violet-400 shadow shadow-violet-500/40"></span>
+            <h2 class="text-base font-semibold text-white tracking-tight">Power Station</h2>
           </div>
-          <div class="flex items-center justify-between rounded-xl bg-slate-800/80 border border-slate-700 p-4">
-            <div>
-              <p class="text-sm font-medium text-slate-200">Auto Trade</p>
-              <p class="text-xs text-slate-500">Toggle auto execution</p>
+          <p class="text-[11px] text-slate-500 mb-5">Bot process, auto entries, and paper mode.</p>
+          <div class="space-y-4">
+            <div class="flex items-center justify-between rounded-xl bg-slate-900/70 border border-slate-600/60 p-4">
+              <div>
+                <p class="text-sm font-medium text-slate-100">System Power</p>
+                <p class="text-xs text-slate-500">Start / stop main.py</p>
+              </div>
+              <button type="button" id="botToggle" role="switch" aria-checked="{{ 'true' if bot_running else 'false' }}"
+                class="relative inline-flex h-8 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 focus:ring-offset-slate-900 {% if bot_running %}bg-emerald-500{% else %}bg-slate-600{% endif %}">
+                <span class="pointer-events-none inline-block h-7 w-7 transform rounded-full bg-white shadow ring-0 transition {% if bot_running %}translate-x-6{% else %}translate-x-1{% endif %}"></span>
+              </button>
             </div>
-            <button type="button" id="autotradeToggle" role="switch" aria-checked="{{ 'true' if autotrade_enabled else 'false' }}"
-              class="relative inline-flex h-8 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 focus:ring-offset-slate-900 {% if autotrade_enabled %}bg-amber-500{% else %}bg-slate-600{% endif %}">
-              <span class="pointer-events-none inline-block h-7 w-7 transform rounded-full bg-white shadow ring-0 transition {% if autotrade_enabled %}translate-x-6{% else %}translate-x-1{% endif %}"></span>
-            </button>
-          </div>
-          <div class="flex items-center justify-between rounded-xl bg-slate-800/80 border border-amber-900/40 p-4">
-            <div>
-              <p class="text-sm font-medium text-slate-200">Virtual / Paper Trading</p>
-              <p class="text-xs text-slate-500">Simulated balance &amp; fills — no exchange orders</p>
+            <div class="flex items-center justify-between rounded-xl bg-slate-900/70 border border-slate-600/60 p-4">
+              <div>
+                <p class="text-sm font-medium text-slate-100">Auto Trade</p>
+                <p class="text-xs text-slate-500">Strategy Hub auto execution</p>
+              </div>
+              <button type="button" id="autotradeToggle" role="switch" aria-checked="{{ 'true' if autotrade_enabled else 'false' }}"
+                class="relative inline-flex h-8 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 focus:ring-offset-slate-900 {% if autotrade_enabled %}bg-amber-500{% else %}bg-slate-600{% endif %}">
+                <span class="pointer-events-none inline-block h-7 w-7 transform rounded-full bg-white shadow ring-0 transition {% if autotrade_enabled %}translate-x-6{% else %}translate-x-1{% endif %}"></span>
+              </button>
             </div>
-            <button type="button" id="virtualModeToggle" role="switch" aria-checked="{{ 'true' if virtual_trading_enabled else 'false' }}"
-              class="relative inline-flex h-8 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 focus:ring-offset-slate-900 {% if virtual_trading_enabled %}bg-amber-500{% else %}bg-slate-600{% endif %}">
-              <span class="pointer-events-none inline-block h-7 w-7 transform rounded-full bg-white shadow ring-0 transition {% if virtual_trading_enabled %}translate-x-6{% else %}translate-x-1{% endif %}"></span>
-            </button>
+            <div class="flex items-center justify-between rounded-xl bg-slate-900/70 border border-amber-900/35 p-4">
+              <div>
+                <p class="text-sm font-medium text-slate-100">Virtual / Paper</p>
+                <p class="text-xs text-slate-500">Simulated balance &amp; fills</p>
+              </div>
+              <button type="button" id="virtualModeToggle" role="switch" aria-checked="{{ 'true' if virtual_trading_enabled else 'false' }}"
+                class="relative inline-flex h-8 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 focus:ring-offset-slate-900 {% if virtual_trading_enabled %}bg-amber-500{% else %}bg-slate-600{% endif %}">
+                <span class="pointer-events-none inline-block h-7 w-7 transform rounded-full bg-white shadow ring-0 transition {% if virtual_trading_enabled %}translate-x-6{% else %}translate-x-1{% endif %}"></span>
+              </button>
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+      </div>
     </div>
 
     <!-- Strategy Hub: multi-instance / multi-timeframe (logs/strategy_instances.json) -->
@@ -454,7 +458,7 @@
     function refreshManualInstanceSelect(list) {
       if (!manualMonitorInstance) return;
       var v = manualMonitorInstance.value;
-      manualMonitorInstance.innerHTML = '<option value="">None (Naked Trade)</option>';
+      manualMonitorInstance.innerHTML = '<option value="">None (naked — fixed 0.5× SL / 2× TP)</option>';
       (list || []).forEach(function (inst) {
         if (!inst.enabled) return;
         var opt = document.createElement('option');
@@ -1040,7 +1044,7 @@
       var entryTimeIST = (ct && ct !== '0') ? new Date(parseInt(ct, 10)).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : '–';
       var stratName = resolveStrategyNameForPosition(p);
       var isManualStrat = isManualStrategyBadge(stratName);
-      var stratLabel = isManualStrat ? 'MANUAL (Default 1% Risk)' : stratName;
+      var stratLabel = isManualStrat ? 'MANUAL · naked (0.5×/2×)' : stratName;
       var badgeClass = isManualStrat
         ? 'bg-emerald-500 text-slate-950 border-emerald-200 shadow-emerald-500/30'
         : 'bg-cyan-400 text-slate-950 border-cyan-200 shadow-cyan-500/30';
@@ -1057,7 +1061,7 @@
         '<span class="text-xs font-bold uppercase px-2 py-0.5 rounded border ' + sideClass + ' border-current/40">' + escapeHtmlUnified(p.side || '') + '</span>' +
         '<span class="text-[9px] sm:text-[10px] font-bold uppercase tracking-wide rounded-full px-2 py-1 border shadow leading-tight max-w-[min(100%,220px)] text-center ' + badgeClass + '" title="' +
         (isManualStrat
-          ? 'Naked manual trades use the bot default 1% stop / 2% take-profit, not Strategy Hub multipliers.'
+          ? 'Naked manual: fixed range multipliers (0.5× SL / 2× TP), not Strategy Hub. Link an instance for candle × instance multipliers.'
           : escapeHtmlStr(stratName)) + '">' + escapeHtmlStr(stratLabel) + '</span>' +
         '</div>' +
         '<p class="text-xs text-slate-500">Opened <span class="text-slate-400">' + escapeHtmlUnified(entryTimeIST) + '</span> (IST)</p>' +
@@ -1067,7 +1071,7 @@
         '<span class="text-slate-500">SL</span><span class="text-red-300 font-mono">' + escapeHtmlUnified(slRaw) + '</span>' +
         '<span class="text-slate-500">TP</span><span class="text-emerald-300 font-mono">' + escapeHtmlUnified(tpRaw) + '</span>' +
         (isManualStrat
-          ? '<span class="col-span-2 text-[10px] text-slate-500 mt-1">SL/TP = bot default (1% / 2%), not instance candle × multipliers.</span>'
+          ? '<span class="col-span-2 text-[10px] text-slate-500 mt-1">Naked manual: SL/TP from last bar × 0.5 / 2.0 — pick a strategy above to use instance multipliers.</span>'
           : '') +
         '<span class="text-slate-500">Size</span><span class="text-slate-200 font-mono">' + escapeHtmlUnified(p.size || '–') + '</span>' +
         '<span class="text-slate-500">uPNL</span><span class="' + uPnlClass + ' font-semibold font-mono">' + (isFinite(uPnl) ? ((uPnl >= 0 ? '+' : '') + formatNum(p.unrealisedPnl)) : '–') + '</span>' +

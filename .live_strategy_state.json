@@ -3,27 +3,27 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 67917.0,
+      "price": 67924.0,
       "indicators": {
-        "RSI": 57.07,
-        "RSI_SMA": 37.53,
+        "RSI": 57.4,
+        "RSI_SMA": 50.83,
         "volume_signal_vs_prev": false,
-        "body_size": 162.5,
-        "open": 67754.5,
-        "close": 67917.0,
-        "volume": 3116.0,
-        "Expected_Profit_Pct": 0.39
+        "body_size": 3.5,
+        "open": 67927.5,
+        "close": 67924.0,
+        "volume": 1460.0,
+        "Expected_Profit_Pct": 0.08
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
         "long": [
           {
             "name": "Signal Candle Bearish (open > close)",
-            "met": false
+            "met": true
           },
           {
             "name": "Previous Candle Bearish",
-            "met": true
+            "met": false
           },
           {
             "name": "Both Bearish",
@@ -45,11 +45,11 @@
         "short": [
           {
             "name": "Signal Candle Bullish (close > open)",
-            "met": true
+            "met": false
           },
           {
             "name": "Previous Candle Bullish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bullish",
@@ -81,7 +81,7 @@
             },
             {
               "text": "Prev RSI < 40.0",
-              "met": true
+              "met": false
             },
             {
               "text": "Curr Close > EMA Low",
@@ -120,7 +120,7 @@
           ]
         }
       },
-      "checks_updated_unix": 1774224476.614089,
+      "checks_updated_unix": 1774225418.115028,
       "status": "Waiting",
       "sl_price": null,
       "tp_price": null,
@@ -146,27 +146,27 @@
     },
     "ETHUSDT": {
       "symbol": "ETHUSDT",
-      "price": 2054.7,
+      "price": 2055.0,
       "indicators": {
-        "RSI": 56.05,
-        "RSI_SMA": null,
+        "RSI": 48.71,
+        "RSI_SMA": 40.1,
         "volume_signal_vs_prev": false,
-        "body_size": 6.05,
-        "open": 2048.65,
-        "close": 2054.7,
-        "volume": 14912.0,
-        "Expected_Profit_Pct": 0.5
+        "body_size": 0.85,
+        "open": 2055.85,
+        "close": 2055.0,
+        "volume": 2023.0,
+        "Expected_Profit_Pct": 0.12
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
         "long": [
           {
             "name": "Signal Candle Bearish (open > close)",
-            "met": false
+            "met": true
           },
           {
             "name": "Previous Candle Bearish",
-            "met": true
+            "met": false
           },
           {
             "name": "Both Bearish",
@@ -188,11 +188,11 @@
         "short": [
           {
             "name": "Signal Candle Bullish (close > open)",
-            "met": true
+            "met": false
           },
           {
             "name": "Previous Candle Bullish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bullish",
@@ -220,11 +220,11 @@
           "rules_long": [
             {
               "text": "Prev Close < EMA Low",
-              "met": true
+              "met": false
             },
             {
               "text": "Prev RSI < 40.0",
-              "met": true
+              "met": false
             },
             {
               "text": "Curr Close > EMA Low",
@@ -263,7 +263,7 @@
           ]
         }
       },
-      "checks_updated_unix": 1774224474.0810375,
+      "checks_updated_unix": 1774225419.1155508,
       "status": "Waiting",
       "sl_price": null,
       "tp_price": null,
