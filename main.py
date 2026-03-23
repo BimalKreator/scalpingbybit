@@ -19,6 +19,7 @@ from pathlib import Path
 
 import instance_storage
 from strategies import ema_trap
+from strategies import three_bearish_trend
 from strategies import STRATEGY_TYPE_LABELS
 
 from dotenv import load_dotenv, dotenv_values
@@ -341,6 +342,19 @@ def _monitor_snapshot_from_params(p: dict, *, strategy_type: str | None = None) 
             "sl_decay_seconds": 0.0,
             "partial_tp_enabled": _bool("partialTpEnabled", "PARTIAL_TP_ENABLED", True),
             "trailing_sl_enabled": _bool("trailingSlEnabled", "TRAILING_SL_ENABLED", True),
+            "breakeven_buffer_pct": max(0.0, _num("breakevenBufferPct", "BREAKEVEN_BUFFER_PCT", 0.05)),
+            "trade_capital_usd": max(1e-12, _num("tradeCapitalUsd", "TRADE_AMOUNT_USD", 100.0)),
+            "leverage": max(1.0, _num("leverage", "LEVERAGE", 5.0)),
+        }
+
+    # 3 Bearish Trend: absolute SL/TP from strategy; no decay, trailing, or partial TP.
+    if st == "three_bearish_trend":
+        return {
+            "sl_mx": 1.0,
+            "sl_mn": 1.0,
+            "sl_decay_seconds": 0.0,
+            "partial_tp_enabled": False,
+            "trailing_sl_enabled": False,
             "breakeven_buffer_pct": max(0.0, _num("breakevenBufferPct", "BREAKEVEN_BUFFER_PCT", 0.05)),
             "trade_capital_usd": max(1e-12, _num("tradeCapitalUsd", "TRADE_AMOUNT_USD", 100.0)),
             "leverage": max(1.0, _num("leverage", "LEVERAGE", 5.0)),
@@ -1948,6 +1962,9 @@ def build_strict_risk_meta_from_instance_id(instance_id: str | None) -> dict | N
         out["instance_sl_mult_max"] = _pf("slMultiplierMax", 3.0)
         out["instance_sl_mult_min"] = _pf("slMultiplierMin", 0.5)
         out["instance_tp_mult"] = _pf("tpMultiplier", 2.0)
+    elif st == "three_bearish_trend":
+        out["instance_sl_mult"] = 0.5
+        out["instance_tp_mult"] = _pf("tpMultiplier", 2.0)
     else:
         out["instance_sl_mult"] = 0.5
         out["instance_tp_mult"] = 2.0
@@ -3397,9 +3414,25 @@ async def _place_order_async(
     b_bid, b_ask = _apply_virtual_orderbook_fallback(
         b_bid, b_ask, close=close, high=high, low=low
     )
-    sl_mx = float((meta or {}).get("instance_sl_mult") or (meta or {}).get("instance_sl_mult_max") or 0.5)
-    sl_mn = float((meta or {}).get("instance_sl_mult") or (meta or {}).get("instance_sl_mult_min") or 0.5)
-    tp_m = float((meta or {}).get("instance_tp_mult") or 2.0)
+    mmeta = meta or {}
+    use_abs_stops = False
+    abs_sl = abs_tp = None
+    if (
+        not is_reverse
+        and mmeta.get("sl_price") is not None
+        and mmeta.get("tp_price") is not None
+    ):
+        try:
+            abs_sl = float(mmeta["sl_price"])
+            abs_tp = float(mmeta["tp_price"])
+            if math.isfinite(abs_sl) and math.isfinite(abs_tp) and abs_sl > 0 and abs_tp > 0:
+                use_abs_stops = True
+        except (TypeError, ValueError):
+            pass
+
+    sl_mx = float(mmeta.get("instance_sl_mult") or mmeta.get("instance_sl_mult_max") or 0.5)
+    sl_mn = float(mmeta.get("instance_sl_mult") or mmeta.get("instance_sl_mult_min") or 0.5)
+    tp_m = float(mmeta.get("instance_tp_mult") or 2.0)
 
     if is_reverse:
         if side == "Buy":
@@ -3413,6 +3446,24 @@ async def _place_order_async(
                 return
             base = b_bid
         current_price = base
+    elif use_abs_stops:
+        if side == "Buy":
+            if not b_ask or b_ask <= 0:
+                print("No best ask; cannot place LONG.")
+                return
+            base = float(b_ask)
+        else:
+            if not b_bid or b_bid <= 0:
+                print("No best bid; cannot place SHORT.")
+                return
+            base = float(b_bid)
+        sl_wide = sl_tight = float(abs_sl)
+        tp = float(abs_tp)
+        sl = sl_wide
+        current_price = base
+        range_ = max(abs(float(base) - float(abs_sl)), 1e-12)
+        sl_mx = 1.0
+        sl_mn = 1.0
     elif side == "Buy":
         if not b_ask or b_ask <= 0:
             print("No best ask; cannot place LONG.")
@@ -4718,6 +4769,37 @@ def _rebuild_instance_checks_live_state(symbol_normalized: str) -> None:
                     ),
                 }
             checks[iid] = entry
+        elif strat == "three_bearish_trend":
+            built = three_bearish_trend.build_entry_checklists(
+                df_closed if len(df_closed) else None,
+                dict(inst.get("params") or {}),
+                st,
+            )
+            entry = {
+                "name": name,
+                "interval": tf,
+                "strategy_type": strat,
+                "rules_long": built.get("rules_long") or [],
+                "rules_short": built.get("rules_short") or [],
+            }
+            if built.get("note"):
+                entry["note"] = built["note"]
+            sync = built.get("sync")
+            if isinstance(sync, dict):
+                try:
+                    cstart = int(df_closed.iloc[-1]["start"]) if len(df_closed) >= 1 else None
+                except (TypeError, ValueError, KeyError):
+                    cstart = None
+                lss = int(st.get("last_signal_start") or 0)
+                entry["monitor_sync"] = {
+                    **sync,
+                    "last_signal_start": lss,
+                    "autotrade_enabled": _is_autotrade_enabled(),
+                    "order_pending_for_this_conf_bar": bool(
+                        cstart is not None and lss == cstart
+                    ),
+                }
+            checks[iid] = entry
         else:
             checks[iid] = {
                 "name": name,
@@ -4807,6 +4889,8 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
         signal = None
         reason = ""
         row_dict: dict | None = None
+        ev: dict[str, Any] | None = None
+        wm_meta: dict[str, Any] | None = None
 
         if strat == "ema_trap":
             ev = ema_trap.evaluate(df_closed, dict(inst.get("params") or {}), st)
@@ -4821,6 +4905,13 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             reason = str(wm_reason or "")
             if signal in ("Buy", "Sell") and wm_meta:
                 row_dict = wm_meta.get("signal_row")
+        elif strat == "three_bearish_trend":
+            ev = three_bearish_trend.evaluate(
+                df_closed, dict(inst.get("params") or {}), st
+            )
+            signal = ev.get("signal")
+            reason = str(ev.get("reason") or "")
+            row_dict = ev.get("signal_row")
         else:
             continue
 
@@ -4860,6 +4951,13 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             sub = wm_meta.get("meta")
             if isinstance(sub, dict):
                 meta.update(sub)
+        elif strat == "three_bearish_trend" and isinstance(ev, dict):
+            if ev.get("sl_price") is not None and ev.get("tp_price") is not None:
+                meta["sl_price"] = float(ev["sl_price"])
+                meta["tp_price"] = float(ev["tp_price"])
+            sn = ev.get("strategy_name")
+            if sn:
+                meta["strategy_name"] = str(sn)
         _loop.call_soon_threadsafe(
             _signal_queue.put_nowait,
             ("entry", signal, row_dict, False, meta),

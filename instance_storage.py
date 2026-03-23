@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 
 from strategies.ema_trap import DEFAULT_PARAMS as EMA_TRAP_DEFAULTS
+from strategies.three_bearish_trend import DEFAULT_PARAMS as THREE_BEARISH_DEFAULTS
 
 ROOT = Path(__file__).resolve().parent
 INSTANCES_PATH = ROOT / "logs" / "strategy_instances.json"
@@ -163,8 +164,11 @@ def new_id() -> str:
 
 
 def default_params_for_type(strategy_type: str) -> dict:
-    if strategy_type == "ema_trap":
+    st = (strategy_type or "").strip().lower()
+    if st == "ema_trap":
         return dict(EMA_TRAP_DEFAULTS)
+    if st == "three_bearish_trend":
+        return dict(THREE_BEARISH_DEFAULTS)
     return dict(WEAK_MOMENTUM_DEFAULT_PARAMS)
 
 
@@ -189,6 +193,9 @@ def create_instance(strategy_type: str, symbol: str | None = None) -> dict:
     elif st == "ema_trap":
         name = "EMA Trap 3m"
         tf = "3m"
+    elif st == "three_bearish_trend":
+        name = "3 Bearish Trend 15m"
+        tf = "15m"
     else:
         st = "ema_trap"
         name = "EMA Trap 3m"
@@ -222,6 +229,21 @@ def _strip_params_unused_by_strategy(strategy_type: str, params: dict) -> dict:
     p = dict(params)
     if st == "ema_trap":
         for k in ("slMultiplierMax", "slMultiplierMin", "slDecaySeconds"):
+            p.pop(k, None)
+    if st == "three_bearish_trend":
+        for k in (
+            "slMultiplier",
+            "slMultiplierMax",
+            "slMultiplierMin",
+            "slDecaySeconds",
+            "rsiLength",
+            "rsiOversold",
+            "rsiOverbought",
+            "emaLength",
+            "rangeLength",
+            "rangeMultiplier",
+            "minProfitPerc",
+        ):
             p.pop(k, None)
     return p
 

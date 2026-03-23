@@ -98,7 +98,9 @@ def _sl_tp_triple_from_instance_params(
     SL wide, SL tight, TP multipliers from Strategy Hub JSON — same keys as auto-trade / main._place_order_async.
 
     EMA Trap uses ``slMultiplier`` + ``tpMultiplier`` only (wide = tight). Weak Momentum uses
-    ``slMultiplierMax`` / ``slMultiplierMin`` / ``tpMultiplier``. No .env fallback for linked instances.
+    ``slMultiplierMax`` / ``slMultiplierMin`` / ``tpMultiplier``. 3 Bearish Trend uses absolute
+    stops on auto entries; for linked Manual Trade only, use 0.5 / 0.5 / ``tpMultiplier`` on bar range.
+    No .env fallback for linked instances.
     """
     p = params or {}
     st = (strategy_type or "").strip().lower()
@@ -116,6 +118,9 @@ def _sl_tp_triple_from_instance_params(
         t = _f("tpMultiplier", 2.0)
         s = max(s, 1e-12)
         return s, s, max(t, 1e-12)
+    if st == "three_bearish_trend":
+        tpm = max(_f("tpMultiplier", 2.0), 1e-12)
+        return 0.5, 0.5, tpm
     smx = _f("slMultiplierMax", 3.0)
     smn = _f("slMultiplierMin", 0.5)
     tpm = _f("tpMultiplier", 2.0)

@@ -308,6 +308,7 @@
           <select id="addInstanceStrategyType" class="rounded-lg bg-slate-800 border border-slate-600 text-xs text-slate-200 px-3 py-2">
             <option value="ema_trap">EMA Trap + RF</option>
             <option value="weak_momentum_reversal">Weak Momentum Reversal</option>
+            <option value="three_bearish_trend">3 Bearish Trend</option>
           </select>
           <button type="button" id="btnAddInstance" class="rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium py-2 px-4 transition">
             Add Strategy Instance
@@ -447,7 +448,11 @@
       el.textContent = (exId === 'delta_india') ? 'Exchange: 🟠 Delta' : 'Exchange: 🔵 Bybit';
     }
 
-    var STRATEGY_LABELS = { ema_trap: 'EMA Trap + RF', weak_momentum_reversal: 'Weak Momentum' };
+    var STRATEGY_LABELS = {
+      ema_trap: 'EMA Trap + RF',
+      weak_momentum_reversal: 'Weak Momentum',
+      three_bearish_trend: '3 Bearish Trend'
+    };
 
     function hubBadgeClass(on) {
       return on
@@ -572,6 +577,23 @@
       );
     }
 
+    /** 3 Bearish Trend: N/M window + max SL points + TP × actual risk; SHORT-only, absolute stops at execution. */
+    function threeBearishExecutionBlock(p) {
+      p = p || {};
+      return (
+        '<p class="text-xs font-semibold text-slate-400 mt-3">Pattern &amp; risk (this instance)</p>' +
+        '<p class="text-[10px] text-slate-500 mb-2">Auto entries use absolute SL/TP from the pattern. Trailing &amp; partial TP stay off in the bot. Linked Manual Trade uses last bar range × 0.5 SL / your TP multiplier below.</p>' +
+        '<div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">' +
+        numFieldL('Trade capital (USD)', 'tradeCapitalUsd', p.tradeCapitalUsd, 100) +
+        numFieldL('Leverage (×)', 'leverage', p.leverage, 5) +
+        numFieldL('N — consecutive bearish candles', 'nCandles', p.nCandles, 3) +
+        numFieldL('M — max bars after setup', 'mCandles', p.mCandles, 10) +
+        numFieldL('SL max risk (points)', 'slMaxPoints', p.slMaxPoints, 100) +
+        numFieldL('TP multiplier (× risk)', 'tpMultiplier', p.tpMultiplier, 2) +
+        '</div>'
+      );
+    }
+
     function buildInstanceFormHtml(inst) {
       var st = inst.strategy_type || '';
       var p = inst.params || {};
@@ -599,6 +621,10 @@
         adv =
           '<p class="text-xs font-semibold text-slate-400">EMA Trap</p>' +
           emaTrapExecutionBlock(p);
+      } else if (st === 'three_bearish_trend') {
+        adv =
+          '<p class="text-xs font-semibold text-slate-400">3 Bearish Trend</p>' +
+          threeBearishExecutionBlock(p);
       } else {
         adv =
           '<p class="text-xs font-semibold text-slate-400">Weak Momentum</p>' +
@@ -1027,6 +1053,7 @@
       if (!s) return true;
       if (s.indexOf('ema trap') >= 0 || s.indexOf('ema_trap') >= 0) return false;
       if (s.indexOf('weak momentum') >= 0 || s.indexOf('weak_momentum') >= 0) return false;
+      if (s.indexOf('3_bearish') >= 0 || s.indexOf('3 bearish') >= 0) return false;
       return s.indexOf('manual') >= 0;
     }
 
