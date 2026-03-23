@@ -53,6 +53,7 @@ from main import (
     _live_state_symbols_from_disk_raw,
     _read_live_state_json_safe,
     apply_dynamic_env_updates,
+    build_strict_risk_meta_from_instance_id,
     execute_strategy_signal,
     get_active_strategies_from_env,
     get_live_strategy_status_for_api,
@@ -1445,6 +1446,8 @@ class MockSignalBody(BaseModel):
     side: str  # "Buy" or "Sell"
     usd_amount: float
     leverage: float = 5.0
+    # Optional: resolve instance_sl_* / instance_tp_mult from Strategy Hub (paper mock only).
+    instance_id: str | None = None
 
 
 @app.post("/api/trade/mock_signal")
@@ -1469,7 +1472,12 @@ async def api_trade_mock_signal(body: MockSignalBody):
                 detail="No L1 price — start the bot for websocket orderbook",
             )
         lev = max(1.0, min(100.0, float(body.leverage))) if body.leverage else 5.0
-        await execute_strategy_signal(body.symbol, body.side, cp, body.usd_amount, lev)
+        mock_meta = build_strict_risk_meta_from_instance_id(
+            body.instance_id.strip() if body.instance_id else None
+        )
+        await execute_strategy_signal(
+            body.symbol, body.side, cp, body.usd_amount, lev, meta=mock_meta
+        )
         return {"ok": True, "message": "Mock signal executed (paper)"}
 
     try:

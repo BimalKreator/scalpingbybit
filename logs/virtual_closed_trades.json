@@ -163,5 +163,20 @@
     "fees": 0,
     "exitReason": "Stop Loss (paper)",
     "strategy_name": "ETH EMA Trap 3m"
+  },
+  {
+    "exchange": "Virtual (Paper)",
+    "symbol": "BTCUSDT",
+    "side": "SELL",
+    "createdTime": "1774223406950",
+    "updatedTime": "1774223406950",
+    "avgEntryPrice": "67973.5",
+    "avgExitPrice": "67895.5",
+    "leverage": "5",
+    "marginUsed": "",
+    "closedPnl": "0.546",
+    "fees": 0,
+    "exitReason": "Manual close (paper)",
+    "strategy_name": "Manual"
   }
 ]

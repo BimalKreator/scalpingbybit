@@ -1941,42 +1941,60 @@ def _tp_multiplier_for_order(meta: dict | None) -> float:
         return float(TP_MULTIPLIER)
 
 
-def _entry_risk_multipliers_for_place_order(meta: dict | None) -> tuple[float, float, float]:
+def _strict_sl_tp_multipliers_from_meta(meta: dict | None) -> tuple[float, float, float]:
     """
-    SL wide, SL tight, TP multipliers for initial exchange stops.
+    SL wide, SL tight, TP multipliers for entry placement — **meta keys only**.
 
-    When the queued entry carries instance/strategy multipliers (``instance_id`` or embedded
-    ``instance_*`` keys from evaluate), use those only — do not read live position globals or
-    re-fetch instance JSON (avoids .env / stale monitor snapshot overriding the signal bar).
+    Defaults: SL 0.5 / 0.5, TP 2.0. Weak momentum may set ``instance_sl_mult_max`` /
+    ``instance_sl_mult_min`` instead of a single ``instance_sl_mult``. No ``.env`` or globals.
     """
-    load_dotenv(override=True)
-    load_dotenv("env", override=True)
-    emx, emn = _sl_multipliers_from_env()
-    try:
-        tp_def = float(os.getenv("TP_MULTIPLIER", str(TP_MULTIPLIER)) or TP_MULTIPLIER)
-    except (TypeError, ValueError):
-        tp_def = float(TP_MULTIPLIER)
-
     m = meta or {}
-    use_embedded = bool(m.get("instance_id")) or (
-        m.get("instance_tp_mult") is not None
-        or m.get("instance_sl_mult") is not None
-        or m.get("instance_sl_mult_max") is not None
-        or m.get("instance_sl_mult_min") is not None
-    )
-    if use_embedded:
-        tp_m = float(m.get("instance_tp_mult", tp_def))
-        if m.get("instance_sl_mult_max") is not None or m.get("instance_sl_mult_min") is not None:
-            sl_mx = float(m.get("instance_sl_mult_max", m.get("instance_sl_mult", emx)))
-            sl_mn = float(m.get("instance_sl_mult_min", m.get("instance_sl_mult", emn)))
-        else:
-            s = float(m.get("instance_sl_mult", emx))
-            sl_mx = sl_mn = s
-        return max(sl_mx, 1e-12), max(sl_mn, 1e-12), max(tp_m, 1e-12)
+    # Strictly enforce multipliers from the queued ``meta``. Do not fallback to .env.
+    sl_mx = float(m.get("instance_sl_mult", 0.5))
+    sl_mn = float(m.get("instance_sl_mult", 0.5))
+    tp_m = float(m.get("instance_tp_mult", 2.0))
+    if m.get("instance_sl_mult_max") is not None or m.get("instance_sl_mult_min") is not None:
+        sl_mx = float(m.get("instance_sl_mult_max", sl_mx))
+        sl_mn = float(m.get("instance_sl_mult_min", sl_mn))
+    return max(sl_mx, 1e-12), max(sl_mn, 1e-12), max(tp_m, 1e-12)
 
-    sl_mx, sl_mn = _sl_multipliers_for_position()
-    tp_m = _tp_multiplier_for_order(meta)
-    return max(float(sl_mx), 1e-12), max(float(sl_mn), 1e-12), max(float(tp_m), 1e-12)
+
+def build_strict_risk_meta_from_instance_id(instance_id: str | None) -> dict | None:
+    """
+    Build queued-entry style ``meta`` (``instance_sl_*`` / ``instance_tp_mult``) from Strategy Hub JSON.
+
+    Used by mock signal API when ``instance_id`` is supplied. Unknown id → conservative 0.5 / 2.0 defaults.
+    """
+    if instance_id is None or str(instance_id).strip() == "":
+        return None
+    iid = str(instance_id).strip()
+    inst = instance_storage.get_instance_by_id(iid)
+    if not inst:
+        return {"instance_id": iid, "instance_sl_mult": 0.5, "instance_tp_mult": 2.0}
+    p = dict(inst.get("params") or {})
+    st = str(inst.get("strategy_type") or "").strip().lower()
+    out: dict[str, Any] = {"instance_id": str(inst.get("id") or iid)}
+
+    def _pf(key: str, default: float) -> float:
+        v = p.get(key)
+        if v is None or (isinstance(v, str) and not str(v).strip()):
+            return default
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return default
+
+    if st == "ema_trap":
+        out["instance_sl_mult"] = _pf("slMultiplier", 0.5)
+        out["instance_tp_mult"] = _pf("tpMultiplier", 2.0)
+    elif st == "weak_momentum_reversal":
+        out["instance_sl_mult_max"] = _pf("slMultiplierMax", 3.0)
+        out["instance_sl_mult_min"] = _pf("slMultiplierMin", 0.5)
+        out["instance_tp_mult"] = _pf("tpMultiplier", 2.0)
+    else:
+        out["instance_sl_mult"] = 0.5
+        out["instance_tp_mult"] = 2.0
+    return out
 
 
 def _set_position_sl_tp_sync_logged(
@@ -3109,9 +3127,14 @@ async def execute_strategy_signal(
     current_price: float,
     usd_amount: float,
     leverage: float,
+    *,
+    meta: dict | None = None,
 ) -> None:
     """
     Mock / test execution: Signal_Range from last closed 1m candle (or synthetic), SL/TP from best bid/ask.
+
+    Risk multipliers: ``meta`` keys ``instance_sl_mult`` / ``instance_tp_mult`` (and optional WM
+    ``instance_sl_mult_max`` / ``instance_sl_mult_min``) only — defaults 0.5 SL / 2.0 TP, not .env.
     """
     global _position_size, _monitor_had_position, _last_position_side, _last_signal_candle
     global _sl_max_price, _sl_min_price, _last_sl_price, _last_tp_price, _position_entry_price
@@ -3122,10 +3145,7 @@ async def execute_strategy_signal(
         print("[Mock Signal] Invalid current_price, usd_amount or leverage. Aborting.")
         return
 
-    load_dotenv(override=True)
-    load_dotenv("env", override=True)
-    sl_mx, sl_mn = _sl_multipliers_from_env()
-    tp_mult = float(os.getenv("TP_MULTIPLIER", "2.0"))
+    sl_mx, sl_mn, tp_mult = _strict_sl_tp_multipliers_from_meta(meta)
     if len(KLINES) >= 2:
         prev = KLINES[-2]
         high, low = float(prev["high"]), float(prev["low"])
@@ -3418,7 +3438,7 @@ async def _place_order_async(
     b_bid, b_ask = _apply_virtual_orderbook_fallback(
         b_bid, b_ask, close=close, high=high, low=low
     )
-    sl_mx, sl_mn, tp_m = _entry_risk_multipliers_for_place_order(meta)
+    sl_mx, sl_mn, tp_m = _strict_sl_tp_multipliers_from_meta(meta)
 
     if is_reverse:
         if side == "Buy":
@@ -4932,6 +4952,12 @@ def check_signals(df: pd.DataFrame) -> None:
             sr = sig_meta.get("signal_row")
             if isinstance(sr, dict):
                 row_dict = sr
+        # Legacy path: no Strategy Hub instance — fixed defaults (never 1:1 from global .env).
+        if queue_meta is None:
+            queue_meta = {}
+        if not queue_meta.get("instance_id"):
+            queue_meta.setdefault("instance_sl_mult", 0.5)
+            queue_meta.setdefault("instance_tp_mult", 2.0)
         _loop.call_soon_threadsafe(
             _signal_queue.put_nowait, ("entry", signal, row_dict, False, queue_meta)
         )
