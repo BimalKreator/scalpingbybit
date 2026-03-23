@@ -3,16 +3,16 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 67842.0,
+      "price": 67917.0,
       "indicators": {
-        "RSI": 42.28,
-        "RSI_SMA": 26.45,
+        "RSI": 57.07,
+        "RSI_SMA": 37.53,
         "volume_signal_vs_prev": false,
-        "body_size": 11.0,
-        "open": 67831.0,
-        "close": 67842.0,
-        "volume": 1967.0,
-        "Expected_Profit_Pct": 0.07
+        "body_size": 162.5,
+        "open": 67754.5,
+        "close": 67917.0,
+        "volume": 3116.0,
+        "Expected_Profit_Pct": 0.39
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -23,7 +23,7 @@
           },
           {
             "name": "Previous Candle Bearish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bearish",
@@ -49,11 +49,11 @@
           },
           {
             "name": "Previous Candle Bullish",
-            "met": true
+            "met": false
           },
           {
             "name": "Both Bullish",
-            "met": true
+            "met": false
           },
           {
             "name": "Volume: signal > previous",
@@ -111,7 +111,7 @@
             },
             {
               "text": "Range Filter Downtrend",
-              "met": true
+              "met": false
             },
             {
               "text": "Expected Profit >= 0.08%",
@@ -120,56 +120,42 @@
           ]
         }
       },
-      "checks_updated_unix": 1774224001.106554,
-      "status": "Position Open",
-      "sl_price": 67906.9159,
-      "tp_price": 67713.5,
-      "entry_price": 67920.5,
-      "position_size": 7.0,
-      "sl_amount_usd": 0.095089,
-      "tp_amount_usd": 1.449,
+      "checks_updated_unix": 1774224476.614089,
+      "status": "Waiting",
+      "sl_price": null,
+      "tp_price": null,
+      "entry_price": null,
+      "position_size": 0.0,
+      "sl_amount_usd": null,
+      "tp_amount_usd": null,
       "position_risk": {
-        "open": true,
-        "has_levels": true,
-        "side": "Sell",
-        "strategy_name": "EMA Trap 3m",
-        "entry_price": 67920.5,
-        "size": 7.0,
-        "sl_price": 67906.9159,
-        "tp_price": 67713.5,
-        "sl_amount_usd": 0.095089,
-        "tp_amount_usd": 1.449,
-        "position_value_usd": 95.09,
-        "live_mid": 67844.5,
-        "entry_pct": 6.56,
-        "live_mid_pct": 36.71,
-        "breakeven_buffer_active": true
+        "open": false
       },
       "last_signal_candle_start": null,
-      "strategy_name": "EMA Trap 3m",
-      "last_sl_price": 67906.9159,
-      "last_tp_price": 67713.5,
-      "last_position_side": "Sell",
-      "tracker_sl_max": 68127.5,
-      "tracker_sl_min": 67972.0,
-      "sl_entry_time_unix": 1774223426.1849003,
-      "sl_breakeven_triggered": true,
-      "sl_half_target_exited": true,
-      "sl_half_target_reached": true,
-      "base_risk_dist": 414.0
+      "strategy_name": null,
+      "last_sl_price": 0.0,
+      "last_tp_price": 0.0,
+      "last_position_side": "",
+      "tracker_sl_max": 0.0,
+      "tracker_sl_min": 0.0,
+      "sl_entry_time_unix": 0.0,
+      "sl_breakeven_triggered": false,
+      "sl_half_target_exited": false,
+      "sl_half_target_reached": false,
+      "base_risk_dist": 0.0
     },
     "ETHUSDT": {
       "symbol": "ETHUSDT",
-      "price": 2053.05,
+      "price": 2054.7,
       "indicators": {
-        "RSI": 52.78,
+        "RSI": 56.05,
         "RSI_SMA": null,
-        "volume_signal_vs_prev": true,
-        "body_size": 0.65,
-        "open": 2052.4,
-        "close": 2053.05,
-        "volume": 9369.0,
-        "Expected_Profit_Pct": 0.08
+        "volume_signal_vs_prev": false,
+        "body_size": 6.05,
+        "open": 2048.65,
+        "close": 2054.7,
+        "volume": 14912.0,
+        "Expected_Profit_Pct": 0.5
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -188,7 +174,7 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": true
+            "met": false
           },
           {
             "name": "RSI < 40.0",
@@ -214,7 +200,7 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": true
+            "met": false
           },
           {
             "name": "RSI > 60.0",
@@ -242,7 +228,7 @@
             },
             {
               "text": "Curr Close > EMA Low",
-              "met": false
+              "met": true
             },
             {
               "text": "Range Filter Uptrend",
@@ -277,43 +263,29 @@
           ]
         }
       },
-      "checks_updated_unix": 1774223999.5813901,
-      "status": "Position Open",
-      "sl_price": 2055.9,
-      "tp_price": 2043.8,
-      "entry_price": 2053.5,
-      "position_size": 48.0,
-      "sl_amount_usd": -1.152,
-      "tp_amount_usd": 4.656,
+      "checks_updated_unix": 1774224474.0810375,
+      "status": "Waiting",
+      "sl_price": null,
+      "tp_price": null,
+      "entry_price": null,
+      "position_size": 0.0,
+      "sl_amount_usd": null,
+      "tp_amount_usd": null,
       "position_risk": {
-        "open": true,
-        "has_levels": true,
-        "side": "Sell",
-        "strategy_name": "ETH EMA Trap 3m",
-        "entry_price": 2053.5,
-        "size": 48.0,
-        "sl_price": 2055.9,
-        "tp_price": 2043.8,
-        "sl_amount_usd": -1.152,
-        "tp_amount_usd": 4.656,
-        "position_value_usd": 197.14,
-        "live_mid": 2053.5,
-        "entry_pct": 19.83,
-        "live_mid_pct": 19.83,
-        "breakeven_buffer_active": false
+        "open": false
       },
       "last_signal_candle_start": null,
-      "strategy_name": "ETH EMA Trap 3m",
-      "last_sl_price": 2055.9,
-      "last_tp_price": 2043.8,
-      "last_position_side": "Sell",
-      "tracker_sl_max": 2063.2,
-      "tracker_sl_min": 2055.9,
-      "sl_entry_time_unix": 1774223413.648754,
+      "strategy_name": null,
+      "last_sl_price": 0.0,
+      "last_tp_price": 0.0,
+      "last_position_side": "",
+      "tracker_sl_max": 0.0,
+      "tracker_sl_min": 0.0,
+      "sl_entry_time_unix": 0.0,
       "sl_breakeven_triggered": false,
       "sl_half_target_exited": false,
       "sl_half_target_reached": false,
-      "base_risk_dist": 19.399999999999636
+      "base_risk_dist": 0.0
     }
   }
 }

@@ -1075,7 +1075,7 @@ async def api_trade_manual(body: ManualTradeBody):
             raise HTTPException(status_code=400, detail="usd_amount must be positive")
         trade_usd = float(body.usd_amount)
         lev = max(1.0, min(100.0, float(body.leverage))) if body.leverage else 5.0
-        sl_mx, sl_mn, tp_m = _sl_tp_params_from_env_file()
+        sl_mx, sl_mn, tp_m = 0.5, 0.5, 2.0
     if trade_usd <= 0:
         raise HTTPException(status_code=400, detail="trade capital (USD) must be positive")
     sig_hi, sig_lo = await _resolve_manual_signal_candle(body, inst)

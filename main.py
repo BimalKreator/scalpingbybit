@@ -1834,13 +1834,6 @@ def _get_orderbook_l1(symbol: str | None = None) -> tuple[float, float, float, f
     return (bb, ba, bq, aq)
 
 
-def _sl_multipliers_for_position() -> tuple[float, float]:
-    m = _active_instance_monitor_params
-    if m:
-        return float(m["sl_mx"]), float(m["sl_mn"])
-    return _sl_multipliers_from_env()
-
-
 def _partial_tp_enabled() -> bool:
     """Scale out 50% at half-target (with breakeven trailing). Default on."""
     m = _active_instance_monitor_params
@@ -1921,42 +1914,6 @@ def _trade_amount_and_leverage_for_order(meta: dict | None) -> tuple[float, floa
     except (TypeError, ValueError):
         lv = 5.0
     return max(1e-12, ta_), max(1.0, lv)
-
-
-def _tp_multiplier_for_order(meta: dict | None) -> float:
-    if meta and meta.get("instance_id"):
-        inst = instance_storage.get_instance_by_id(str(meta["instance_id"]))
-        if inst:
-            p = inst.get("params") or {}
-            if p.get("tpMultiplier") is not None and str(p.get("tpMultiplier")).strip() != "":
-                try:
-                    return float(p["tpMultiplier"])
-                except (TypeError, ValueError):
-                    pass
-    load_dotenv(override=True)
-    load_dotenv("env", override=True)
-    try:
-        return float(os.getenv("TP_MULTIPLIER", str(TP_MULTIPLIER)) or TP_MULTIPLIER)
-    except (TypeError, ValueError):
-        return float(TP_MULTIPLIER)
-
-
-def _strict_sl_tp_multipliers_from_meta(meta: dict | None) -> tuple[float, float, float]:
-    """
-    SL wide, SL tight, TP multipliers for entry placement — **meta keys only**.
-
-    Defaults: SL 0.5 / 0.5, TP 2.0. Weak momentum may set ``instance_sl_mult_max`` /
-    ``instance_sl_mult_min`` instead of a single ``instance_sl_mult``. No ``.env`` or globals.
-    """
-    m = meta or {}
-    # Strictly enforce multipliers from the queued ``meta``. Do not fallback to .env.
-    sl_mx = float(m.get("instance_sl_mult", 0.5))
-    sl_mn = float(m.get("instance_sl_mult", 0.5))
-    tp_m = float(m.get("instance_tp_mult", 2.0))
-    if m.get("instance_sl_mult_max") is not None or m.get("instance_sl_mult_min") is not None:
-        sl_mx = float(m.get("instance_sl_mult_max", sl_mx))
-        sl_mn = float(m.get("instance_sl_mult_min", sl_mn))
-    return max(sl_mx, 1e-12), max(sl_mn, 1e-12), max(tp_m, 1e-12)
 
 
 def build_strict_risk_meta_from_instance_id(instance_id: str | None) -> dict | None:
@@ -3133,8 +3090,8 @@ async def execute_strategy_signal(
     """
     Mock / test execution: Signal_Range from last closed 1m candle (or synthetic), SL/TP from best bid/ask.
 
-    Risk multipliers: ``meta`` keys ``instance_sl_mult`` / ``instance_tp_mult`` (and optional WM
-    ``instance_sl_mult_max`` / ``instance_sl_mult_min``) only — defaults 0.5 SL / 2.0 TP, not .env.
+    Risk multipliers: read only from ``meta`` (``instance_sl_mult``, optional WM max/min, ``instance_tp_mult``);
+    defaults 0.5 / 2.0 when keys absent.
     """
     global _position_size, _monitor_had_position, _last_position_side, _last_signal_candle
     global _sl_max_price, _sl_min_price, _last_sl_price, _last_tp_price, _position_entry_price
@@ -3145,7 +3102,9 @@ async def execute_strategy_signal(
         print("[Mock Signal] Invalid current_price, usd_amount or leverage. Aborting.")
         return
 
-    sl_mx, sl_mn, tp_mult = _strict_sl_tp_multipliers_from_meta(meta)
+    sl_mx = float((meta or {}).get("instance_sl_mult") or (meta or {}).get("instance_sl_mult_max") or 0.5)
+    sl_mn = float((meta or {}).get("instance_sl_mult") or (meta or {}).get("instance_sl_mult_min") or 0.5)
+    tp_mult = float((meta or {}).get("instance_tp_mult") or 2.0)
     if len(KLINES) >= 2:
         prev = KLINES[-2]
         high, low = float(prev["high"]), float(prev["low"])
@@ -3438,7 +3397,9 @@ async def _place_order_async(
     b_bid, b_ask = _apply_virtual_orderbook_fallback(
         b_bid, b_ask, close=close, high=high, low=low
     )
-    sl_mx, sl_mn, tp_m = _strict_sl_tp_multipliers_from_meta(meta)
+    sl_mx = float((meta or {}).get("instance_sl_mult") or (meta or {}).get("instance_sl_mult_max") or 0.5)
+    sl_mn = float((meta or {}).get("instance_sl_mult") or (meta or {}).get("instance_sl_mult_min") or 0.5)
+    tp_m = float((meta or {}).get("instance_tp_mult") or 2.0)
 
     if is_reverse:
         if side == "Buy":
@@ -4168,7 +4129,13 @@ def register_manual_trade(
     _half_target_reached = False
     _local_close_reason = ""
     _last_active_sl_price = _sl_max_price
-    smx_reg, _ = _sl_multipliers_for_position()
+    mon = _active_instance_monitor_params
+    if mon:
+        smx_reg = float(mon.get("sl_mx") or 0.5)
+        smx = float(mon.get("sl_mx") or 0.5)
+    else:
+        smx_reg = 0.5
+        smx = 0.5
     _base_risk_dist = abs(ep - float(_sl_max_price)) / max(float(smx_reg), 1e-12)
     if signal_high is not None and signal_low is not None and float(signal_high) >= float(signal_low):
         _last_signal_candle = {
@@ -4177,7 +4144,6 @@ def register_manual_trade(
             "close": float(entry_price),
         }
     else:
-        smx, smn = _sl_multipliers_for_position()
         sl_dist = abs(ep - float(_sl_max_price))
         fake_range = sl_dist / smx if smx > 1e-12 else sl_dist
         _last_signal_candle = {

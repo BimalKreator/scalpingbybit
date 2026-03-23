@@ -178,5 +178,50 @@
     "fees": 0,
     "exitReason": "Manual close (paper)",
     "strategy_name": "Manual"
+  },
+  {
+    "exchange": "Virtual (Paper)",
+    "symbol": "BTCUSDT",
+    "side": "SELL",
+    "createdTime": "1774224020771",
+    "updatedTime": "1774224020771",
+    "avgEntryPrice": "67920.5",
+    "avgExitPrice": "67940.5",
+    "leverage": "5",
+    "marginUsed": "",
+    "closedPnl": "-0.14",
+    "fees": 0,
+    "exitReason": "Stop Loss (paper)",
+    "strategy_name": "Manual"
+  },
+  {
+    "exchange": "Virtual (Paper)",
+    "symbol": "ETHUSDT",
+    "side": "SELL",
+    "createdTime": "1774224022294",
+    "updatedTime": "1774224022294",
+    "avgEntryPrice": "2053.5",
+    "avgExitPrice": "2057.2",
+    "leverage": "5",
+    "marginUsed": "",
+    "closedPnl": "-1.776",
+    "fees": 0,
+    "exitReason": "Stop Loss (paper)",
+    "strategy_name": "Manual"
+  },
+  {
+    "exchange": "Virtual (Paper)",
+    "symbol": "BTCUSDT",
+    "side": "BUY",
+    "createdTime": "1774224068803",
+    "updatedTime": "1774224068803",
+    "avgEntryPrice": "67945",
+    "avgExitPrice": "67923",
+    "leverage": "5",
+    "marginUsed": "",
+    "closedPnl": "-0.308",
+    "fees": 0,
+    "exitReason": "Stop Loss (paper)",
+    "strategy_name": "EMA Trap 3m"
   }
 ]

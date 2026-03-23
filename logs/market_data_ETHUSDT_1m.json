@@ -2576,6 +2576,97 @@
       "turnover": 0.0,
       "confirm": true,
       "timestamp": 1774223940000
+    },
+    {
+      "start": 1774224000000,
+      "end": 1774224060000,
+      "interval": "1",
+      "open": 2053.65,
+      "high": 2054.45,
+      "low": 2053.6,
+      "close": 2054.3,
+      "volume": 837.0,
+      "turnover": 0.0,
+      "confirm": true,
+      "timestamp": 1774224000000
+    },
+    {
+      "start": 1774224060000,
+      "end": 1774224120000,
+      "interval": "1",
+      "open": 2054.8,
+      "high": 2054.8,
+      "low": 2054.8,
+      "close": 2054.8,
+      "volume": 250.0,
+      "turnover": 0.0,
+      "confirm": true,
+      "timestamp": 1774224060000
+    },
+    {
+      "start": 1774224120000,
+      "end": 1774224180000,
+      "interval": "1",
+      "open": 2053.3,
+      "high": 2053.3,
+      "low": 2053.15,
+      "close": 2053.15,
+      "volume": 690.0,
+      "turnover": 0.0,
+      "confirm": true,
+      "timestamp": 1774224120000
+    },
+    {
+      "start": 1774224180000,
+      "end": 1774224240000,
+      "interval": "1",
+      "open": 2052.65,
+      "high": 2052.65,
+      "low": 2052.65,
+      "close": 2052.65,
+      "volume": 100.0,
+      "turnover": 0.0,
+      "confirm": true,
+      "timestamp": 1774224180000
+    },
+    {
+      "start": 1774224240000,
+      "end": 1774224300000,
+      "interval": "1",
+      "open": 2053.05,
+      "high": 2053.05,
+      "low": 2053.05,
+      "close": 2053.05,
+      "volume": 93.0,
+      "turnover": 0.0,
+      "confirm": true,
+      "timestamp": 1774224240000
+    },
+    {
+      "start": 1774224300000,
+      "end": 1774224360000,
+      "interval": "1",
+      "open": 2053.5,
+      "high": 2053.5,
+      "low": 2053.5,
+      "close": 2053.5,
+      "volume": 1.0,
+      "turnover": 0.0,
+      "confirm": true,
+      "timestamp": 1774224300000
+    },
+    {
+      "start": 1774224360000,
+      "end": 1774224420000,
+      "interval": "1",
+      "open": 2048.65,
+      "high": 2048.65,
+      "low": 2048.65,
+      "close": 2048.65,
+      "volume": 16.0,
+      "turnover": 0.0,
+      "confirm": true,
+      "timestamp": 1774224360000
     }
   ]
 }
