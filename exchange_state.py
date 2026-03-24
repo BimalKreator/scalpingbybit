@@ -88,6 +88,9 @@ def _empty_tracker() -> dict[str, Any]:
         "local_close_reason": "",
         "base_risk_dist": 0.0,
         "last_entry_time": 0.0,
+        "paper_fee_pct": None,
+        "paper_fee_on_entry": None,
+        "paper_fee_on_exit": None,
     }
 
 

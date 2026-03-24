@@ -25,6 +25,9 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "trailingSlEnabled": False,
     "partialTpEnabled": False,
     "breakevenBufferPct": 0.05,
+    "feePct": 0.05,
+    "feeOnEntry": True,
+    "feeOnExit": False,
 }
 
 STRATEGY_NAME = "3_bearish_trend"

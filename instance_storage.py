@@ -35,6 +35,9 @@ EXECUTION_DEFAULT_PARAMS: dict[str, float | bool] = {
     "trailingSlEnabled": True,
     "partialTpEnabled": True,
     "breakevenBufferPct": 0.05,
+    "feePct": 0.05,
+    "feeOnEntry": True,
+    "feeOnExit": False,
 }
 
 WEAK_MOMENTUM_DEFAULT_PARAMS: dict = {
@@ -267,7 +270,6 @@ def _strip_params_unused_by_strategy(strategy_type: str, params: dict) -> dict:
             "nCandles",
             "mCandles",
             "slMaxPoints",
-            "tpMultiplier",
         ):
             p.pop(k, None)
     return p

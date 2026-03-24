@@ -546,6 +546,21 @@
     }
 
     /** Weak Momentum: sizing + dynamic SL max/min/decay + TP/min profit + breakeven / partial TP */
+    function paperFeeBlock(p) {
+      p = p || {};
+      return (
+        '<p class="text-xs font-semibold text-slate-400 mt-3">Paper / virtual fees (this instance)</p>' +
+        '<p class="text-[10px] text-slate-500 mb-2">Applied to notional (price × size) on close. Default matches common scalper offers: fee on entry only.</p>' +
+        '<div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">' +
+        numFieldL('Fee %', 'feePct', p.feePct, 0.05, '0.01') +
+        '</div>' +
+        '<div class="flex flex-wrap gap-4 text-xs text-slate-300 mt-2">' +
+        chkFieldL('Apply fee on entry', 'feeOnEntry', p.feeOnEntry, true) +
+        chkFieldL('Apply fee on exit', 'feeOnExit', p.feeOnExit, false) +
+        '</div>'
+      );
+    }
+
     function weakMomentumExecutionBlock(p) {
       p = p || {};
       return (
@@ -563,7 +578,8 @@
         '<div class="flex flex-wrap gap-4 text-xs text-slate-300 mt-2">' +
         chkFieldL('Trailing breakeven (half-TP)', 'trailingSlEnabled', p.trailingSlEnabled, true) +
         chkFieldL('Partial TP', 'partialTpEnabled', p.partialTpEnabled, true) +
-        '</div>'
+        '</div>' +
+        paperFeeBlock(p)
       );
     }
 
@@ -590,7 +606,8 @@
         '<div class="flex flex-wrap gap-4 text-xs text-slate-300 mt-2">' +
         chkFieldL('Trailing breakeven (half-TP)', 'trailingSlEnabled', p.trailingSlEnabled, true) +
         chkFieldL('Partial TP', 'partialTpEnabled', p.partialTpEnabled, true) +
-        '</div>'
+        '</div>' +
+        paperFeeBlock(p)
       );
     }
 
@@ -607,17 +624,18 @@
         numFieldL('M — max bars after setup', 'mCandles', p.mCandles, 10) +
         numFieldL('SL max risk (points)', 'slMaxPoints', p.slMaxPoints, 100) +
         numFieldL('TP multiplier (× risk)', 'tpMultiplier', p.tpMultiplier, 2) +
-        '</div>'
+        '</div>' +
+        paperFeeBlock(p)
       );
     }
 
-    /** Single Candle: last closed bar direction; absolute SL from points; time exit after fill. */
+    /** Single Candle: last closed bar direction; absolute SL from points; optional risk-based TP + candle time exit. */
     function singleCandleExecutionBlock(p) {
       p = p || {};
       var tm = p.tradeMode != null && p.tradeMode !== '' ? String(p.tradeMode) : 'Both';
       return (
         '<p class="text-xs font-semibold text-slate-400 mt-3">Single Candle</p>' +
-        '<p class="text-[10px] text-slate-500 mb-2">Bullish bar → long, bearish → short (doji skipped). SL from signal open vs entry; dummy far TP for exchange; bot exits right after fill.</p>' +
+        '<p class="text-[10px] text-slate-500 mb-2">Bullish bar → long, bearish → short (doji skipped). SL from signal open vs entry. Optional target TP = entry ± (|entry−SL| × multiplier). If off, far dummy TP so the primary exit is candle close (SL still applies).</p>' +
         '<div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">' +
         '<label class="block text-slate-400">Trade mode<select data-p="tradeMode" class="mt-1 w-full rounded-lg bg-slate-900 border border-slate-600 px-2 py-1.5 text-sm text-white">' +
         ['Both', 'Long', 'Short'].map(function (x) {
@@ -627,7 +645,12 @@
         numFieldL('SL max (points)', 'slPoints', p.slPoints, 100) +
         numFieldL('Trade capital (USD)', 'tradeCapitalUsd', p.tradeCapitalUsd, 100) +
         numFieldL('Leverage (×)', 'leverage', p.leverage, 5) +
-        '</div>'
+        numFieldL('TP multiplier (× risk)', 'tpMultiplier', p.tpMultiplier, 2, '0.1') +
+        '</div>' +
+        '<div class="flex flex-wrap gap-4 text-xs text-slate-300 mt-2">' +
+        chkFieldL('Use Target', 'useTarget', p.useTarget, false) +
+        '</div>' +
+        paperFeeBlock(p)
       );
     }
 
@@ -683,9 +706,10 @@
         '</div>';
     }
 
-    function numFieldL(label, key, val, defv) {
+    function numFieldL(label, key, val, defv, stepOpt) {
       var v = val != null && val !== '' ? val : defv;
-      return '<label class="block text-slate-400">' + escAttr(label) + '<input data-p="' + escAttr(key) + '" type="number" step="any" value="' + escAttr(v) + '" class="mt-1 w-full rounded-lg bg-slate-900 border border-slate-600 px-2 py-1.5 text-sm text-white"/></label>';
+      var st = stepOpt !== undefined && stepOpt !== null ? String(stepOpt) : 'any';
+      return '<label class="block text-slate-400">' + escAttr(label) + '<input data-p="' + escAttr(key) + '" type="number" step="' + escAttr(st) + '" value="' + escAttr(v) + '" class="mt-1 w-full rounded-lg bg-slate-900 border border-slate-600 px-2 py-1.5 text-sm text-white"/></label>';
     }
 
     function chkFieldL(label, key, val, defaultOn) {

@@ -3,7 +3,8 @@ Single Candle — latest closed bar direction (Buy/Sell); stop & reverse on each
 
 LONG if close > open, SHORT if close < open (doji skipped). tradeMode filters side.
 SL is points-based from signal candle open vs entry (evaluator uses close as entry proxy).
-Time flatten is driven in main.py on each new closed-candle WS event, not in evaluate().
+Optional ``useTarget``: TP = entry ± |entry−SL| × tpMultiplier for intrabar TP; else a dummy far TP
+so the primary exit is candle close (main.py), with SL/TP monitoring unchanged.
 """
 
 from __future__ import annotations
@@ -23,7 +24,23 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "trailingSlEnabled": False,
     "partialTpEnabled": False,
     "breakevenBufferPct": 0.05,
+    "feePct": 0.05,
+    "feeOnEntry": True,
+    "feeOnExit": False,
+    "useTarget": False,
+    "tpMultiplier": 2.0,
 }
+
+
+def _bool_param(p: dict, key: str, default: bool) -> bool:
+    v = p.get(key, default)
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    return default
 
 
 def _float_param(p: dict, key: str, default: float) -> float:
@@ -58,17 +75,25 @@ def _ensure_ohlc(df: pd.DataFrame) -> pd.DataFrame | None:
     return out
 
 
-def _far_tp(side: str, entry_proxy: float) -> float:
-    """Dummy TP ~10% away for exchange plumbing; exit is time-based."""
-    px = float(entry_proxy)
+def _dummy_tp_for_plumbing(side: str, entry_proxy: float, sl: float) -> float:
+    """
+    Dummy TP = entry ± 5×(distance from entry to SL) for exchange / tracker plumbing only.
+    Intended exit remains bar-close time flatten in main.py, not this TP level.
+    """
+    ep = float(entry_proxy)
+    slv = float(sl)
     if side == "Buy":
-        return px * 1.10
-    return px * 0.90
+        risk = ep - slv
+        if risk > 0:
+            return ep + 5.0 * risk
+        return ep * 1.10
+    risk = slv - ep
+    if risk > 0:
+        return ep - 5.0 * risk
+    return ep * 0.90
 
 
-def _sl_tp_for_side(
-    side: str, sig_open: float, entry_proxy: float, sl_pts: float
-) -> tuple[float, float]:
+def _sl_for_side(side: str, sig_open: float, entry_proxy: float, sl_pts: float) -> float:
     ep = float(entry_proxy)
     so = float(sig_open)
     sp = float(sl_pts)
@@ -80,8 +105,29 @@ def _sl_tp_for_side(
         sl = max(so, ep + sp)
         if sl <= ep:
             sl = ep + max(sp, 1e-12)
-    tp = _far_tp(side, ep)
-    return sl, tp
+    return sl
+
+
+def _tp_for_single_candle(
+    side: str,
+    entry_proxy: float,
+    sl: float,
+    *,
+    use_target: bool,
+    tp_multiplier: float,
+) -> float:
+    """Real TP from risk × multiplier when use_target; else dummy far TP (candle-close-only mode)."""
+    ep = float(entry_proxy)
+    slv = float(sl)
+    if use_target:
+        actual_risk = abs(ep - slv)
+        if actual_risk <= 0 or not math.isfinite(actual_risk):
+            return _dummy_tp_for_plumbing(side, ep, slv)
+        m = max(float(tp_multiplier), 1e-12)
+        if side == "Buy":
+            return ep + actual_risk * m
+        return ep - actual_risk * m
+    return _dummy_tp_for_plumbing(side, ep, slv)
 
 
 def evaluate(
@@ -110,6 +156,8 @@ def evaluate(
 
     mode = _trade_mode(p)
     sl_pts = _float_param(p, "slPoints", 100.0)
+    use_target = _bool_param(p, "useTarget", False)
+    tp_mult = _float_param(p, "tpMultiplier", 2.0)
 
     row = d.iloc[-1]
     o = float(row["open"])
@@ -130,14 +178,22 @@ def evaluate(
         return out
 
     entry_proxy = c
-    sl_price, tp_price = _sl_tp_for_side(side, o, entry_proxy, sl_pts)
+    sl_price = _sl_for_side(side, o, entry_proxy, sl_pts)
+    tp_price = _tp_for_single_candle(
+        side,
+        entry_proxy,
+        sl_price,
+        use_target=use_target,
+        tp_multiplier=tp_mult,
+    )
     meta = {
         "sl_price": float(sl_price),
         "tp_price": float(tp_price),
         "strategy_name": STRATEGY_NAME,
     }
     out["signal"] = side
-    out["reason"] = f"single_candle {side} O={o:.6f} C={c:.6f} SL={sl_price:.6f} dummy_TP={tp_price:.6f}"
+    tp_note = f"target_TP={tp_price:.6f} (×{tp_mult} risk)" if use_target else f"dummy_TP={tp_price:.6f}"
+    out["reason"] = f"single_candle {side} O={o:.6f} C={c:.6f} SL={sl_price:.6f} {tp_note}"
     sig_row = row.to_dict()
     try:
         cfm = row["confirm"] if "confirm" in row.index else True
@@ -164,6 +220,8 @@ def build_entry_checklists(
     st = dict(state or {})
     mode = _trade_mode(p)
     sl_pts = _float_param(p, "slPoints", 100.0)
+    use_target = _bool_param(p, "useTarget", False)
+    tp_mult = _float_param(p, "tpMultiplier", 2.0)
 
     d = _ensure_ohlc(df if df is not None else pd.DataFrame())
     in_pos = bool(st.get("in_position"))
@@ -210,10 +268,15 @@ def build_entry_checklists(
         },
     ]
 
+    tp_hint = (
+        f"useTarget=ON → TP = entry ± (|entry−SL| × {tp_mult}). "
+        if use_target
+        else "useTarget=OFF → far dummy TP; exit on candle close (or SL). "
+    )
     note = (
         f"tradeMode={mode} slPoints={sl_pts}. "
-        "Live: flatten on each closed candle (WS), then same bar may enter next direction. "
-        "Dummy TP ~10% for exchange only."
+        "Live: flatten on each closed candle (WS) unless flat from TP/SL; then same bar may re-enter. "
+        + tp_hint
     )
     sync: dict[str, Any] = {"engine": STRATEGY_NAME, "rows_in_buffer": len(d)}
     try:

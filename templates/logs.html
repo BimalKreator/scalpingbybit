@@ -111,7 +111,7 @@
                   <th>Lev</th>
                   <th>Margin</th>
                   <th>PnL</th>
-                  <th>Fees</th>
+                  <th>Fee</th>
                   <th>Exit Reason</th>
                 </tr>
               </thead>
@@ -166,6 +166,30 @@
           '<td class="text-white">' + (row.marginUsed !== undefined && row.marginUsed !== '' ? formatNum(row.marginUsed) : '–') + '</td>' +
           '<td class="' + pnlClass + ' fw-medium">' + formatNum(row.closedPnl) + '</td>' +
           '<td class="text-white">' + formatNum(row.fees) + '</td>' +
+          '<td class="text-white">' + (row.exitReason || '–') + '</td>' +
+          '</tr>';
+      }
+
+      function buildVirtualRowHtml(row) {
+        var pnl = Number(row.closedPnl);
+        var pnlClass = pnl >= 0 ? 'text-success' : 'text-danger';
+        var side = (row.side || '').toUpperCase();
+        var sideClass = side === 'BUY' ? 'text-success' : 'text-danger';
+        var strat = (row.strategy_name != null && row.strategy_name !== '') ? row.strategy_name : 'Manual';
+        var feeVal = row.fee != null ? parseFloat(row.fee) : (row.fees != null ? parseFloat(row.fees) : 0);
+        if (isNaN(feeVal)) feeVal = 0;
+        return '<tr>' +
+          '<td class="text-white fw-medium">' + (row.symbol || '–') + '</td>' +
+          '<td class="' + sideClass + ' fw-medium">' + (row.side || '–') + '</td>' +
+          '<td class="text-white fw-medium">' + strat + '</td>' +
+          '<td class="text-white">' + toIST(row.createdTime) + '</td>' +
+          '<td class="text-white">' + toIST(row.updatedTime) + '</td>' +
+          '<td class="text-white">' + (row.avgEntryPrice || '–') + '</td>' +
+          '<td class="text-white">' + (row.avgExitPrice || '–') + '</td>' +
+          '<td class="text-white">' + (row.leverage || '–') + '</td>' +
+          '<td class="text-white">' + (row.marginUsed !== undefined && row.marginUsed !== '' ? formatNum(row.marginUsed) : '–') + '</td>' +
+          '<td class="' + pnlClass + ' fw-medium">' + formatNum(row.closedPnl) + '</td>' +
+          '<td><span class="text-danger">-' + feeVal.toFixed(4) + '</span></td>' +
           '<td class="text-white">' + (row.exitReason || '–') + '</td>' +
           '</tr>';
       }
@@ -232,7 +256,7 @@
             var vlist = Array.isArray(r.data) ? r.data.slice().reverse() : [];
             var vhtml = '';
             vlist.forEach(function (row) {
-              vhtml += buildRowHtml(row);
+              vhtml += buildVirtualRowHtml(row);
             });
             tbodyVirtual.innerHTML = vhtml || '<tr><td colspan="12" class="text-light">No paper trades yet. Enable Virtual Mode and trade from the dashboard.</td></tr>';
             virtualWrap.classList.remove('d-none');

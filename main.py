@@ -805,6 +805,58 @@ def reset_virtual_pnl_and_history(*, reset_balance_to_default: bool = False) -> 
     return out
 
 
+def _virtual_paper_fee_params_from_instance_id(instance_id: str | None) -> tuple[float, bool, bool]:
+    """Paper fee % and entry/exit flags from Strategy Hub instance params (manual / unknown → 0.05, True, False)."""
+    default = (0.05, True, False)
+    iid = str(instance_id or "").strip()
+    if not iid:
+        return default
+    inst = instance_storage.get_instance_by_id(iid)
+    if not inst:
+        return default
+    p = inst.get("params") or {}
+    try:
+        fp = float(p.get("feePct", 0.05))
+    except (TypeError, ValueError):
+        fp = 0.05
+    if not math.isfinite(fp) or fp < 0:
+        fp = 0.05
+    fe = p.get("feeOnEntry", True)
+    if isinstance(fe, str):
+        fe = fe.strip().lower() in ("1", "true", "yes", "on")
+    else:
+        fe = bool(fe)
+    fx = p.get("feeOnExit", False)
+    if isinstance(fx, str):
+        fx = fx.strip().lower() in ("1", "true", "yes", "on")
+    else:
+        fx = bool(fx)
+    return (fp, fe, fx)
+
+
+def _read_virtual_paper_fee_tracker(sym: str) -> tuple[float, bool, bool]:
+    """Fee triple stored at virtual entry; if never set (legacy), use manual defaults."""
+    fallback = (0.05, True, False)
+    tr = xst.tracker(sym, SYMBOL)
+    if (
+        tr.get("paper_fee_pct") is None
+        and tr.get("paper_fee_on_entry") is None
+        and tr.get("paper_fee_on_exit") is None
+    ):
+        return fallback
+    try:
+        fp = float(tr.get("paper_fee_pct", 0.05))
+    except (TypeError, ValueError):
+        fp = 0.05
+    if not math.isfinite(fp) or fp < 0:
+        fp = 0.05
+    fe = tr.get("paper_fee_on_entry")
+    fe = True if fe is None else bool(fe)
+    fx = tr.get("paper_fee_on_exit")
+    fx = False if fx is None else bool(fx)
+    return (fp, fe, fx)
+
+
 def _virtual_linear_pnl_usd(
     entry: float,
     exit_: float,
@@ -843,6 +895,7 @@ def _append_virtual_closed_trade_row(
     exit_reason: str,
     strategy_name: str | None = None,
     trade_symbol: str | None = None,
+    fee: float = 0.0,
 ) -> None:
     try:
         VIRTUAL_CLOSED_TRADES_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -850,6 +903,7 @@ def _append_virtual_closed_trade_row(
         created_ms = int(time.time() * 1000)
         updated_ms = created_ms
         sym_row = _norm_sym(trade_symbol or SYMBOL)
+        fee_f = float(fee) if math.isfinite(float(fee)) else 0.0
         row = {
             "exchange": "Virtual (Paper)",
             "symbol": sym_row,
@@ -861,7 +915,8 @@ def _append_virtual_closed_trade_row(
             "leverage": str(int(lev)) if abs(lev - round(lev)) < 1e-9 else str(lev),
             "marginUsed": "",
             "closedPnl": str(round(float(pnl), 6)),
-            "fees": 0,
+            "fee": round(fee_f, 8),
+            "fees": round(fee_f, 8),
             "exitReason": exit_reason,
             "strategy_name": (strategy_name or "Manual").strip(),
         }
@@ -970,20 +1025,26 @@ def _finalize_virtual_position_close(
     entry = float(entry_raw or 0.0)
     if snap_sz <= 0:
         return
-    pnl = _virtual_linear_pnl_usd(
-        entry, float(exit_price), snap_sz, ps, contract_symbol=sym
-    )
-    update_virtual_wallet(pnl)
+    ex = float(exit_price)
+    gross = _virtual_linear_pnl_usd(entry, ex, snap_sz, ps, contract_symbol=sym)
+    fee_pct, fee_on_entry, fee_on_exit = _read_virtual_paper_fee_tracker(sym)
+    rate = fee_pct / 100.0
+    entry_fee = (entry * snap_sz * rate) if fee_on_entry else 0.0
+    exit_fee = (ex * snap_sz * rate) if fee_on_exit else 0.0
+    total_fee = entry_fee + exit_fee
+    net_pnl = gross - total_fee
+    update_virtual_wallet(net_pnl)
     strat_snap = (_active_trade_strategy_name or "Manual").strip()
     _append_virtual_closed_trade_row(
         entry_price=entry,
-        exit_price=float(exit_price),
+        exit_price=ex,
         qty=snap_sz,
         side=ps,
-        pnl=pnl,
+        pnl=net_pnl,
         exit_reason=exit_reason,
         strategy_name=strat_snap,
         trade_symbol=sym,
+        fee=total_fee,
     )
     if sym == _norm_sym(SYMBOL):
         _monitor_had_position = False
@@ -3384,6 +3445,7 @@ def _xst_record_filled_entry(
         entry=float(ent),
         side=side,
     )
+    _fp, _fe, _fx = _virtual_paper_fee_params_from_instance_id(_active_order_instance_id)
     xst.set_tracker_fields(
         order_sym,
         SYMBOL,
@@ -3405,6 +3467,9 @@ def _xst_record_filled_entry(
         base_risk_dist=abs(float(ent) - float(sl_wide)) / max(float(sl_mx), 1e-12),
         monitor_had_position=True,
         strategy_name=str(_active_trade_strategy_name or "Manual").strip(),
+        paper_fee_pct=float(_fp),
+        paper_fee_on_entry=bool(_fe),
+        paper_fee_on_exit=bool(_fx),
     )
 
 
@@ -4285,6 +4350,7 @@ def register_manual_trade(
             pass
 
     strat_nm = str(_active_trade_strategy_name or "Manual").strip() or "Manual"
+    fp, fe, fx = _virtual_paper_fee_params_from_instance_id(iid)
     try:
         now = float(_entry_time)
         xst.set_tracker_fields(
@@ -4309,6 +4375,9 @@ def register_manual_trade(
             base_risk_dist=float(_base_risk_dist),
             monitor_had_position=True,
             strategy_name=strat_nm,
+            paper_fee_pct=float(fp),
+            paper_fee_on_entry=bool(fe),
+            paper_fee_on_exit=bool(fx),
         )
     except Exception:
         pass

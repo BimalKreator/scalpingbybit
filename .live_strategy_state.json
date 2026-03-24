@@ -3,16 +3,16 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 69164.5,
+      "price": 69251.0,
       "indicators": {
-        "RSI": 51.33,
-        "RSI_SMA": 46.21,
-        "volume_signal_vs_prev": false,
-        "body_size": 23.5,
-        "open": 69188.0,
-        "close": 69164.5,
-        "volume": 8427.0,
-        "Expected_Profit_Pct": 0.1
+        "RSI": 45.47,
+        "RSI_SMA": 65.49,
+        "volume_signal_vs_prev": true,
+        "body_size": 36.0,
+        "open": 69287.0,
+        "close": 69251.0,
+        "volume": 8958.0,
+        "Expected_Profit_Pct": 0.16
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -31,7 +31,7 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": false
+            "met": true
           },
           {
             "name": "RSI < 40.0",
@@ -57,7 +57,7 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": false
+            "met": true
           },
           {
             "name": "RSI > 60.0",
@@ -87,15 +87,15 @@
             },
             {
               "text": "3 consecutive bearish candles (setup cluster, in window)",
-              "met": true
+              "met": false
             },
             {
               "text": "No close above pattern high (\u226410 bars after setup)",
-              "met": true
+              "met": false
             },
             {
               "text": "Pullback: high \u2265 Mid after setup",
-              "met": true
+              "met": false
             },
             {
               "text": "Rejection: current close < last bearish close",
@@ -114,7 +114,7 @@
           "monitor_sync": {
             "engine": "3_bearish_trend",
             "rows_in_buffer": 1000,
-            "conf_bar_start": 1774373040000,
+            "conf_bar_start": 1774375740000,
             "last_signal_start": 1774371600000,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
@@ -135,11 +135,11 @@
             },
             {
               "text": "Latest candle bullish (close > open)",
-              "met": false
+              "met": true
             },
             {
               "text": "SL = min(open, close \u2212 50.0) using close as entry proxy",
-              "met": false
+              "met": true
             }
           ],
           "rules_short": [
@@ -153,61 +153,61 @@
             },
             {
               "text": "Latest candle bearish (close < open)",
-              "met": true
+              "met": false
             },
             {
               "text": "SL = max(open, close + 50.0) using close as entry proxy",
-              "met": true
+              "met": false
             }
           ],
           "note": "tradeMode=Both slPoints=50.0. Live: flatten on each closed candle (WS), then same bar may enter next direction. Dummy TP ~10% for exchange only.",
           "monitor_sync": {
             "engine": "single_candle",
             "rows_in_buffer": 1000,
-            "conf_bar_start": 1774373100000,
-            "last_signal_start": 1774371720000,
+            "conf_bar_start": 1774375860000,
+            "last_signal_start": 1774375860000,
             "autotrade_enabled": true,
-            "order_pending_for_this_conf_bar": false
+            "order_pending_for_this_conf_bar": true
           }
         }
       },
-      "checks_updated_unix": 1774373187.1865716,
+      "checks_updated_unix": 1774375912.0634935,
       "status": "Position Open",
-      "sl_price": 69650.0,
-      "tp_price": 68900.0,
-      "entry_price": 69398.5,
-      "position_size": 14.0,
-      "sl_amount_usd": -3.521,
-      "tp_amount_usd": 6.979,
+      "sl_price": 69201.0,
+      "tp_price": 76176.1,
+      "entry_price": 69251.0,
+      "position_size": 7.0,
+      "sl_amount_usd": -0.35,
+      "tp_amount_usd": 48.4757,
       "position_risk": {
         "open": true,
         "has_levels": true,
-        "side": "Sell",
-        "strategy_name": "Manual",
-        "entry_price": 69398.5,
-        "size": 14.0,
-        "sl_price": 69650.0,
-        "tp_price": 68900.0,
-        "sl_amount_usd": -3.521,
-        "tp_amount_usd": 6.979,
-        "position_value_usd": 194.32,
-        "live_mid": 69398.5,
-        "entry_pct": 33.53,
-        "live_mid_pct": 33.53,
+        "side": "Buy",
+        "strategy_name": "Single Candle 15m",
+        "entry_price": 69251.0,
+        "size": 7.0,
+        "sl_price": 69201.0,
+        "tp_price": 76176.1,
+        "sl_amount_usd": -0.35,
+        "tp_amount_usd": 48.4757,
+        "position_value_usd": 96.95,
+        "live_mid": 69314.0,
+        "entry_pct": 0.72,
+        "live_mid_pct": 1.62,
         "breakeven_buffer_active": false
       },
       "last_signal_candle_start": null,
-      "strategy_name": "Manual",
-      "last_sl_price": 69650.0,
-      "last_tp_price": 68900.0,
-      "last_position_side": "Sell",
-      "tracker_sl_max": 69650.0,
-      "tracker_sl_min": 69650.0,
-      "sl_entry_time_unix": 1774371748.680099,
+      "strategy_name": "Single Candle 15m",
+      "last_sl_price": 69201.0,
+      "last_tp_price": 76176.1,
+      "last_position_side": "Buy",
+      "tracker_sl_max": 69201.0,
+      "tracker_sl_min": 69201.0,
+      "sl_entry_time_unix": 1774375860.28132,
       "sl_breakeven_triggered": false,
       "sl_half_target_exited": false,
-      "sl_half_target_reached": true,
-      "base_risk_dist": 251.5
+      "sl_half_target_reached": false,
+      "base_risk_dist": 50.0
     },
     "ETHUSDT": {
       "symbol": "ETHUSDT",

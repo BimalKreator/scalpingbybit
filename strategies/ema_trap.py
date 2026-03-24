@@ -34,6 +34,9 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "trailingSlEnabled": True,
     "partialTpEnabled": True,
     "breakevenBufferPct": 0.05,
+    "feePct": 0.05,
+    "feeOnEntry": True,
+    "feeOnExit": False,
 }
 
 
