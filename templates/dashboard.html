@@ -300,6 +300,9 @@
                   class="rounded-lg border border-emerald-600/50 bg-emerald-950/40 hover:bg-emerald-900/50 text-emerald-300 text-xs font-medium px-2.5 py-1.5 transition">+ Add funds</button>
                 <button type="button" id="btnVirtualReducePS" title="Reduce virtual USD"
                   class="rounded-lg border border-red-600/50 bg-red-950/40 hover:bg-red-900/50 text-red-300 text-xs font-medium px-2.5 py-1.5 transition">− Reduce</button>
+                <button type="button" id="btnVirtualResetPnlPS" title="Reset cumulative paper P&amp;L and clear trade history"
+                  class="btn btn-sm btn-outline-danger rounded-lg border border-red-600/60 text-red-300 text-xs font-medium px-2.5 py-1.5 hover:bg-red-950/50 transition"
+                  onclick="resetVirtualPnl(); return false;">Reset P&amp;L</button>
               </div>
             </div>
           </div>
@@ -816,7 +819,7 @@
     /** Monotonic guard: detect stuck / empty strategy payloads from cache or bot-down states */
     window.__lastStrategyChecksTs = window.__lastStrategyChecksTs || 0;
 
-    window.dashboardState = { strategy: null, positions: [], lastStrategyError: false, positionsFetchError: false };
+    window.dashboardState = { strategy: null, positions: [], instances: [], lastStrategyError: false, positionsFetchError: false };
 
     var __dashRenderScheduled = false;
     function syncDashboardRender() {
@@ -1099,6 +1102,101 @@
       return s.indexOf('manual') >= 0;
     }
 
+    var __ALLOWED_TF_MIN = { 1: 1, 3: 1, 5: 1, 15: 1, 30: 1, 60: 1, 120: 1, 240: 1 };
+    function timeframeToMinutesJs(tf) {
+      var s = String(tf || '1m').trim().toLowerCase();
+      var m = 1;
+      if (/^\d+m$/.test(s)) m = parseInt(s.slice(0, -1), 10);
+      else if (/^\d+h$/.test(s)) m = parseInt(s.slice(0, -1), 10) * 60;
+      else if (/^\d+$/.test(s)) m = parseInt(s, 10);
+      if (!isFinite(m) || m < 1) m = 1;
+      return __ALLOWED_TF_MIN[m] ? m : 1;
+    }
+
+    function inferTimeframeMinutesFromStrategyName(name) {
+      var s = String(name || '');
+      var m = s.match(/\b(\d+)\s*(m|min|minutes)\b/i);
+      if (m) return timeframeToMinutesJs(m[1] + 'm');
+      var m2 = s.match(/(\d+)\s*m\b/i);
+      if (m2) return timeframeToMinutesJs(m2[1] + 'm');
+      return 0;
+    }
+
+    function resolveCandleTimeframeMins(sym, p) {
+      if (!p) return 0;
+      var rawTf = p.candle_timeframe_mins;
+      if (rawTf != null) {
+        var n = parseInt(String(rawTf), 10);
+        if (isFinite(n) && n > 0) return timeframeToMinutesJs(String(n) + 'm');
+      }
+      var strat = resolveStrategyNameForPosition(p);
+      var instList = window.dashboardState.instances || [];
+      var candidates = [];
+      var i;
+      for (i = 0; i < instList.length; i++) {
+        var ins = instList[i];
+        if (!ins || ins.enabled === false) continue;
+        if (!_symMatches(ins.symbol, sym)) continue;
+        candidates.push(ins);
+      }
+      var inPos = [];
+      for (i = 0; i < candidates.length; i++) {
+        if (candidates[i].state && candidates[i].state.in_position) inPos.push(candidates[i]);
+      }
+      var pool = inPos.length ? inPos : candidates;
+      var words = String(strat || '').toLowerCase().split(/\s+/).filter(function (w) { return w.length > 2; });
+
+      function instScore(inst) {
+        var nm = String(inst.name || '').toLowerCase();
+        var ty = String(inst.strategy_type || '').toLowerCase().replace(/_/g, ' ');
+        var s = 0;
+        var w;
+        for (w = 0; w < words.length; w++) {
+          if (words[w].length > 2 && ty.indexOf(words[w]) >= 0) s += 2;
+        }
+        for (w = 0; w < words.length; w++) {
+          if (words[w].length > 3 && nm.indexOf(words[w]) >= 0) s += 1;
+        }
+        return s;
+      }
+
+      if (pool.length === 1) return timeframeToMinutesJs(pool[0].timeframe);
+      if (pool.length > 1 && strat) {
+        var best = pool[0];
+        var bestSc = instScore(best);
+        for (i = 1; i < pool.length; i++) {
+          var sc = instScore(pool[i]);
+          if (sc > bestSc) { bestSc = sc; best = pool[i]; }
+        }
+        if (bestSc > 0) return timeframeToMinutesJs(best.timeframe);
+      }
+      var fromName = inferTimeframeMinutesFromStrategyName(strat);
+      if (fromName > 0) return fromName;
+      if (pool.length) return timeframeToMinutesJs(pool[0].timeframe);
+      return 0;
+    }
+
+    function formatCandleCountdownMs(ms) {
+      if (!isFinite(ms) || ms < 0) ms = 0;
+      var totalSec = Math.floor(ms / 1000);
+      var mm = Math.floor(totalSec / 60);
+      var ss = totalSec % 60;
+      return String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
+    }
+
+    function tickCandleTimers() {
+      var els = document.querySelectorAll('.candle-timer[data-timeframe]');
+      for (var i = 0; i < els.length; i++) {
+        var el = els[i];
+        var m = parseInt(el.getAttribute('data-timeframe'), 10);
+        if (!isFinite(m) || m <= 0) continue;
+        var period = m * 60000;
+        var nextClose = Math.ceil(Date.now() / period) * period;
+        var remaining = nextClose - Date.now();
+        el.textContent = formatCandleCountdownMs(remaining);
+      }
+    }
+
     function renderPositionLeftHtml(sym, p) {
       if (!p) {
         return '<div class="flex flex-col items-center justify-center min-h-[140px] text-center px-2">' +
@@ -1117,6 +1215,14 @@
       var badgeClass = isManualStrat
         ? 'bg-emerald-500 text-slate-950 border-emerald-200 shadow-emerald-500/30'
         : 'bg-cyan-400 text-slate-950 border-cyan-200 shadow-cyan-500/30';
+      var tfMins = resolveCandleTimeframeMins(sym, p);
+      var candleTimerHtml = '';
+      if (tfMins > 0) {
+        candleTimerHtml =
+          '<span class="candle-timer badge bg-dark text-warning ms-2 inline-flex items-center rounded px-2 py-0.5 text-[10px] font-mono tabular-nums border border-amber-700/50 bg-slate-950 text-amber-300" data-timeframe="' +
+          String(tfMins) +
+          '" title="Time until next candle close (UTC-aligned bar)">--:--</span>';
+      }
       var slNum = extractPositionSl(p);
       var tpNum = extractPositionTp(p);
       var slRaw = formatRiskPriceLabel(slNum);
@@ -1132,6 +1238,7 @@
         (isManualStrat
           ? 'Naked manual: fixed range multipliers (0.5× SL / 2× TP), not Strategy Hub. Link an instance for candle × instance multipliers.'
           : escapeHtmlStr(stratName)) + '">' + escapeHtmlStr(stratLabel) + '</span>' +
+        candleTimerHtml +
         '</div>' +
         '<p class="text-xs text-slate-500">Opened <span class="text-slate-400">' + escapeHtmlUnified(entryTimeIST) + '</span> (IST)</p>' +
         '<div class="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">' +
@@ -1259,6 +1366,7 @@
         html += '</div></div>';
       }
       wrap.innerHTML = bannerHtml + html;
+      tickCandleTimers();
 
       var rows = wrap.querySelectorAll('.unified-token-row');
       for (var ri = 0; ri < rows.length; ri++) {
@@ -1351,15 +1459,24 @@
     /** Polls faster than strategy status; always calls syncDashboardRender() so the left column updates without waiting for /api/strategy/status. */
     async function pollPositions() {
       try {
-        const res = await fetch('/api/positions');
-        const data = await res.json();
-        if (!res.ok || !Array.isArray(data)) {
+        const [resPos, resInst] = await Promise.all([
+          fetch('/api/positions'),
+          fetch('/api/instances'),
+        ]);
+        const data = await resPos.json();
+        if (!resPos.ok || !Array.isArray(data)) {
           window.dashboardState.positions = [];
           window.dashboardState.positionsFetchError = true;
         } else {
           window.dashboardState.positions = data;
           window.dashboardState.positionsFetchError = false;
         }
+        try {
+          if (resInst.ok) {
+            const instJson = await resInst.json();
+            if (Array.isArray(instJson)) window.dashboardState.instances = instJson;
+          }
+        } catch (eInst) { /* keep previous instances */ }
         syncDashboardRender();
       } catch (e) {
         window.dashboardState.positions = [];
@@ -1492,6 +1609,7 @@
 
     setInterval(pollAccount, 2000);
     setInterval(pollPositions, 1000);
+    setInterval(tickCandleTimers, 1000);
     pollAccount();
 
     (function healthPoll() {
@@ -1697,6 +1815,29 @@
         if (btnVirtualReduce) btnVirtualReduce.click();
       });
     }
+
+    async function resetVirtualPnl() {
+      if (!confirm('Reset virtual cumulative P&L to 0 and clear paper trade history? Wallet balance stays the same unless you confirm the next prompt.')) return;
+      var resetBal = confirm('Also reset paper wallet balance to the default starting amount (VIRTUAL_BALANCE from settings)?\n\nCancel = keep current balance.');
+      try {
+        const res = await fetch('/api/virtual/reset-pnl', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reset_balance: !!resetBal }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          var det = data.detail;
+          throw new Error(typeof det === 'string' ? det : JSON.stringify(det || data));
+        }
+        if (!data.ok) throw new Error('Reset failed');
+        showAppToast('Virtual P&L and history reset to 0', false);
+        pollAccount();
+      } catch (e) {
+        showAppToast('Reset failed: ' + (e.message || e), true);
+      }
+    }
+    window.resetVirtualPnl = resetVirtualPnl;
 
     exchangeForm.addEventListener('submit', async function (e) {
       e.preventDefault();

@@ -62,6 +62,7 @@ from main import (
     register_manual_trade,
     reload_active_strategies_from_env,
     reload_strategy_instances_cache,
+    reset_virtual_pnl_and_history,
     set_virtual_balance,
     virtual_market_close_sync,
 )
@@ -647,6 +648,27 @@ async def api_virtual_balance(body: VirtualBalanceBody):
     else:
         new_bal = max(0.0, cur + float(body.amount))
     out = await asyncio.to_thread(set_virtual_balance, new_bal)
+    return {
+        "ok": True,
+        "balance": float(out.get("balance", 0.0)),
+        "total_pnl": float(out.get("total_pnl", 0.0)),
+    }
+
+
+class VirtualResetPnlBody(BaseModel):
+    """If reset_balance is true, balance is set to VIRTUAL_BALANCE from env; else unchanged."""
+
+    reset_balance: bool = False
+
+
+@app.post("/api/virtual/reset-pnl")
+async def api_virtual_reset_pnl(body: VirtualResetPnlBody = VirtualResetPnlBody()):
+    if not _virtual_trading_from_env():
+        raise HTTPException(status_code=400, detail="Enable Virtual Mode first")
+    out = await asyncio.to_thread(
+        reset_virtual_pnl_and_history,
+        reset_balance_to_default=body.reset_balance,
+    )
     return {
         "ok": True,
         "balance": float(out.get("balance", 0.0)),

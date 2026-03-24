@@ -757,6 +757,54 @@ def set_virtual_balance(new_balance: float) -> dict:
     return w
 
 
+def reset_virtual_pnl_and_history(*, reset_balance_to_default: bool = False) -> dict:
+    """
+    Paper mode: set total_pnl to 0, clear logs/virtual_closed_trades.json.
+    If reset_balance_to_default, set balance to VIRTUAL_BALANCE from env; else keep current balance.
+    """
+    load_dotenv(override=True)
+    load_dotenv("env", override=True)
+    default_bal = 1000.0
+    try:
+        default_bal = max(0.0, float(os.getenv("VIRTUAL_BALANCE", "1000.0")))
+    except (TypeError, ValueError):
+        default_bal = 1000.0
+
+    with _virtual_wallet_lock:
+        cur_bal = default_bal
+        if VIRTUAL_WALLET_PATH.is_file():
+            try:
+                with open(VIRTUAL_WALLET_PATH, "r", encoding="utf-8") as f:
+                    raw = _json.load(f)
+                if isinstance(raw, dict):
+                    cur_bal = max(0.0, float(raw.get("balance", default_bal)))
+            except Exception:
+                pass
+        new_bal = default_bal if reset_balance_to_default else cur_bal
+        out = {"balance": round(float(new_bal), 8), "total_pnl": 0.0}
+        try:
+            VIRTUAL_WALLET_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(VIRTUAL_WALLET_PATH, "w", encoding="utf-8") as f:
+                _json.dump(out, f, indent=2)
+        except OSError as e:
+            logging.error("[virtual] reset_pnl could not save wallet: %s", e)
+            raise
+        try:
+            VIRTUAL_CLOSED_TRADES_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(VIRTUAL_CLOSED_TRADES_JSON_PATH, "w", encoding="utf-8") as f:
+                f.write("[]\n")
+        except OSError as e:
+            logging.error("[virtual] reset_pnl could not clear closed trades: %s", e)
+            raise
+
+    logging.info(
+        "[virtual] Reset PnL + history reset_balance_to_default=%s balance=%s",
+        reset_balance_to_default,
+        out["balance"],
+    )
+    return out
+
+
 def _virtual_linear_pnl_usd(
     entry: float,
     exit_: float,
