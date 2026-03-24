@@ -3,39 +3,39 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 69376.0,
+      "price": 69586.0,
       "indicators": {
-        "RSI": 12.3,
-        "RSI_SMA": 36.65,
-        "volume_signal_vs_prev": true,
-        "body_size": 189.5,
-        "open": 69565.5,
-        "close": 69376.0,
-        "volume": 122165.0,
-        "Expected_Profit_Pct": 0.6
+        "RSI": 71.07,
+        "RSI_SMA": 44.45,
+        "volume_signal_vs_prev": false,
+        "body_size": 56.0,
+        "open": 69530.0,
+        "close": 69586.0,
+        "volume": 10916.0,
+        "Expected_Profit_Pct": 0.13
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
         "long": [
           {
             "name": "Signal Candle Bearish (open > close)",
-            "met": true
+            "met": false
           },
           {
             "name": "Previous Candle Bearish",
-            "met": true
+            "met": false
           },
           {
             "name": "Both Bearish",
-            "met": true
+            "met": false
           },
           {
             "name": "Volume: signal > previous",
-            "met": true
+            "met": false
           },
           {
             "name": "RSI < 40.0",
-            "met": true
+            "met": false
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -45,23 +45,23 @@
         "short": [
           {
             "name": "Signal Candle Bullish (close > open)",
-            "met": false
-          },
-          {
-            "name": "Previous Candle Bullish",
-            "met": false
-          },
-          {
-            "name": "Both Bullish",
-            "met": false
-          },
-          {
-            "name": "Volume: signal > previous",
             "met": true
           },
           {
-            "name": "RSI > 60.0",
+            "name": "Previous Candle Bullish",
+            "met": true
+          },
+          {
+            "name": "Both Bullish",
+            "met": true
+          },
+          {
+            "name": "Volume: signal > previous",
             "met": false
+          },
+          {
+            "name": "RSI > 60.0",
+            "met": true
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -95,15 +95,15 @@
             },
             {
               "text": "Pullback: high \u2265 Mid after setup",
-              "met": false
+              "met": true
             },
             {
               "text": "Rejection: current close < last bearish close",
-              "met": true
+              "met": false
             },
             {
               "text": "Volume: current volume > previous bar",
-              "met": true
+              "met": false
             },
             {
               "text": "Entry signal (valid SL/TP)",
@@ -114,15 +114,65 @@
           "monitor_sync": {
             "engine": "3_bearish_trend",
             "rows_in_buffer": 1000,
-            "conf_bar_start": 1774370340000,
-            "last_signal_start": 1774367640000,
+            "conf_bar_start": 1774371060000,
+            "last_signal_start": 1774370700000,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
           }
+        },
+        "inst_1774370475025_224dd4": {
+          "name": "Single Candle 15m",
+          "interval": "1m",
+          "strategy_type": "single_candle",
+          "rules_long": [
+            {
+              "text": "Hub flat or next bar will flatten (stop & reverse on bar close)",
+              "met": true
+            },
+            {
+              "text": "tradeMode allows LONG (Both)",
+              "met": true
+            },
+            {
+              "text": "Latest candle bullish (close > open)",
+              "met": false
+            },
+            {
+              "text": "SL = min(open, close \u2212 50.0) using close as entry proxy",
+              "met": false
+            }
+          ],
+          "rules_short": [
+            {
+              "text": "Hub flat or next bar will flatten (stop & reverse on bar close)",
+              "met": true
+            },
+            {
+              "text": "tradeMode allows SHORT (Both)",
+              "met": true
+            },
+            {
+              "text": "Latest candle bearish (close < open)",
+              "met": true
+            },
+            {
+              "text": "SL = max(open, close + 50.0) using close as entry proxy",
+              "met": true
+            }
+          ],
+          "note": "tradeMode=Both slPoints=50.0. Live: flatten on each closed candle (WS), then same bar may enter next direction. Dummy TP ~10% for exchange only.",
+          "monitor_sync": {
+            "engine": "single_candle",
+            "rows_in_buffer": 1000,
+            "conf_bar_start": 1774371180000,
+            "last_signal_start": 1774371180000,
+            "autotrade_enabled": true,
+            "order_pending_for_this_conf_bar": true
+          }
         }
       },
-      "checks_updated_unix": 1774370432.6227796,
-      "status": "Long Signal",
+      "checks_updated_unix": 1774371183.0808504,
+      "status": "Waiting",
       "sl_price": null,
       "tp_price": null,
       "entry_price": null,
@@ -214,7 +264,7 @@
         ]
       },
       "checks": {},
-      "checks_updated_unix": 1774370432.6093712,
+      "checks_updated_unix": 1774370436.5994298,
       "status": "Waiting",
       "sl_price": null,
       "tp_price": null,

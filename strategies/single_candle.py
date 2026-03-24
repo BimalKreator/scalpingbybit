@@ -138,7 +138,17 @@ def evaluate(
     }
     out["signal"] = side
     out["reason"] = f"single_candle {side} O={o:.6f} C={c:.6f} SL={sl_price:.6f} dummy_TP={tp_price:.6f}"
-    out["signal_row"] = row.to_dict()
+    sig_row = row.to_dict()
+    try:
+        cfm = row["confirm"] if "confirm" in row.index else True
+    except Exception:
+        cfm = True
+    sig_row["closed"] = bool(cfm) if isinstance(cfm, bool) else str(cfm).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    out["signal_row"] = sig_row
     out["sl_price"] = float(sl_price)
     out["tp_price"] = float(tp_price)
     out["meta"] = meta

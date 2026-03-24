@@ -20,9 +20,33 @@
     "state": {
       "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 764,
-      "last_evaluated_start": 1774370340000,
-      "last_signal_start": 1774367640000
+      "bar_seq": 768,
+      "last_evaluated_start": 1774371060000,
+      "last_signal_start": 1774370700000
+    }
+  },
+  {
+    "id": "inst_1774370475025_224dd4",
+    "strategy_type": "single_candle",
+    "name": "Single Candle 15m",
+    "enabled": true,
+    "symbol": "BTCUSDT",
+    "timeframe": "1m",
+    "params": {
+      "tradeMode": "Both",
+      "slPoints": 50,
+      "tradeCapitalUsd": 50,
+      "leverage": 10,
+      "trailingSlEnabled": false,
+      "partialTpEnabled": false,
+      "breakevenBufferPct": 0.05
+    },
+    "state": {
+      "in_position": false,
+      "cooldown_until_bar": 0,
+      "bar_seq": 13,
+      "last_evaluated_start": 1774371180000,
+      "last_signal_start": 1774371180000
     }
   }
 ]

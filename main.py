@@ -4908,6 +4908,20 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
     if len(df_closed) < 1 or _loop is None or _signal_queue is None:
         return
     conf_start = int(df_closed.iloc[-1]["start"])
+    try:
+        _tail_closed_row = df_closed.iloc[-1].to_dict()
+    except Exception:
+        _tail_closed_row = {}
+    is_latest_closed_bar_confirmed = (
+        _is_ws_kline_fully_closed(_tail_closed_row) if _tail_closed_row else False
+    )
+    try:
+        _paper_exit_from_bar = float(_tail_closed_row.get("close") or 0.0)
+    except (TypeError, ValueError):
+        _paper_exit_from_bar = 0.0
+    if not math.isfinite(_paper_exit_from_bar) or _paper_exit_from_bar <= 0:
+        _paper_exit_from_bar = 0.0
+
     sym_row0 = xst.read_position_for_symbol(sym_u, SYMBOL)
     sym_sz0 = float(sym_row0.get("size") or 0)
     symbol_has_open_position = sym_sz0 > 1e-12 or get_open_position(sym_u)
@@ -4931,38 +4945,46 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             "symbol": sym_u,
         }
 
-        # Single Candle: on each new closed candle, flatten first (time exit), then allow same-bar entry (stop & reverse).
+        # Single Candle: flatten only when the *latest row in df_closed* is a confirmed closed bar
+        # AND conf_start advanced past the bar we entered on (avoids time-exit on in-progress ticks).
         allow_entry_despite_open_pos = False
         if strat == "single_candle" and symbol_has_open_position:
             iid = str(inst.get("id") or "").strip()
             aid = str(_active_order_instance_id or "").strip()
             hub_in = bool(st.get("in_position"))
             our_trade = (aid == iid) or (hub_in and (not aid or aid == iid))
-            if our_trade:
+            last_sig_start = int(st.get("last_signal_start") or 0)
+            new_closed_candle_for_exit = (
+                last_sig_start > 0
+                and conf_start > last_sig_start
+                and is_latest_closed_bar_confirmed
+            )
+            if our_trade and new_closed_candle_for_exit:
                 if _is_autotrade_enabled() and not single_candle_close_queued_this_message:
                     label = AVAILABLE_STRATEGIES.get(strat, strat)
                     logging.info(
-                        "[instances] [%s] Single Candle time exit on candle close (%s %dm)",
+                        "[instances] [%s] Single Candle time exit on candle close (%s %dm conf_start=%s last_signal_start=%s)",
                         iid,
                         sym_u,
                         interval_minutes,
+                        conf_start,
+                        last_sig_start,
                     )
                     print(
                         f"[{datetime.now().isoformat()}] ⏹ CLOSE ({sym_u} {interval_minutes}m) "
                         f"[{label}] [{inst.get('name')}] single_candle_candle_close"
                     )
+                    close_meta: dict[str, Any] = {
+                        **meta_base,
+                        "reason": "single_candle_candle_close",
+                    }
+                    if _paper_exit_from_bar > 0:
+                        close_meta["paper_exit_price"] = float(_paper_exit_from_bar)
                     _loop.call_soon_threadsafe(
                         _signal_queue.put_nowait,
-                        (
-                            "close",
-                            {
-                                **meta_base,
-                                "reason": "single_candle_candle_close",
-                            },
-                        ),
+                        ("close", close_meta),
                     )
                     single_candle_close_queued_this_message = True
-                # Same-bar reverse only when autotrade queued a close this tick; else keep global open-position gate.
                 allow_entry_despite_open_pos = (
                     _is_autotrade_enabled() and single_candle_close_queued_this_message
                 )
@@ -5293,7 +5315,9 @@ def handle_kline_message(
             _queue_closed_candle_rows_for_cache(rows, sym_u, interval_minutes=1)
     except Exception as e:
         logging.debug("[candle_cache] WS persist skip: %s", e)
-    _run_strategy_instances_for_kline(sym_u, iv)
+    # Strategy instances use closed bars only — skip on pure in-progress ticks (prevents duplicate signals).
+    if any(_is_ws_kline_fully_closed(r) for r in rows):
+        _run_strategy_instances_for_kline(sym_u, iv)
     if iv == 1:
         buf1m = kline_buffer(sym_u, 1)
         df = pd.DataFrame(buf1m)
@@ -5348,12 +5372,33 @@ async def _async_instance_time_exit_close(meta: dict | None) -> None:
         instance_storage.merge_instance_state(iid, {"in_position": False})
         _patch_instance_state_cache(iid, {"in_position": False})
         return
-    bb, ba, mid, _ = xst.get_orderbook_l1(sym, SYMBOL)
-    trigger = float(mid or 0.0)
-    if trigger <= 0 and bb and ba:
-        trigger = (float(bb) + float(ba)) / 2.0
+    trigger = 0.0
+    if _virtual_trading_enabled():
+        try:
+            pep = m.get("paper_exit_price")
+            if pep is not None:
+                trigger = float(pep)
+        except (TypeError, ValueError):
+            trigger = 0.0
+        if not math.isfinite(trigger) or trigger <= 0:
+            trigger = 0.0
+        else:
+            _, ent_raw, _ = _read_position_for_symbol(sym)
+            ent = float(ent_raw or 0.0)
+            if ent > 0 and (trigger < ent * 0.5 or trigger > ent * 2.0):
+                logging.warning(
+                    "[single_candle] paper_exit_price=%s looks inconsistent with entry=%s; falling back to L1",
+                    trigger,
+                    ent,
+                )
+                trigger = 0.0
     if trigger <= 0:
-        logging.warning("[single_candle] Time exit: no mid for %s", sym)
+        bb, ba, mid, _ = xst.get_orderbook_l1(sym, SYMBOL)
+        trigger = float(mid or 0.0)
+        if trigger <= 0 and bb and ba:
+            trigger = (float(bb) + float(ba)) / 2.0
+    if trigger <= 0:
+        logging.warning("[single_candle] Time exit: no exit price for %s", sym)
         return
     _local_close_reason = "TIME_EXIT"
     try:

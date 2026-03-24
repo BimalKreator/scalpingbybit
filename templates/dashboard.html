@@ -292,6 +292,16 @@
                 <span class="pointer-events-none inline-block h-7 w-7 transform rounded-full bg-white shadow ring-0 transition {% if virtual_trading_enabled %}translate-x-6{% else %}translate-x-1{% endif %}"></span>
               </button>
             </div>
+            <div id="virtualFundsPowerWrap" class="{% if not virtual_trading_enabled %}hidden {% endif %}rounded-xl bg-slate-900/70 border border-slate-600/60 p-4 space-y-2">
+              <p class="text-sm font-medium text-slate-100">Paper wallet</p>
+              <p class="text-xs text-slate-500">Add or remove virtual USD (same as header +/−). Enable Virtual / Paper above first.</p>
+              <div class="flex flex-wrap items-center gap-2">
+                <button type="button" id="btnVirtualAddPS" title="Add virtual USD"
+                  class="rounded-lg border border-emerald-600/50 bg-emerald-950/40 hover:bg-emerald-900/50 text-emerald-300 text-xs font-medium px-2.5 py-1.5 transition">+ Add funds</button>
+                <button type="button" id="btnVirtualReducePS" title="Reduce virtual USD"
+                  class="rounded-lg border border-red-600/50 bg-red-950/40 hover:bg-red-900/50 text-red-300 text-xs font-medium px-2.5 py-1.5 transition">− Reduce</button>
+              </div>
+            </div>
           </div>
         </section>
       </div>
@@ -425,6 +435,8 @@
     function setVirtualUi(on) {
       if (paperBadge) paperBadge.classList.toggle('hidden', !on);
       if (virtualFundsWrap) virtualFundsWrap.classList.toggle('hidden', !on);
+      var vfp = document.getElementById('virtualFundsPowerWrap');
+      if (vfp) vfp.classList.toggle('hidden', !on);
       if (!virtualModeToggle) return;
       virtualModeToggle.setAttribute('aria-checked', on ? 'true' : 'false');
       virtualModeToggle.classList.toggle('bg-amber-500', on);
@@ -1656,6 +1668,9 @@
     }
 
     if (btnVirtualAdd) btnVirtualAdd.addEventListener('click', function () { postVirtualBalanceAdd(); });
+    var btnVirtualAddPS = document.getElementById('btnVirtualAddPS');
+    var btnVirtualReducePS = document.getElementById('btnVirtualReducePS');
+    if (btnVirtualAddPS) btnVirtualAddPS.addEventListener('click', function () { postVirtualBalanceAdd(); });
     if (btnVirtualReduce) btnVirtualReduce.addEventListener('click', function () {
       var raw = window.prompt('Amount to subtract from virtual balance (USD)', '50');
       if (raw === null) return;
@@ -1677,6 +1692,11 @@
         })
         .catch(function (e) { showAppToast('Reduce failed: ' + (e.message || e), true); });
     });
+    if (btnVirtualReducePS) {
+      btnVirtualReducePS.addEventListener('click', function () {
+        if (btnVirtualReduce) btnVirtualReduce.click();
+      });
+    }
 
     exchangeForm.addEventListener('submit', async function (e) {
       e.preventDefault();

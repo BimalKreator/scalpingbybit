@@ -793,5 +793,50 @@
     "fees": 0,
     "exitReason": "Take Profit (paper)",
     "strategy_name": "3 Bearish Trend 15m"
+  },
+  {
+    "exchange": "Virtual (Paper)",
+    "symbol": "BTCUSDT",
+    "side": "SELL",
+    "createdTime": "1774370601427",
+    "updatedTime": "1774370601427",
+    "avgEntryPrice": "69388.5",
+    "avgExitPrice": "69481",
+    "leverage": "5",
+    "marginUsed": "",
+    "closedPnl": "-1.295",
+    "fees": 0,
+    "exitReason": "Manual close (paper)",
+    "strategy_name": "3 Bearish Trend 15m"
+  },
+  {
+    "exchange": "Virtual (Paper)",
+    "symbol": "BTCUSDT",
+    "side": "BUY",
+    "createdTime": "1774370602142",
+    "updatedTime": "1774370602142",
+    "avgEntryPrice": "69481.5",
+    "avgExitPrice": "589",
+    "leverage": "5",
+    "marginUsed": "",
+    "closedPnl": "-482.2475",
+    "fees": 0,
+    "exitReason": "TIME_EXIT (paper)",
+    "strategy_name": "Single Candle 15m"
+  },
+  {
+    "exchange": "Virtual (Paper)",
+    "symbol": "BTCUSDT",
+    "side": "BUY",
+    "createdTime": "1774370641652",
+    "updatedTime": "1774370641652",
+    "avgEntryPrice": "69535",
+    "avgExitPrice": "1973",
+    "leverage": "5",
+    "marginUsed": "",
+    "closedPnl": "-472.934",
+    "fees": 0,
+    "exitReason": "TIME_EXIT (paper)",
+    "strategy_name": "Single Candle 15m"
   }
 ]
