@@ -550,7 +550,7 @@
       p = p || {};
       return (
         '<p class="text-xs font-semibold text-slate-400 mt-3">Paper / virtual fees (this instance)</p>' +
-        '<p class="text-[10px] text-slate-500 mb-2">Applied to notional (price × size) on close. Default matches common scalper offers: fee on entry only.</p>' +
+        '<p class="text-[10px] text-slate-500 mb-2">Fee % is a <strong class="text-slate-400">percent</strong> (0.05 = 0.05% of notional, i.e. ×0.0005). Notional = price × base size (Delta: × contract value). Default: entry fee only.</p>' +
         '<div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">' +
         numFieldL('Fee %', 'feePct', p.feePct, 0.05, '0.01') +
         '</div>' +

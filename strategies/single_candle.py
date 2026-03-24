@@ -75,6 +75,27 @@ def _ensure_ohlc(df: pd.DataFrame) -> pd.DataFrame | None:
     return out
 
 
+def _confirm_value_fully_closed(c: Any) -> bool:
+    """Match main._is_ws_kline_fully_closed semantics (Bybit confirm / REST rows)."""
+    if c is True:
+        return True
+    if c is False:
+        return False
+    s = str(c).strip().lower()
+    return s in ("1", "true", "yes")
+
+
+def _dataframe_only_fully_closed_rows(d: pd.DataFrame) -> pd.DataFrame:
+    """
+    Drop in-progress bars so the signal bar is always the latest *confirmed* candle.
+    Rows without ``confirm`` (e.g. some REST history) are kept.
+    """
+    if d.empty or "confirm" not in d.columns:
+        return d
+    mask = d["confirm"].map(_confirm_value_fully_closed)
+    return d.loc[mask].reset_index(drop=True)
+
+
 def _dummy_tp_for_plumbing(side: str, entry_proxy: float, sl: float) -> float:
     """
     Dummy TP = entry ± 5×(distance from entry to SL) for exchange / tracker plumbing only.
@@ -154,6 +175,11 @@ def evaluate(
         out["reason"] = "invalid_df"
         return out
 
+    d = _dataframe_only_fully_closed_rows(d)
+    if len(d) < 1:
+        out["reason"] = "no_fully_closed_candle"
+        return out
+
     mode = _trade_mode(p)
     sl_pts = _float_param(p, "slPoints", 100.0)
     use_target = _bool_param(p, "useTarget", False)
@@ -162,6 +188,7 @@ def evaluate(
     row = d.iloc[-1]
     o = float(row["open"])
     c = float(row["close"])
+    # Bullish: close > open → Buy. Bearish: close < open → Sell (strict; doji excluded).
     if c > o:
         side = "Buy"
     elif c < o:
@@ -177,11 +204,11 @@ def evaluate(
         out["reason"] = "tradeMode_blocks_short"
         return out
 
-    entry_proxy = c
-    sl_price = _sl_for_side(side, o, entry_proxy, sl_pts)
+    entry_price = float(c)
+    sl_price = _sl_for_side(side, o, entry_price, sl_pts)
     tp_price = _tp_for_single_candle(
         side,
-        entry_proxy,
+        entry_price,
         sl_price,
         use_target=use_target,
         tp_multiplier=tp_mult,
@@ -193,7 +220,9 @@ def evaluate(
     }
     out["signal"] = side
     tp_note = f"target_TP={tp_price:.6f} (×{tp_mult} risk)" if use_target else f"dummy_TP={tp_price:.6f}"
-    out["reason"] = f"single_candle {side} O={o:.6f} C={c:.6f} SL={sl_price:.6f} {tp_note}"
+    out["reason"] = (
+        f"single_candle {side} O={o:.6f} C={entry_price:.6f} SL={sl_price:.6f} {tp_note}"
+    )
     sig_row = row.to_dict()
     try:
         cfm = row["confirm"] if "confirm" in row.index else True
@@ -232,6 +261,16 @@ def build_entry_checklists(
         return {
             "rules_long": [{"text": "Need OHLC history", "met": False}],
             "rules_short": [{"text": "Need OHLC history", "met": False}],
+            "note": note,
+            "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": 0},
+        }
+
+    d = _dataframe_only_fully_closed_rows(d)
+    if len(d) < 1:
+        note = f"tradeMode={mode} slPoints={sl_pts}. No fully closed candle in buffer yet."
+        return {
+            "rules_long": [{"text": "Waiting for a confirmed closed candle", "met": False}],
+            "rules_short": [{"text": "Waiting for a confirmed closed candle", "met": False}],
             "note": note,
             "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": 0},
         }

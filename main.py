@@ -806,7 +806,11 @@ def reset_virtual_pnl_and_history(*, reset_balance_to_default: bool = False) -> 
 
 
 def _virtual_paper_fee_params_from_instance_id(instance_id: str | None) -> tuple[float, bool, bool]:
-    """Paper fee % and entry/exit flags from Strategy Hub instance params (manual / unknown → 0.05, True, False)."""
+    """
+    Paper fee percent and entry/exit flags from Strategy Hub (manual → 0.05, True, False).
+
+    ``feePct`` is stored as a *percent* (e.g. 0.05 means 0.05% → fee multiplier 0.0005), never as a decimal rate.
+    """
     default = (0.05, True, False)
     iid = str(instance_id or "").strip()
     if not iid:
@@ -855,6 +859,25 @@ def _read_virtual_paper_fee_tracker(sym: str) -> tuple[float, bool, bool]:
     fx = tr.get("paper_fee_on_exit")
     fx = False if fx is None else bool(fx)
     return (fp, fe, fx)
+
+
+def _virtual_paper_notional_usd(price: float, qty: float, contract_symbol: str | None = None) -> float:
+    """
+    Dollar notional for fee math: Bybit-style linear uses qty × price (base × USD price).
+    Delta uses qty × contract_value × price (matches _virtual_linear_pnl_usd geometry).
+    """
+    if price <= 0 or qty <= 0:
+        return 0.0
+    sym_u = _norm_sym(contract_symbol or SYMBOL)
+    if USE_DELTA:
+        try:
+            from delta_client import get_delta_contract_value
+
+            cv = float(get_delta_contract_value(sym_u))
+        except Exception:
+            cv = 0.001
+        return float(qty) * cv * float(price)
+    return float(qty) * float(price)
 
 
 def _virtual_linear_pnl_usd(
@@ -1028,9 +1051,18 @@ def _finalize_virtual_position_close(
     ex = float(exit_price)
     gross = _virtual_linear_pnl_usd(entry, ex, snap_sz, ps, contract_symbol=sym)
     fee_pct, fee_on_entry, fee_on_exit = _read_virtual_paper_fee_tracker(sym)
-    rate = fee_pct / 100.0
-    entry_fee = (entry * snap_sz * rate) if fee_on_entry else 0.0
-    exit_fee = (ex * snap_sz * rate) if fee_on_exit else 0.0
+    # feePct in instance UI is a percent: 0.05 => 0.05% => multiplier 0.0005 (not 5%).
+    fee_multiplier = float(fee_pct) / 100.0
+    entry_fee = (
+        (_virtual_paper_notional_usd(entry, snap_sz, sym) * fee_multiplier)
+        if fee_on_entry
+        else 0.0
+    )
+    exit_fee = (
+        (_virtual_paper_notional_usd(ex, snap_sz, sym) * fee_multiplier)
+        if fee_on_exit
+        else 0.0
+    )
     total_fee = entry_fee + exit_fee
     net_pnl = gross - total_fee
     update_virtual_wallet(net_pnl)
@@ -4807,15 +4839,14 @@ def _instance_closed_kline_df(symbol_normalized: str, interval_minutes: int) -> 
     """
     Same closed-bar slice used by instance evaluation and Live Monitor checklists.
     Must stay in sync with _run_strategy_instances_for_kline / evaluate_weak_momentum_instance.
+
+    Always rebuilds from the live kline buffer (no stale cached DataFrame) so the last row
+    cannot lag one WS tick behind the buffer.
     """
     sym_u = _norm_sym(symbol_normalized)
     iv = max(1, int(interval_minutes))
-    key = (sym_u, iv)
-    cached = _CLOSED_KLINE_DF_BY_KEY.get(key)
-    if cached is not None:
-        return cached
     _sync_closed_kline_df_cache(sym_u, iv)
-    return _CLOSED_KLINE_DF_BY_KEY[key]
+    return _CLOSED_KLINE_DF_BY_KEY[(sym_u, iv)]
 
 
 def _weak_momentum_prepare_eval_df(
