@@ -309,6 +309,7 @@
             <option value="ema_trap">EMA Trap + RF</option>
             <option value="weak_momentum_reversal">Weak Momentum Reversal</option>
             <option value="three_bearish_trend">3 Bearish Trend</option>
+            <option value="single_candle">Single Candle</option>
           </select>
           <button type="button" id="btnAddInstance" class="rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium py-2 px-4 transition">
             Add Strategy Instance
@@ -451,7 +452,8 @@
     var STRATEGY_LABELS = {
       ema_trap: 'EMA Trap + RF',
       weak_momentum_reversal: 'Weak Momentum',
-      three_bearish_trend: '3 Bearish Trend'
+      three_bearish_trend: '3 Bearish Trend',
+      single_candle: 'Single Candle'
     };
 
     function hubBadgeClass(on) {
@@ -594,6 +596,26 @@
       );
     }
 
+    /** Single Candle: last closed bar direction; absolute SL from points; time exit after fill. */
+    function singleCandleExecutionBlock(p) {
+      p = p || {};
+      var tm = p.tradeMode != null && p.tradeMode !== '' ? String(p.tradeMode) : 'Both';
+      return (
+        '<p class="text-xs font-semibold text-slate-400 mt-3">Single Candle</p>' +
+        '<p class="text-[10px] text-slate-500 mb-2">Bullish bar → long, bearish → short (doji skipped). SL from signal open vs entry; dummy far TP for exchange; bot exits right after fill.</p>' +
+        '<div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">' +
+        '<label class="block text-slate-400">Trade mode<select data-p="tradeMode" class="mt-1 w-full rounded-lg bg-slate-900 border border-slate-600 px-2 py-1.5 text-sm text-white">' +
+        ['Both', 'Long', 'Short'].map(function (x) {
+          return '<option value="' + x + '"' + (tm === x ? ' selected' : '') + '>' + x + '</option>';
+        }).join('') +
+        '</select></label>' +
+        numFieldL('SL max (points)', 'slPoints', p.slPoints, 100) +
+        numFieldL('Trade capital (USD)', 'tradeCapitalUsd', p.tradeCapitalUsd, 100) +
+        numFieldL('Leverage (×)', 'leverage', p.leverage, 5) +
+        '</div>'
+      );
+    }
+
     function buildInstanceFormHtml(inst) {
       var st = inst.strategy_type || '';
       var p = inst.params || {};
@@ -625,6 +647,10 @@
         adv =
           '<p class="text-xs font-semibold text-slate-400">3 Bearish Trend</p>' +
           threeBearishExecutionBlock(p);
+      } else if (st === 'single_candle') {
+        adv =
+          '<p class="text-xs font-semibold text-slate-400">Single Candle</p>' +
+          singleCandleExecutionBlock(p);
       } else {
         adv =
           '<p class="text-xs font-semibold text-slate-400">Weak Momentum</p>' +
@@ -683,6 +709,10 @@
         var params = {};
         root.querySelectorAll('[data-p]').forEach(function (el) {
           var k = el.getAttribute('data-p');
+          if (el.tagName === 'SELECT') {
+            params[k] = el.value;
+            return;
+          }
           if (el.type === 'checkbox') params[k] = el.checked;
           else if (el.value !== '') params[k] = parseFloat(el.value);
         });

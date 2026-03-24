@@ -19,6 +19,7 @@ from pathlib import Path
 
 import instance_storage
 from strategies import ema_trap
+from strategies import single_candle
 from strategies import three_bearish_trend
 from strategies import STRATEGY_TYPE_LABELS
 
@@ -349,6 +350,18 @@ def _monitor_snapshot_from_params(p: dict, *, strategy_type: str | None = None) 
 
     # 3 Bearish Trend: absolute SL/TP from strategy; no decay, trailing, or partial TP.
     if st == "three_bearish_trend":
+        return {
+            "sl_mx": 1.0,
+            "sl_mn": 1.0,
+            "sl_decay_seconds": 0.0,
+            "partial_tp_enabled": False,
+            "trailing_sl_enabled": False,
+            "breakeven_buffer_pct": max(0.0, _num("breakevenBufferPct", "BREAKEVEN_BUFFER_PCT", 0.05)),
+            "trade_capital_usd": max(1e-12, _num("tradeCapitalUsd", "TRADE_AMOUNT_USD", 100.0)),
+            "leverage": max(1.0, _num("leverage", "LEVERAGE", 5.0)),
+        }
+
+    if st == "single_candle":
         return {
             "sl_mx": 1.0,
             "sl_mn": 1.0,
@@ -1965,6 +1978,9 @@ def build_strict_risk_meta_from_instance_id(instance_id: str | None) -> dict | N
     elif st == "three_bearish_trend":
         out["instance_sl_mult"] = 0.5
         out["instance_tp_mult"] = _pf("tpMultiplier", 2.0)
+    elif st == "single_candle":
+        out["instance_sl_mult"] = 0.5
+        out["instance_tp_mult"] = 2.0
     else:
         out["instance_sl_mult"] = 0.5
         out["instance_tp_mult"] = 2.0
@@ -4800,6 +4816,37 @@ def _rebuild_instance_checks_live_state(symbol_normalized: str) -> None:
                     ),
                 }
             checks[iid] = entry
+        elif strat == "single_candle":
+            built = single_candle.build_entry_checklists(
+                df_closed if len(df_closed) else None,
+                dict(inst.get("params") or {}),
+                st,
+            )
+            entry = {
+                "name": name,
+                "interval": tf,
+                "strategy_type": strat,
+                "rules_long": built.get("rules_long") or [],
+                "rules_short": built.get("rules_short") or [],
+            }
+            if built.get("note"):
+                entry["note"] = built["note"]
+            sync = built.get("sync")
+            if isinstance(sync, dict):
+                try:
+                    cstart = int(df_closed.iloc[-1]["start"]) if len(df_closed) >= 1 else None
+                except (TypeError, ValueError, KeyError):
+                    cstart = None
+                lss = int(st.get("last_signal_start") or 0)
+                entry["monitor_sync"] = {
+                    **sync,
+                    "last_signal_start": lss,
+                    "autotrade_enabled": _is_autotrade_enabled(),
+                    "order_pending_for_this_conf_bar": bool(
+                        cstart is not None and lss == cstart
+                    ),
+                }
+            checks[iid] = entry
         else:
             checks[iid] = {
                 "name": name,
@@ -4858,13 +4905,14 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
     global _loop, _signal_queue
     sym_u = _norm_sym(symbol)
     df_closed = _instance_closed_kline_df(sym_u, interval_minutes)
-    if len(df_closed) < 3 or _loop is None or _signal_queue is None:
+    if len(df_closed) < 1 or _loop is None or _signal_queue is None:
         return
     conf_start = int(df_closed.iloc[-1]["start"])
     sym_row0 = xst.read_position_for_symbol(sym_u, SYMBOL)
     sym_sz0 = float(sym_row0.get("size") or 0)
     symbol_has_open_position = sym_sz0 > 1e-12 or get_open_position(sym_u)
     entry_queued_this_message = False
+    single_candle_close_queued_this_message = False
     for inst in get_strategy_instances():
         if not inst.get("enabled", True):
             continue
@@ -4876,16 +4924,54 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
         st_new = _bump_instance_bar_state(inst["id"], conf_start, st0)
         inst = {**inst, "state": st_new}
         st = st_new
-        if symbol_has_open_position:
-            continue
-        if entry_queued_this_message:
-            continue
         strat = str(inst.get("strategy_type") or "").strip().lower()
-        meta_base = {
+        meta_base: dict[str, Any] = {
             "instance_id": inst["id"],
             "strategy_type": strat,
             "symbol": sym_u,
         }
+
+        # Single Candle: on each new closed candle, flatten first (time exit), then allow same-bar entry (stop & reverse).
+        allow_entry_despite_open_pos = False
+        if strat == "single_candle" and symbol_has_open_position:
+            iid = str(inst.get("id") or "").strip()
+            aid = str(_active_order_instance_id or "").strip()
+            hub_in = bool(st.get("in_position"))
+            our_trade = (aid == iid) or (hub_in and (not aid or aid == iid))
+            if our_trade:
+                if _is_autotrade_enabled() and not single_candle_close_queued_this_message:
+                    label = AVAILABLE_STRATEGIES.get(strat, strat)
+                    logging.info(
+                        "[instances] [%s] Single Candle time exit on candle close (%s %dm)",
+                        iid,
+                        sym_u,
+                        interval_minutes,
+                    )
+                    print(
+                        f"[{datetime.now().isoformat()}] ⏹ CLOSE ({sym_u} {interval_minutes}m) "
+                        f"[{label}] [{inst.get('name')}] single_candle_candle_close"
+                    )
+                    _loop.call_soon_threadsafe(
+                        _signal_queue.put_nowait,
+                        (
+                            "close",
+                            {
+                                **meta_base,
+                                "reason": "single_candle_candle_close",
+                            },
+                        ),
+                    )
+                    single_candle_close_queued_this_message = True
+                # Same-bar reverse only when autotrade queued a close this tick; else keep global open-position gate.
+                allow_entry_despite_open_pos = (
+                    _is_autotrade_enabled() and single_candle_close_queued_this_message
+                )
+
+        if symbol_has_open_position and not allow_entry_despite_open_pos:
+            continue
+        if entry_queued_this_message:
+            continue
+
         signal = None
         reason = ""
         row_dict: dict | None = None
@@ -4912,12 +4998,19 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             signal = ev.get("signal")
             reason = str(ev.get("reason") or "")
             row_dict = ev.get("signal_row")
+        elif strat == "single_candle":
+            ev = single_candle.evaluate(
+                df_closed, dict(inst.get("params") or {}), st
+            )
+            signal = ev.get("signal") if ev else None
+            reason = str((ev or {}).get("reason") or "")
+            row_dict = (ev or {}).get("signal_row")
         else:
             continue
 
         if signal not in ("Buy", "Sell") or row_dict is None:
             continue
-        if bool(st.get("in_position")):
+        if strat != "single_candle" and bool(st.get("in_position")):
             continue
         if int(st.get("last_signal_start") or 0) == conf_start:
             logging.info(
@@ -4936,7 +5029,7 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
         if not _is_autotrade_enabled():
             print(
                 f"[instances] Signal for {inst.get('name')} ({inst.get('id')}) but Auto Trade is OFF — "
-                "not consuming this bar; turn Auto Trade ON to enter on the next closed bar."
+                "not consuming this bar; turn Auto Trade ON to enter on the next closed candle."
             )
             continue
         # Dedup: only after we are about to queue (avoids locking the bar when autotrade was off).
@@ -4952,6 +5045,16 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             if isinstance(sub, dict):
                 meta.update(sub)
         elif strat == "three_bearish_trend" and isinstance(ev, dict):
+            if ev.get("sl_price") is not None and ev.get("tp_price") is not None:
+                meta["sl_price"] = float(ev["sl_price"])
+                meta["tp_price"] = float(ev["tp_price"])
+            sn = ev.get("strategy_name")
+            if sn:
+                meta["strategy_name"] = str(sn)
+        elif strat == "single_candle" and isinstance(ev, dict):
+            sub = ev.get("meta") if isinstance(ev.get("meta"), dict) else None
+            if sub:
+                meta.update(sub)
             if ev.get("sl_price") is not None and ev.get("tp_price") is not None:
                 meta["sl_price"] = float(ev["sl_price"])
                 meta["tp_price"] = float(ev["tp_price"])
@@ -5225,6 +5328,41 @@ def handle_kline_message(
     _flush_live_state_file_with_tracker()
 
 
+async def _async_instance_time_exit_close(meta: dict | None) -> None:
+    """Market-close for Single Candle time exit when a new candle closes (queued from _run_strategy_instances_for_kline)."""
+    global _local_close_reason
+    m = dict(meta or {})
+    iid = str(m.get("instance_id") or "").strip()
+    sym = _norm_sym(str(m.get("symbol") or SYMBOL))
+    if not iid:
+        return
+    aid = str(_active_order_instance_id or "").strip()
+    if aid and aid != iid:
+        logging.info(
+            "[single_candle] Time exit skipped: active instance %s != %s",
+            aid,
+            iid,
+        )
+        return
+    if not get_open_position(sym):
+        instance_storage.merge_instance_state(iid, {"in_position": False})
+        _patch_instance_state_cache(iid, {"in_position": False})
+        return
+    bb, ba, mid, _ = xst.get_orderbook_l1(sym, SYMBOL)
+    trigger = float(mid or 0.0)
+    if trigger <= 0 and bb and ba:
+        trigger = (float(bb) + float(ba)) / 2.0
+    if trigger <= 0:
+        logging.warning("[single_candle] Time exit: no mid for %s", sym)
+        return
+    _local_close_reason = "TIME_EXIT"
+    try:
+        xst.tracker_update(sym, SYMBOL, local_close_reason="TIME_EXIT")
+    except Exception:
+        pass
+    await _async_local_sl_tp_close(trigger, sym)
+
+
 async def _signal_consumer() -> None:
     """Consume entry signals from queue and run async chunk order + SL/TP."""
     global _signal_queue
@@ -5234,6 +5372,12 @@ async def _signal_consumer() -> None:
         _set_health_ok("Bot is running smoothly")
         try:
             item = await _signal_queue.get()
+            if item[0] == "close":
+                meta_close = item[1] if len(item) >= 2 else {}
+                await _async_instance_time_exit_close(
+                    meta_close if isinstance(meta_close, dict) else {}
+                )
+                continue
             if item[0] != "entry":
                 continue
             meta: dict | None = None

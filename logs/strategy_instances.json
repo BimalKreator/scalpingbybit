@@ -1,69 +1,28 @@
 [
   {
-    "id": "inst_1774111627580_0eb580",
-    "strategy_type": "ema_trap",
-    "name": "EMA Trap 3m",
+    "id": "inst_1774233116839_e7ca59",
+    "strategy_type": "three_bearish_trend",
+    "name": "3 Bearish Trend 15m",
     "enabled": true,
     "symbol": "BTCUSDT",
     "timeframe": "3m",
     "params": {
-      "emaLength": 40,
-      "rsiLength": 20,
-      "rsiOversold": 40,
-      "rsiOverbought": 60,
-      "slMultiplier": 0.5,
+      "nCandles": 3,
+      "mCandles": 10,
+      "slMaxPoints": 250,
       "tpMultiplier": 2,
-      "minProfitPerc": 0.08,
-      "rangeLength": 21,
-      "rangeMultiplier": 1,
-      "enableReverse": false,
-      "cooldownCandles": 0,
-      "trendFilter": false,
-      "maxCandleAtrMult": 3,
-      "minVolatilityAtrMult": 0.15,
       "tradeCapitalUsd": 100,
       "leverage": 10,
-      "breakevenBufferPct": 0.02,
-      "trailingSlEnabled": true,
-      "partialTpEnabled": true
+      "trailingSlEnabled": false,
+      "partialTpEnabled": false,
+      "breakevenBufferPct": 0.05
     },
     "state": {
       "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 658,
-      "last_evaluated_start": 1774233000000,
-      "last_signal_start": 1774211580000
-    }
-  },
-  {
-    "id": "inst_1774208289286_185d8e",
-    "strategy_type": "ema_trap",
-    "name": "ETH EMA Trap 3m",
-    "enabled": true,
-    "symbol": "ETHUSDT",
-    "timeframe": "3m",
-    "params": {
-      "emaLength": 10,
-      "rsiLength": 5,
-      "rsiOversold": 40,
-      "rsiOverbought": 60,
-      "slMultiplier": 0.5,
-      "tpMultiplier": 2,
-      "minProfitPerc": 0.08,
-      "rangeLength": 17,
-      "rangeMultiplier": 1,
-      "tradeCapitalUsd": 100,
-      "leverage": 10,
-      "trailingSlEnabled": true,
-      "partialTpEnabled": true,
-      "breakevenBufferPct": 0.02
-    },
-    "state": {
-      "in_position": false,
-      "cooldown_until_bar": 0,
-      "bar_seq": 120,
-      "last_evaluated_start": 1774233000000,
-      "last_signal_start": 1774224360000
+      "bar_seq": 764,
+      "last_evaluated_start": 1774370340000,
+      "last_signal_start": 1774367640000
     }
   }
 ]

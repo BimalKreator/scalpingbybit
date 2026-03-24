@@ -53,6 +53,7 @@
             class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none transition">
             <option value="weak_momentum_reversal">Weak Momentum Reversal</option>
             <option value="ema_trap">EMA Trap + Range Filter</option>
+            <option value="single_candle">Single Candle</option>
           </select>
         </div>
         <p class="text-xs text-slate-500">OHLCV is read from <code class="text-slate-400">logs/market_data_{SYMBOL}_1m.json</code> (local bot cache; legacy <code class="text-slate-400">market_data_1m.json</code> if symbol matches). No exchange fetch during backtest.</p>
@@ -207,6 +208,33 @@
         <p class="text-xs text-slate-500">EMA Trap backtests do not apply post-SL reversals (same as live).</p>
       </div>
 
+      <div id="params-single-candle" class="hidden bg-slate-900/80 rounded-2xl p-5 border border-slate-800 space-y-4">
+        <h2 class="text-sm font-semibold text-slate-200">Single Candle — parameters</h2>
+        <div>
+          <label for="sc_tradeMode" class="block text-xs font-medium text-slate-400 mb-1">Trade mode</label>
+          <select id="sc_tradeMode" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white">
+            <option value="Both" selected>Both</option>
+            <option value="Long">Long</option>
+            <option value="Short">Short</option>
+          </select>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label for="sc_slPoints" class="block text-xs font-medium text-slate-400 mb-1">SL points</label>
+            <input type="number" id="sc_slPoints" value="100" min="0" step="any" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
+          </div>
+          <div>
+            <label for="sc_tradeCapitalUsd" class="block text-xs font-medium text-slate-400 mb-1">Trade capital (USD)</label>
+            <input type="number" id="sc_tradeCapitalUsd" value="100" min="1" step="any" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
+          </div>
+          <div>
+            <label for="sc_leverage" class="block text-xs font-medium text-slate-400 mb-1">Leverage</label>
+            <input type="number" id="sc_leverage" value="5" min="1" step="any" class="w-full rounded-xl bg-slate-800 border border-slate-700 px-4 py-3 text-white" />
+          </div>
+        </div>
+        <p class="text-xs text-slate-500">Fill at next bar open; exit at that bar close or SL if touched (same as engine).</p>
+      </div>
+
       <div id="optimizeSection" class="bg-slate-900/80 rounded-2xl p-5 border border-slate-800 space-y-4">
         <h2 class="text-sm font-semibold text-slate-200">Optimization (grid search)</h2>
         <div>
@@ -304,6 +332,8 @@
       var st = document.getElementById('backtestStrategy').value;
       document.getElementById('params-weak-momentum').classList.toggle('hidden', st !== 'weak_momentum_reversal');
       document.getElementById('params-ema-trap').classList.toggle('hidden', st !== 'ema_trap');
+      var sc = document.getElementById('params-single-candle');
+      if (sc) sc.classList.toggle('hidden', st !== 'single_candle');
       var opt = document.getElementById('optimizeSection');
       if (opt) opt.classList.toggle('hidden', st !== 'weak_momentum_reversal');
     }
@@ -347,7 +377,7 @@
           trade_amount_usd = params.tradeCapitalUsd;
           leverage = params.leverage;
           allow_reversal = document.getElementById('allow_reversal').checked;
-        } else {
+        } else if (strategy_type === 'ema_trap') {
           params = {
             emaLength: parseInt(document.getElementById('ema_emaLength').value, 10) || 20,
             rsiLength: parseInt(document.getElementById('ema_rsiLength').value, 10) || 14,
@@ -368,6 +398,21 @@
           trade_amount_usd = params.tradeCapitalUsd;
           leverage = params.leverage;
           allow_reversal = false;
+        } else if (strategy_type === 'single_candle') {
+          params = {
+            tradeMode: (document.getElementById('sc_tradeMode') || { value: 'Both' }).value || 'Both',
+            slPoints: numEl(document.getElementById('sc_slPoints'), 100),
+            tradeCapitalUsd: numEl(document.getElementById('sc_tradeCapitalUsd'), 100),
+            leverage: numEl(document.getElementById('sc_leverage'), 5)
+          };
+          trade_amount_usd = params.tradeCapitalUsd;
+          leverage = params.leverage;
+          allow_reversal = false;
+        } else {
+          params = {};
+          trade_amount_usd = 100;
+          leverage = 5;
+          allow_reversal = true;
         }
         const payload = {
           strategy_type: strategy_type,

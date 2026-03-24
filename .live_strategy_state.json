@@ -3,16 +3,16 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 68236.5,
+      "price": 69376.0,
       "indicators": {
-        "RSI": 84.13,
-        "RSI_SMA": 71.75,
-        "volume_signal_vs_prev": false,
-        "body_size": 5.5,
-        "open": 68242.0,
-        "close": 68236.5,
-        "volume": 7568.0,
-        "Expected_Profit_Pct": 0.07
+        "RSI": 12.3,
+        "RSI_SMA": 36.65,
+        "volume_signal_vs_prev": true,
+        "body_size": 189.5,
+        "open": 69565.5,
+        "close": 69376.0,
+        "volume": 122165.0,
+        "Expected_Profit_Pct": 0.6
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -23,19 +23,19 @@
           },
           {
             "name": "Previous Candle Bearish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bearish",
-            "met": false
+            "met": true
           },
           {
             "name": "Volume: signal > previous",
-            "met": false
+            "met": true
           },
           {
             "name": "RSI < 40.0",
-            "met": false
+            "met": true
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -49,7 +49,7 @@
           },
           {
             "name": "Previous Candle Bullish",
-            "met": true
+            "met": false
           },
           {
             "name": "Both Bullish",
@@ -57,11 +57,11 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": false
+            "met": true
           },
           {
             "name": "RSI > 60.0",
-            "met": true
+            "met": false
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -70,58 +70,59 @@
         ]
       },
       "checks": {
-        "inst_1774111627580_0eb580": {
-          "name": "EMA Trap 3m",
+        "inst_1774233116839_e7ca59": {
+          "name": "3 Bearish Trend 15m",
           "interval": "3m",
-          "strategy_type": "ema_trap",
+          "strategy_type": "three_bearish_trend",
           "rules_long": [
             {
-              "text": "Prev Close < EMA Low",
-              "met": false
-            },
-            {
-              "text": "Prev RSI < 40.0",
-              "met": false
-            },
-            {
-              "text": "Curr Close > EMA Low",
-              "met": true
-            },
-            {
-              "text": "Range Filter Uptrend",
-              "met": false
-            },
-            {
-              "text": "Expected Profit >= 0.08%",
+              "text": "3 Bearish Trend is SHORT-only \u2014 no long entries",
               "met": false
             }
           ],
           "rules_short": [
             {
-              "text": "Prev Close > EMA High",
+              "text": "Instance flat & no exchange position",
               "met": true
             },
             {
-              "text": "Prev RSI > 60.0",
+              "text": "3 consecutive bearish candles (setup cluster, in window)",
+              "met": true
+            },
+            {
+              "text": "No close above pattern high (\u226410 bars after setup)",
+              "met": true
+            },
+            {
+              "text": "Pullback: high \u2265 Mid after setup",
               "met": false
             },
             {
-              "text": "Curr Close < EMA High",
-              "met": false
+              "text": "Rejection: current close < last bearish close",
+              "met": true
             },
             {
-              "text": "Range Filter Downtrend",
-              "met": false
+              "text": "Volume: current volume > previous bar",
+              "met": true
             },
             {
-              "text": "Expected Profit >= 0.08%",
+              "text": "Entry signal (valid SL/TP)",
               "met": false
             }
-          ]
+          ],
+          "note": "n=3 m=10 slMaxPts=250.0 tp\u00d72.0. Absolute stops; trailing & partial TP disabled.",
+          "monitor_sync": {
+            "engine": "3_bearish_trend",
+            "rows_in_buffer": 1000,
+            "conf_bar_start": 1774370340000,
+            "last_signal_start": 1774367640000,
+            "autotrade_enabled": true,
+            "order_pending_for_this_conf_bar": false
+          }
         }
       },
-      "checks_updated_unix": 1774233095.0868213,
-      "status": "Waiting",
+      "checks_updated_unix": 1774370432.6227796,
+      "status": "Long Signal",
       "sl_price": null,
       "tp_price": null,
       "entry_price": null,
@@ -146,16 +147,16 @@
     },
     "ETHUSDT": {
       "symbol": "ETHUSDT",
-      "price": 2066.9,
+      "price": 2122.15,
       "indicators": {
-        "RSI": 83.68,
-        "RSI_SMA": 72.94,
-        "volume_signal_vs_prev": false,
-        "body_size": 0.6,
-        "open": 2067.5,
-        "close": 2066.9,
-        "volume": 17716.0,
-        "Expected_Profit_Pct": 0.17
+        "RSI": 15.05,
+        "RSI_SMA": 33.53,
+        "volume_signal_vs_prev": true,
+        "body_size": 3.6,
+        "open": 2125.75,
+        "close": 2122.15,
+        "volume": 136646.0,
+        "Expected_Profit_Pct": 0.4
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -174,11 +175,11 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": false
+            "met": true
           },
           {
             "name": "RSI < 40.0",
-            "met": false
+            "met": true
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -200,11 +201,11 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": false
+            "met": true
           },
           {
             "name": "RSI > 60.0",
-            "met": true
+            "met": false
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -212,58 +213,8 @@
           }
         ]
       },
-      "checks": {
-        "inst_1774208289286_185d8e": {
-          "name": "ETH EMA Trap 3m",
-          "interval": "3m",
-          "strategy_type": "ema_trap",
-          "rules_long": [
-            {
-              "text": "Prev Close < EMA Low",
-              "met": false
-            },
-            {
-              "text": "Prev RSI < 40.0",
-              "met": false
-            },
-            {
-              "text": "Curr Close > EMA Low",
-              "met": true
-            },
-            {
-              "text": "Range Filter Uptrend",
-              "met": false
-            },
-            {
-              "text": "Expected Profit >= 0.08%",
-              "met": false
-            }
-          ],
-          "rules_short": [
-            {
-              "text": "Prev Close > EMA High",
-              "met": true
-            },
-            {
-              "text": "Prev RSI > 60.0",
-              "met": true
-            },
-            {
-              "text": "Curr Close < EMA High",
-              "met": false
-            },
-            {
-              "text": "Range Filter Downtrend",
-              "met": false
-            },
-            {
-              "text": "Expected Profit >= 0.08%",
-              "met": false
-            }
-          ]
-        }
-      },
-      "checks_updated_unix": 1774233094.6368353,
+      "checks": {},
+      "checks_updated_unix": 1774370432.6093712,
       "status": "Waiting",
       "sl_price": null,
       "tp_price": null,

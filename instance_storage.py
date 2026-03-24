@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 
 from strategies.ema_trap import DEFAULT_PARAMS as EMA_TRAP_DEFAULTS
+from strategies.single_candle import DEFAULT_PARAMS as SINGLE_CANDLE_DEFAULTS
 from strategies.three_bearish_trend import DEFAULT_PARAMS as THREE_BEARISH_DEFAULTS
 
 ROOT = Path(__file__).resolve().parent
@@ -169,6 +170,8 @@ def default_params_for_type(strategy_type: str) -> dict:
         return dict(EMA_TRAP_DEFAULTS)
     if st == "three_bearish_trend":
         return dict(THREE_BEARISH_DEFAULTS)
+    if st == "single_candle":
+        return dict(SINGLE_CANDLE_DEFAULTS)
     return dict(WEAK_MOMENTUM_DEFAULT_PARAMS)
 
 
@@ -195,6 +198,9 @@ def create_instance(strategy_type: str, symbol: str | None = None) -> dict:
         tf = "3m"
     elif st == "three_bearish_trend":
         name = "3 Bearish Trend 15m"
+        tf = "15m"
+    elif st == "single_candle":
+        name = "Single Candle 15m"
         tf = "15m"
     else:
         st = "ema_trap"
@@ -243,6 +249,25 @@ def _strip_params_unused_by_strategy(strategy_type: str, params: dict) -> dict:
             "rangeLength",
             "rangeMultiplier",
             "minProfitPerc",
+        ):
+            p.pop(k, None)
+    if st == "single_candle":
+        for k in (
+            "slMultiplier",
+            "slMultiplierMax",
+            "slMultiplierMin",
+            "slDecaySeconds",
+            "rsiLength",
+            "rsiOversold",
+            "rsiOverbought",
+            "emaLength",
+            "rangeLength",
+            "rangeMultiplier",
+            "minProfitPerc",
+            "nCandles",
+            "mCandles",
+            "slMaxPoints",
+            "tpMultiplier",
         ):
             p.pop(k, None)
     return p

@@ -752,6 +752,198 @@ def _run_backtest_ema_trap(
     }
 
 
+def _run_backtest_single_candle(
+    df: pd.DataFrame,
+    params: dict,
+    *,
+    trade_amount_usd: float = 100.0,
+    leverage: float = 5.0,
+    initial_capital: float = 10000.0,
+    exchange: str = "bybit",
+    contract_value: float | None = None,
+    qty_step: float = 0.001,
+    min_order_qty: float = 0.001,
+    require_equity_for_entry: bool = True,
+) -> dict:
+    """
+    Signal on closed bar i; fill at open of bar i+1; exit at close of bar i+1 or SL if tagged intrabar.
+    SL uses signal bar open and actual entry price (post-spread).
+    """
+    from strategies.single_candle import DEFAULT_PARAMS as SC_DEFAULTS
+    from strategies.single_candle import evaluate as sc_evaluate
+
+    p = {**SC_DEFAULTS, **(params or {})}
+    tam = float(p.get("tradeCapitalUsd") or trade_amount_usd)
+    lev = float(p.get("leverage") or leverage)
+    sl_pts = float(p.get("slPoints") or 100.0)
+    if not math.isfinite(sl_pts) or sl_pts <= 0:
+        sl_pts = 100.0
+
+    empty = {
+        "total_pnl": 0.0,
+        "max_drawdown": 0.0,
+        "total_trades": 0,
+        "profitable_trades": 0,
+        "profitable_pct": 0.0,
+        "profit_factor": 0.0,
+        "equity_curve": [],
+        "trades": [],
+        "best_params": {
+            **{k: p.get(k) for k in ("tradeMode", "slPoints", "tradeCapitalUsd", "leverage")},
+            "strategy_type": "single_candle",
+        },
+        "strategy_type": "single_candle",
+    }
+
+    df2 = _df_with_start_column(df)
+    if df2.empty or len(df2) < 2:
+        print(f"[backtest single_candle] skip: len={len(df2)} need>=2")
+        return empty
+
+    ex = (exchange or "bybit").lower()
+    exit_fee_r = _exit_fee_rate(ex)
+    cv = _resolve_contract_value(ex, contract_value)
+    _SPREAD_HALF = 0.00015
+
+    equity = initial_capital
+    t0 = int(df2["timestamp"].iloc[0]) // 1000
+    equity_curve = [{"time": t0, "value": round(initial_capital, 2)}]
+    trades: list[dict] = []
+
+    state: dict = {
+        "in_position": False,
+        "bar_seq": 0,
+        "cooldown_until_bar": 0,
+    }
+
+    i = 0
+    while i < len(df2) - 1:
+        row = df2.iloc[i]
+        ts_sig = int(row["timestamp"])
+        state["bar_seq"] = i
+
+        if require_equity_for_entry and equity < tam:
+            i += 1
+            continue
+
+        sub = df2.iloc[: i + 1]
+        res = sc_evaluate(sub, p, state)
+        sig = res.get("signal")
+        if sig not in ("Buy", "Sell"):
+            i += 1
+            continue
+
+        sig_open = float(row["open"])
+        next_row = df2.iloc[i + 1]
+        ts_exit = int(next_row["timestamp"])
+        o2 = float(next_row["open"])
+        h2 = float(next_row["high"])
+        l2 = float(next_row["low"])
+        c2 = float(next_row["close"])
+
+        if sig == "Buy":
+            entry = o2 * (1.0 + _SPREAD_HALF)
+            sl = min(sig_open, entry - sl_pts)
+            if sl >= entry:
+                sl = entry - max(sl_pts, 1e-12)
+        else:
+            entry = o2 * (1.0 - _SPREAD_HALF)
+            sl = max(sig_open, entry + sl_pts)
+            if sl <= entry:
+                sl = entry + max(sl_pts, 1e-12)
+
+        exit_price: float | None = None
+        exit_reason = "time"
+        if sig == "Buy":
+            if l2 <= sl:
+                exit_price = float(sl)
+                exit_reason = "sl"
+            else:
+                exit_price = c2
+        else:
+            if h2 >= sl:
+                exit_price = float(sl)
+                exit_reason = "sl"
+            else:
+                exit_price = c2
+
+        qty = _qty_like_live(
+            entry,
+            trade_amount_usd=tam,
+            leverage=lev,
+            contract_value=cv,
+            qty_step=qty_step,
+            min_order_qty=min_order_qty,
+        )
+        if qty < min_order_qty:
+            i += 1
+            continue
+
+        if sig == "Buy":
+            gross = (exit_price - entry) * qty
+        else:
+            gross = (entry - float(exit_price)) * qty
+        fee_in = qty * entry * TAKER_ENTRY_FEE
+        fee_out = qty * float(exit_price) * exit_fee_r
+        net_pnl = gross - fee_in - fee_out
+        equity += net_pnl
+        cumulative_pnl = equity - initial_capital
+        trades.append(
+            {
+                "entry_time": ts_sig,
+                "exit_time": ts_exit,
+                "side": sig,
+                "entry_price": round(entry, 4),
+                "exit_price": round(float(exit_price), 4),
+                "qty": round(qty, 6),
+                "pnl": round(net_pnl, 4),
+                "cumulative_pnl": round(cumulative_pnl, 4),
+                "exit_reason": exit_reason,
+                "reversal_leg": False,
+                "strategy": "single_candle",
+            }
+        )
+        equity_curve.append({"time": ts_exit // 1000, "value": round(equity, 2)})
+
+        i += 1
+
+    total_pnl = equity - initial_capital
+    peak = initial_capital
+    max_dd = 0.0
+    for point in equity_curve:
+        v = point["value"]
+        peak = max(peak, v)
+        max_dd = max(max_dd, peak - v)
+    profitable = sum(1 for t in trades if t["pnl"] > 0)
+    gross_profit = sum(t["pnl"] for t in trades if t["pnl"] > 0)
+    gross_loss = abs(sum(t["pnl"] for t in trades if t["pnl"] < 0))
+    profit_factor = gross_profit / gross_loss if gross_loss else (float("inf") if gross_profit else 0.0)
+
+    return {
+        "total_pnl": round(total_pnl, 4),
+        "max_drawdown": round(max_dd, 4),
+        "total_trades": len(trades),
+        "profitable_trades": profitable,
+        "profitable_pct": round(100.0 * profitable / len(trades), 2) if trades else 0.0,
+        "profit_factor": round(profit_factor, 4) if isinstance(profit_factor, float) else profit_factor,
+        "equity_curve": equity_curve,
+        "trades": trades,
+        "final_equity": round(equity, 2),
+        "best_params": {
+            **{k: p.get(k) for k in ("tradeMode", "slPoints", "tradeCapitalUsd", "leverage")},
+            "strategy_type": "single_candle",
+        },
+        "exchange": ex,
+        "strategy_type": "single_candle",
+        "sizing": {
+            "model": "delta_contract_value" if cv else "bybit_linear",
+            "contract_value": cv,
+            "qty_step": qty_step,
+            "min_order_qty": min_order_qty,
+        },
+    }
+
+
 def _run_backtest_weak_momentum(
     df: pd.DataFrame,
     *,
@@ -1161,6 +1353,20 @@ def run_backtest(
             ),
         )
 
+    if st == "single_candle":
+        return _run_backtest_single_candle(
+            df,
+            sp,
+            trade_amount_usd=float(sp.get("tradeCapitalUsd", trade_amount_usd)),
+            leverage=float(sp.get("leverage", leverage)),
+            initial_capital=initial_capital,
+            exchange=exchange,
+            contract_value=contract_value,
+            qty_step=qty_step,
+            min_order_qty=min_order_qty,
+            require_equity_for_entry=require_equity_for_entry,
+        )
+
     def _g(key_snake: str, key_camel: str, default):
         if key_camel in sp and sp[key_camel] is not None:
             return sp[key_camel]
@@ -1293,6 +1499,22 @@ def run_backtest_grid(
         return run_backtest(
             df,
             strategy_type="ema_trap",
+            strategy_params=strategy_params,
+            trade_amount_usd=trade_amount_usd,
+            leverage=leverage,
+            initial_capital=initial_capital,
+            exchange=exchange,
+            allow_reversal=allow_reversal,
+            contract_value=contract_value,
+            qty_step=qty_step,
+            min_order_qty=min_order_qty,
+            require_equity_for_entry=require_equity_for_entry,
+        )
+
+    if st == "single_candle":
+        return run_backtest(
+            df,
+            strategy_type="single_candle",
             strategy_params=strategy_params,
             trade_amount_usd=trade_amount_usd,
             leverage=leverage,
