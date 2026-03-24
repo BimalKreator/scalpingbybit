@@ -3,16 +3,16 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 69437.0,
+      "price": 69527.5,
       "indicators": {
-        "RSI": 68.7,
-        "RSI_SMA": 67.32,
-        "volume_signal_vs_prev": false,
-        "body_size": 4.0,
-        "open": 69441.0,
-        "close": 69437.0,
-        "volume": 7130.0,
-        "Expected_Profit_Pct": 0.06
+        "RSI": 34.11,
+        "RSI_SMA": 66.64,
+        "volume_signal_vs_prev": true,
+        "body_size": 134.5,
+        "open": 69662.0,
+        "close": 69527.5,
+        "volume": 29180.0,
+        "Expected_Profit_Pct": 0.33
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -23,19 +23,19 @@
           },
           {
             "name": "Previous Candle Bearish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bearish",
-            "met": false
+            "met": true
           },
           {
             "name": "Volume: signal > previous",
-            "met": false
+            "met": true
           },
           {
             "name": "RSI < 40.0",
-            "met": false
+            "met": true
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -49,7 +49,7 @@
           },
           {
             "name": "Previous Candle Bullish",
-            "met": true
+            "met": false
           },
           {
             "name": "Both Bullish",
@@ -57,11 +57,11 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": false
+            "met": true
           },
           {
             "name": "RSI > 60.0",
-            "met": true
+            "met": false
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -114,7 +114,7 @@
           "monitor_sync": {
             "engine": "3_bearish_trend",
             "rows_in_buffer": 1000,
-            "conf_bar_start": 1774376820000,
+            "conf_bar_start": 1774377720000,
             "last_signal_start": 1774371600000,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
@@ -135,11 +135,11 @@
             },
             {
               "text": "Latest candle bullish (close > open)",
-              "met": false
+              "met": true
             },
             {
               "text": "SL = min(open, close \u2212 50.0) using close as entry proxy",
-              "met": false
+              "met": true
             }
           ],
           "rules_short": [
@@ -164,36 +164,50 @@
           "monitor_sync": {
             "engine": "single_candle",
             "rows_in_buffer": 1000,
-            "conf_bar_start": 1774376820000,
-            "last_signal_start": 1774376760000,
+            "conf_bar_start": 1774377720000,
+            "last_signal_start": 1774377720000,
             "autotrade_enabled": true,
-            "order_pending_for_this_conf_bar": false
+            "order_pending_for_this_conf_bar": true
           }
         }
       },
-      "checks_updated_unix": 1774376820.162905,
-      "status": "Waiting",
-      "sl_price": null,
-      "tp_price": null,
-      "entry_price": null,
-      "position_size": 0.0,
-      "sl_amount_usd": null,
-      "tp_amount_usd": null,
+      "checks_updated_unix": 1774377730.090278,
+      "status": "Position Open",
+      "sl_price": 69488.5,
+      "tp_price": 69788.5,
+      "entry_price": 69538.5,
+      "position_size": 7.0,
+      "sl_amount_usd": -0.35,
+      "tp_amount_usd": 1.75,
       "position_risk": {
-        "open": false
+        "open": true,
+        "has_levels": true,
+        "side": "Buy",
+        "strategy_name": "Single Candle 15m",
+        "entry_price": 69538.5,
+        "size": 7.0,
+        "sl_price": 69488.5,
+        "tp_price": 69788.5,
+        "sl_amount_usd": -0.35,
+        "tp_amount_usd": 1.75,
+        "position_value_usd": 97.35,
+        "live_mid": 69537.0,
+        "entry_pct": 16.67,
+        "live_mid_pct": 16.17,
+        "breakeven_buffer_active": false
       },
       "last_signal_candle_start": null,
-      "strategy_name": null,
-      "last_sl_price": 0.0,
-      "last_tp_price": 0.0,
-      "last_position_side": "",
-      "tracker_sl_max": 0.0,
-      "tracker_sl_min": 0.0,
-      "sl_entry_time_unix": 0.0,
+      "strategy_name": "Single Candle 15m",
+      "last_sl_price": 69488.5,
+      "last_tp_price": 69788.5,
+      "last_position_side": "Buy",
+      "tracker_sl_max": 69488.5,
+      "tracker_sl_min": 69488.5,
+      "sl_entry_time_unix": 1774377722.3627656,
       "sl_breakeven_triggered": false,
       "sl_half_target_exited": false,
       "sl_half_target_reached": false,
-      "base_risk_dist": 0.0
+      "base_risk_dist": 50.0
     },
     "ETHUSDT": {
       "symbol": "ETHUSDT",

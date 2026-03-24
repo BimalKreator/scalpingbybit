@@ -85,15 +85,53 @@ def _confirm_value_fully_closed(c: Any) -> bool:
     return s in ("1", "true", "yes")
 
 
-def _dataframe_only_fully_closed_rows(d: pd.DataFrame) -> pd.DataFrame:
+def _closed_column_true(v: Any) -> bool:
+    """Strategy / UI ``closed`` flag on a row (bool, 0/1, string)."""
+    if v is True:
+        return True
+    if v is False:
+        return False
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return int(v) != 0
+    s = str(v).strip().lower()
+    return s in ("1", "true", "yes", "on")
+
+
+def _last_confirmed_signal_row(d: pd.DataFrame) -> tuple[pd.Series | None, str]:
     """
-    Drop in-progress bars so the signal bar is always the latest *confirmed* candle.
-    Rows without ``confirm`` (e.g. some REST history) are kept.
+    Last row that is definitively a finished candle — never the first tick of a new bar.
+
+    1) Prefer rows with ``closed`` == True (if column exists).
+    2) Else rows with exchange ``confirm`` closed (if column exists).
+    3) Else assume the last row in ``df`` may be forming: use ``iloc[-2]`` when possible.
     """
-    if d.empty or "confirm" not in d.columns:
-        return d
-    mask = d["confirm"].map(_confirm_value_fully_closed)
-    return d.loc[mask].reset_index(drop=True)
+    if d is None or d.empty:
+        return None, "empty"
+    d = (
+        d.sort_values("start").reset_index(drop=True)
+        if "start" in d.columns
+        else d.reset_index(drop=True)
+    )
+    last_row: pd.Series | None = None
+    how = "unset"
+    if "closed" in d.columns:
+        sub = d.loc[d["closed"].map(_closed_column_true)]
+        if not sub.empty:
+            last_row = sub.iloc[-1]
+            how = "closed_column"
+    if last_row is None and "confirm" in d.columns:
+        sub = d.loc[d["confirm"].map(_confirm_value_fully_closed)]
+        if not sub.empty:
+            last_row = sub.iloc[-1]
+            how = "confirm_column"
+    if last_row is None:
+        if len(d) >= 2:
+            last_row = d.iloc[-2]
+            how = "fallback_penultimate"
+        else:
+            last_row = d.iloc[-1]
+            how = "single_row"
+    return last_row, how
 
 
 def _dummy_tp_for_plumbing(side: str, entry_proxy: float, sl: float) -> float:
@@ -175,9 +213,9 @@ def evaluate(
         out["reason"] = "invalid_df"
         return out
 
-    d = _dataframe_only_fully_closed_rows(d)
-    if len(d) < 1:
-        out["reason"] = "no_fully_closed_candle"
+    row, _pick_how = _last_confirmed_signal_row(d)
+    if row is None:
+        out["reason"] = "no_confirmed_closed_bar"
         return out
 
     mode = _trade_mode(p)
@@ -185,7 +223,6 @@ def evaluate(
     use_target = _bool_param(p, "useTarget", False)
     tp_mult = _float_param(p, "tpMultiplier", 2.0)
 
-    row = d.iloc[-1]
     o = float(row["open"])
     c = float(row["close"])
     # Bullish: close > open → Buy. Bearish: close < open → Sell (strict; doji excluded).
@@ -224,15 +261,13 @@ def evaluate(
         f"single_candle {side} O={o:.6f} C={entry_price:.6f} SL={sl_price:.6f} {tp_note}"
     )
     sig_row = row.to_dict()
+    sig_row["closed"] = True
     try:
-        cfm = row["confirm"] if "confirm" in row.index else True
+        if "confirm" in row.index:
+            cfm = row["confirm"]
+            sig_row["closed"] = bool(_confirm_value_fully_closed(cfm))
     except Exception:
-        cfm = True
-    sig_row["closed"] = bool(cfm) if isinstance(cfm, bool) else str(cfm).strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+        pass
     out["signal_row"] = sig_row
     out["sl_price"] = float(sl_price)
     out["tp_price"] = float(tp_price)
@@ -265,17 +300,17 @@ def build_entry_checklists(
             "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": 0},
         }
 
-    d = _dataframe_only_fully_closed_rows(d)
-    if len(d) < 1:
-        note = f"tradeMode={mode} slPoints={sl_pts}. No fully closed candle in buffer yet."
+    n_buf = len(d)
+    row, _how = _last_confirmed_signal_row(d)
+    if row is None:
+        note = f"tradeMode={mode} slPoints={sl_pts}. No confirmed closed bar to display."
         return {
             "rules_long": [{"text": "Waiting for a confirmed closed candle", "met": False}],
             "rules_short": [{"text": "Waiting for a confirmed closed candle", "met": False}],
             "note": note,
-            "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": 0},
+            "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": n_buf},
         }
 
-    row = d.iloc[-1]
     o, c = float(row["open"]), float(row["close"])
     bull = c > o
     bear = c < o
@@ -317,9 +352,9 @@ def build_entry_checklists(
         "Live: flatten on each closed candle (WS) unless flat from TP/SL; then same bar may re-enter. "
         + tp_hint
     )
-    sync: dict[str, Any] = {"engine": STRATEGY_NAME, "rows_in_buffer": len(d)}
+    sync: dict[str, Any] = {"engine": STRATEGY_NAME, "rows_in_buffer": n_buf}
     try:
-        sync["conf_bar_start"] = int(d.iloc[-1]["start"])
+        sync["conf_bar_start"] = int(row["start"])
     except (TypeError, ValueError, KeyError):
         sync["conf_bar_start"] = None
 

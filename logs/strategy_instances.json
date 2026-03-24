@@ -20,8 +20,8 @@
     "state": {
       "in_position": true,
       "cooldown_until_bar": 0,
-      "bar_seq": 795,
-      "last_evaluated_start": 1774376820000,
+      "bar_seq": 800,
+      "last_evaluated_start": 1774377720000,
       "last_signal_start": 1774371600000
     }
   },
@@ -39,14 +39,19 @@
       "leverage": 10,
       "trailingSlEnabled": false,
       "partialTpEnabled": false,
-      "breakevenBufferPct": 0.05
+      "breakevenBufferPct": 0.05,
+      "tpMultiplier": 5,
+      "useTarget": false,
+      "feePct": 0.05,
+      "feeOnEntry": true,
+      "feeOnExit": false
     },
     "state": {
-      "in_position": false,
+      "in_position": true,
       "cooldown_until_bar": 0,
-      "bar_seq": 88,
-      "last_evaluated_start": 1774376820000,
-      "last_signal_start": 1774376760000
+      "bar_seq": 103,
+      "last_evaluated_start": 1774377720000,
+      "last_signal_start": 1774377720000
     }
   }
 ]

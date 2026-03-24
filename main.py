@@ -4816,15 +4816,19 @@ def _is_autotrade_enabled() -> bool:
 
 
 def _closed_kline_dataframe(buf: list) -> pd.DataFrame:
-    """Drop in-progress tail bar (confirm==False) for strategy evaluation."""
+    """
+    Strategy evaluation: keep only exchange-confirmed closed bars (confirm=True).
+    Dropping only the tail is insufficient if a new bar tick ever appears confirmed=True
+    with stale micro OHLC; filtering the full buffer removes any in-progress row.
+    """
     df = pd.DataFrame(buf)
     if df.empty:
         return df
     df = df.sort_values("start").reset_index(drop=True)
-    last = df.iloc[-1].to_dict()
-    if not _is_ws_kline_fully_closed(last):
-        return df.iloc[:-1].reset_index(drop=True)
-    return df
+    if "confirm" not in df.columns:
+        return df
+    ok = df["confirm"].map(lambda c: _is_ws_kline_fully_closed({"confirm": c}))
+    return df.loc[ok].reset_index(drop=True)
 
 
 def _sync_closed_kline_df_cache(symbol: str, interval_minutes: int) -> None:
@@ -5173,6 +5177,7 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             reason = str(ev.get("reason") or "")
             row_dict = ev.get("signal_row")
         elif strat == "single_candle":
+            # df_closed = only confirmed bars from buffer (see _closed_kline_dataframe).
             ev = single_candle.evaluate(
                 df_closed, dict(inst.get("params") or {}), st
             )
@@ -5186,7 +5191,15 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             continue
         if strat != "single_candle" and bool(st.get("in_position")):
             continue
-        if int(st.get("last_signal_start") or 0) == conf_start:
+        signal_bar_start_for_dedup = conf_start
+        if strat == "single_candle" and isinstance(row_dict, dict):
+            try:
+                _sb = row_dict.get("start")
+                if _sb is not None:
+                    signal_bar_start_for_dedup = int(_sb)
+            except (TypeError, ValueError):
+                signal_bar_start_for_dedup = conf_start
+        if int(st.get("last_signal_start") or 0) == signal_bar_start_for_dedup:
             logging.info(
                 "[instances] Skip %s — already queued signal for conf_start=%s (wait for next candle)",
                 inst.get("id"),
@@ -5207,8 +5220,13 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             )
             continue
         # Dedup: only after we are about to queue (avoids locking the bar when autotrade was off).
-        instance_storage.merge_instance_state(inst["id"], {"last_signal_start": conf_start})
-        _patch_instance_state_cache(inst["id"], {"last_signal_start": conf_start})
+        # single_candle sets signal_bar_start_for_dedup from signal_row["start"]; others keep conf_start.
+        instance_storage.merge_instance_state(
+            inst["id"], {"last_signal_start": signal_bar_start_for_dedup}
+        )
+        _patch_instance_state_cache(
+            inst["id"], {"last_signal_start": signal_bar_start_for_dedup}
+        )
         meta = {**meta_base}
         if strat == "ema_trap":
             sub = ev.get("meta") if isinstance(ev.get("meta"), dict) else None
