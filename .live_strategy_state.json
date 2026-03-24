@@ -3,16 +3,16 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 69586.0,
+      "price": 69472.0,
       "indicators": {
-        "RSI": 71.07,
-        "RSI_SMA": 44.45,
+        "RSI": 42.8,
+        "RSI_SMA": 50.11,
         "volume_signal_vs_prev": false,
-        "body_size": 56.0,
-        "open": 69530.0,
-        "close": 69586.0,
-        "volume": 10916.0,
-        "Expected_Profit_Pct": 0.13
+        "body_size": 41.5,
+        "open": 69430.5,
+        "close": 69472.0,
+        "volume": 12034.0,
+        "Expected_Profit_Pct": 0.19
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -23,7 +23,7 @@
           },
           {
             "name": "Previous Candle Bearish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bearish",
@@ -49,11 +49,11 @@
           },
           {
             "name": "Previous Candle Bullish",
-            "met": true
+            "met": false
           },
           {
             "name": "Both Bullish",
-            "met": true
+            "met": false
           },
           {
             "name": "Volume: signal > previous",
@@ -61,7 +61,7 @@
           },
           {
             "name": "RSI > 60.0",
-            "met": true
+            "met": false
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -99,7 +99,7 @@
             },
             {
               "text": "Rejection: current close < last bearish close",
-              "met": false
+              "met": true
             },
             {
               "text": "Volume: current volume > previous bar",
@@ -114,8 +114,8 @@
           "monitor_sync": {
             "engine": "3_bearish_trend",
             "rows_in_buffer": 1000,
-            "conf_bar_start": 1774371060000,
-            "last_signal_start": 1774370700000,
+            "conf_bar_start": 1774371420000,
+            "last_signal_start": 1774371240000,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
           }
@@ -164,14 +164,14 @@
           "monitor_sync": {
             "engine": "single_candle",
             "rows_in_buffer": 1000,
-            "conf_bar_start": 1774371180000,
-            "last_signal_start": 1774371180000,
+            "conf_bar_start": 1774371420000,
+            "last_signal_start": 1774371420000,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": true
           }
         }
       },
-      "checks_updated_unix": 1774371183.0808504,
+      "checks_updated_unix": 1774371453.5903366,
       "status": "Waiting",
       "sl_price": null,
       "tp_price": null,

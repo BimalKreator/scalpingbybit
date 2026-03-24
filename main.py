@@ -1854,7 +1854,7 @@ async def _confirm_exchange_sl_verified_after_sync(symbol: str | None = None) ->
 def _get_orderbook_l1(symbol: str | None = None) -> tuple[float, float, float, float]:
     """Return (best_bid, best_ask, bid_qty, ask_qty) for ``symbol`` (multi-coin) or legacy globals."""
     sym = _norm_sym(symbol or SYMBOL)
-    bb, ba, bq, aq = xst.orderbook_l1(sym, SYMBOL)
+    bb, ba, bq, aq = xst.orderbook_l1(sym, sym)
     if sym == _norm_sym(SYMBOL) and bb <= 0 and ba <= 0:
         with _orderbook_lock:
             return (best_bid, best_ask, bid_qty, ask_qty)
@@ -4912,9 +4912,6 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
         _tail_closed_row = df_closed.iloc[-1].to_dict()
     except Exception:
         _tail_closed_row = {}
-    is_latest_closed_bar_confirmed = (
-        _is_ws_kline_fully_closed(_tail_closed_row) if _tail_closed_row else False
-    )
     try:
         _paper_exit_from_bar = float(_tail_closed_row.get("close") or 0.0)
     except (TypeError, ValueError):
@@ -4945,21 +4942,28 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             "symbol": sym_u,
         }
 
-        # Single Candle: flatten only when the *latest row in df_closed* is a confirmed closed bar
-        # AND conf_start advanced past the bar we entered on (avoids time-exit on in-progress ticks).
+        # Single Candle: time exit only on WS-confirmed closed bar (signal_row.closed), not on in-progress ticks;
+        # still require a new candle vs entry (conf_start > last_signal_start) so we do not flatten on the entry bar.
         allow_entry_despite_open_pos = False
         if strat == "single_candle" and symbol_has_open_position:
+            ev_sc = single_candle.evaluate(
+                df_closed, dict(inst.get("params") or {}), st
+            )
+            is_kline_closed = False
+            if isinstance(ev_sc, dict):
+                if "signal_row" in ev_sc:
+                    _sr = ev_sc["signal_row"]
+                    if isinstance(_sr, dict):
+                        is_kline_closed = bool(_sr.get("closed", False))
+                elif "closed" in ev_sc:
+                    is_kline_closed = bool(ev_sc["closed"])
             iid = str(inst.get("id") or "").strip()
             aid = str(_active_order_instance_id or "").strip()
             hub_in = bool(st.get("in_position"))
             our_trade = (aid == iid) or (hub_in and (not aid or aid == iid))
             last_sig_start = int(st.get("last_signal_start") or 0)
-            new_closed_candle_for_exit = (
-                last_sig_start > 0
-                and conf_start > last_sig_start
-                and is_latest_closed_bar_confirmed
-            )
-            if our_trade and new_closed_candle_for_exit:
+            new_bar_after_entry = last_sig_start > 0 and conf_start > last_sig_start
+            if our_trade and is_kline_closed and new_bar_after_entry:
                 if _is_autotrade_enabled() and not single_candle_close_queued_this_message:
                     label = AVAILABLE_STRATEGIES.get(strat, strat)
                     logging.info(
@@ -5315,9 +5319,7 @@ def handle_kline_message(
             _queue_closed_candle_rows_for_cache(rows, sym_u, interval_minutes=1)
     except Exception as e:
         logging.debug("[candle_cache] WS persist skip: %s", e)
-    # Strategy instances use closed bars only — skip on pure in-progress ticks (prevents duplicate signals).
-    if any(_is_ws_kline_fully_closed(r) for r in rows):
-        _run_strategy_instances_for_kline(sym_u, iv)
+    _run_strategy_instances_for_kline(sym_u, iv)
     if iv == 1:
         buf1m = kline_buffer(sym_u, 1)
         df = pd.DataFrame(buf1m)
@@ -5393,10 +5395,14 @@ async def _async_instance_time_exit_close(meta: dict | None) -> None:
                 )
                 trigger = 0.0
     if trigger <= 0:
-        bb, ba, mid, _ = xst.get_orderbook_l1(sym, SYMBOL)
-        trigger = float(mid or 0.0)
-        if trigger <= 0 and bb and ba:
+        # get_orderbook_l1 returns (bid, ask, bid_qty, ask_qty) — never treat qty as price.
+        bb, ba, _, _ = xst.get_orderbook_l1(sym, sym)
+        if bb > 0 and ba > 0:
             trigger = (float(bb) + float(ba)) / 2.0
+        elif bb > 0:
+            trigger = float(bb)
+        elif ba > 0:
+            trigger = float(ba)
     if trigger <= 0:
         logging.warning("[single_candle] Time exit: no exit price for %s", sym)
         return
