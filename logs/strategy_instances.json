@@ -1,31 +1,5 @@
 [
   {
-    "id": "inst_1774233116839_e7ca59",
-    "strategy_type": "three_bearish_trend",
-    "name": "3 Bearish Trend 15m",
-    "enabled": true,
-    "symbol": "BTCUSDT",
-    "timeframe": "3m",
-    "params": {
-      "nCandles": 3,
-      "mCandles": 10,
-      "slMaxPoints": 250,
-      "tpMultiplier": 2,
-      "tradeCapitalUsd": 100,
-      "leverage": 10,
-      "trailingSlEnabled": false,
-      "partialTpEnabled": false,
-      "breakevenBufferPct": 0.05
-    },
-    "state": {
-      "in_position": true,
-      "cooldown_until_bar": 0,
-      "bar_seq": 800,
-      "last_evaluated_start": 1774377720000,
-      "last_signal_start": 1774371600000
-    }
-  },
-  {
     "id": "inst_1774370475025_224dd4",
     "strategy_type": "single_candle",
     "name": "Single Candle 15m",
@@ -35,23 +9,36 @@
     "params": {
       "tradeMode": "Both",
       "slPoints": 50,
-      "tradeCapitalUsd": 50,
+      "tradeCapitalUsd": 155,
       "leverage": 10,
       "trailingSlEnabled": false,
       "partialTpEnabled": false,
       "breakevenBufferPct": 0.05,
-      "tpMultiplier": 5,
-      "useTarget": false,
+      "tpMultiplier": 4,
+      "useTarget": true,
       "feePct": 0.05,
       "feeOnEntry": true,
-      "feeOnExit": false
+      "feeOnExit": false,
+      "useConfirmationCandle": false,
+      "useOrderbookVolume": false,
+      "exitOnCandleClose": false,
+      "trailingCandleExit": false,
+      "usePartialExit": true,
+      "partialMovePct": 25,
+      "partialQtyPct": 25,
+      "useTouchEntry": true
     },
     "state": {
       "in_position": true,
       "cooldown_until_bar": 0,
-      "bar_seq": 103,
-      "last_evaluated_start": 1774377720000,
-      "last_signal_start": 1774377720000
+      "bar_seq": 1124,
+      "last_evaluated_start": 1774452360000,
+      "last_signal_start": 1774452120000,
+      "partial_steps_taken": 1,
+      "initial_entry_qty": 21.0,
+      "realized_pnl_current_trade": 0.10797619047619045,
+      "partial_qty_closed_total": 5.0,
+      "breakeven_sl_triggered": false
     }
   }
 ]

@@ -1,10 +1,10 @@
 """
-Single Candle — latest closed bar direction (Buy/Sell); stop & reverse on each subsequent bar close.
+Single Candle — **contrarian**: bullish pattern -> SHORT, bearish pattern -> LONG; bar-close exit in main.
 
-LONG if close > open, SHORT if close < open (doji skipped). tradeMode filters side.
-SL is points-based from signal candle open vs entry (evaluator uses close as entry proxy).
-Optional ``useTarget``: TP = entry ± |entry−SL| × tpMultiplier for intrabar TP; else a dummy far TP
-so the primary exit is candle close (main.py), with SL/TP monitoring unchanged.
+With ``useConfirmationCandle``: both bars must agree in direction (both green or both red), then invert
+to Sell or Buy. Without it: one last closed bar only. Optional ``useTouchEntry``: wait for L1 mid to
+reach the signal candle high (long) or low (short) before signaling entry. Optional ``useOrderbookVolume``:
+Buy needs top-20 bid depth > ask; Sell needs ask > bid. SL/TP from confirmation close/open (or that single bar).
 """
 
 from __future__ import annotations
@@ -29,6 +29,15 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "feeOnExit": False,
     "useTarget": False,
     "tpMultiplier": 2.0,
+    "useConfirmationCandle": True,
+    "useTouchEntry": True,
+    "useOrderbookVolume": False,
+    "exitOnCandleClose": True,
+    "trailingCandleExit": False,
+    "usePartialExit": False,
+    "partialMovePct": 10.0,
+    "partialQtyPct": 10.0,
+    "moveSlToEntryAtHalfTarget": True,
 }
 
 
@@ -85,53 +94,76 @@ def _confirm_value_fully_closed(c: Any) -> bool:
     return s in ("1", "true", "yes")
 
 
-def _closed_column_true(v: Any) -> bool:
-    """Strategy / UI ``closed`` flag on a row (bool, 0/1, string)."""
-    if v is True:
-        return True
-    if v is False:
-        return False
-    if isinstance(v, (int, float)) and not isinstance(v, bool):
-        return int(v) != 0
-    s = str(v).strip().lower()
-    return s in ("1", "true", "yes", "on")
+def _sorted_ohlc_df(df: pd.DataFrame | None) -> pd.DataFrame | None:
+    """Stable ordering for bar selection (same as _ensure_ohlc)."""
+    d = _ensure_ohlc(df if df is not None else pd.DataFrame())
+    return d
 
 
-def _last_confirmed_signal_row(d: pd.DataFrame) -> tuple[pd.Series | None, str]:
+def _extract_signal_and_confirmation_rows(
+    d: pd.DataFrame,
+) -> tuple[pd.Series | None, pd.Series | None]:
     """
-    Last row that is definitively a finished candle — never the first tick of a new bar.
-
-    1) Prefer rows with ``closed`` == True (if column exists).
-    2) Else rows with exchange ``confirm`` closed (if column exists).
-    3) Else assume the last row in ``df`` may be forming: use ``iloc[-2]`` when possible.
+    ``prev_row`` = signal candle, ``target_row`` = confirmation candle (newest closed).
+    Uses the same rules as :func:`evaluate` row extraction (on sorted OHLC ``d``).
     """
-    if d is None or d.empty:
-        return None, "empty"
-    d = (
-        d.sort_values("start").reset_index(drop=True)
-        if "start" in d.columns
-        else d.reset_index(drop=True)
-    )
-    last_row: pd.Series | None = None
-    how = "unset"
+    if len(d) < 3:
+        return None, None
     if "closed" in d.columns:
-        sub = d.loc[d["closed"].map(_closed_column_true)]
-        if not sub.empty:
-            last_row = sub.iloc[-1]
-            how = "closed_column"
-    if last_row is None and "confirm" in d.columns:
-        sub = d.loc[d["confirm"].map(_confirm_value_fully_closed)]
-        if not sub.empty:
-            last_row = sub.iloc[-1]
-            how = "confirm_column"
-    if last_row is None:
-        if len(d) >= 2:
-            last_row = d.iloc[-2]
-            how = "fallback_penultimate"
-        else:
-            last_row = d.iloc[-1]
-            how = "single_row"
-    return last_row, how
+        closed_rows = d[d["closed"] == True]  # noqa: E712
+        if len(closed_rows) < 2:
+            return None, None
+        target_row = closed_rows.iloc[-1]
+        prev_row = closed_rows.iloc[-2]
+    else:
+        target_row = d.iloc[-2]
+        prev_row = d.iloc[-3]
+    return prev_row, target_row
+
+
+def _select_single_candle_target_row(df: pd.DataFrame | None) -> pd.Series | None:
+    """
+    Last fully closed candle for signal math — evaluated on the **live** kline buffer.
+
+    If ``closed`` exists: last row with ``closed == True``. Otherwise assume ``iloc[-1]`` is
+    the in-progress bar and use ``iloc[-2]`` as the confirmed closed candle.
+    Requires at least two rows.
+    """
+    d = _sorted_ohlc_df(df)
+    if d is None or len(d) < 2:
+        return None
+    target_row: pd.Series | None = None
+    if "closed" in d.columns:
+        s = d["closed"]
+        closed_rows = d[s.eq(True) | s.eq(1)]
+        if not closed_rows.empty:
+            target_row = closed_rows.iloc[-1]
+    if target_row is None:
+        target_row = d.iloc[-2]
+    return target_row
+
+
+def target_bar_start_ms(df: pd.DataFrame | None) -> int | None:
+    """``start`` (ms) of the bar :func:`_select_single_candle_target_row` uses."""
+    r = _select_single_candle_target_row(df)
+    if r is None:
+        return None
+    try:
+        return int(r["start"])
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def paper_exit_bar_close(df: pd.DataFrame | None) -> float:
+    """Close price of the same bar as the strategy signal (for paper time-exit)."""
+    r = _select_single_candle_target_row(df)
+    if r is None:
+        return 0.0
+    try:
+        c = float(r["close"])
+        return c if math.isfinite(c) and c > 0 else 0.0
+    except (TypeError, ValueError, KeyError):
+        return 0.0
 
 
 def _dummy_tp_for_plumbing(side: str, entry_proxy: float, sl: float) -> float:
@@ -195,7 +227,11 @@ def evaluate(
     state: dict[str, Any] | None,
 ) -> dict[str, Any]:
     p = {**DEFAULT_PARAMS, **(params or {})}
-    _: dict[str, Any] = dict(state or {})  # hub state; does not gate signals (bar-close exit in main)
+    st_dict = dict(state or {})
+
+    use_conf = str(p.get("useConfirmationCandle", "True")).lower() == "true"
+    use_touch = _bool_param(p, "useTouchEntry", True)
+    use_ob = str(p.get("useOrderbookVolume", "False")).lower() == "true"
 
     out: dict[str, Any] = {
         "signal": None,
@@ -208,14 +244,9 @@ def evaluate(
         "state_updates": {},
     }
 
-    d = _ensure_ohlc(df if df is not None else pd.DataFrame())
+    d = _sorted_ohlc_df(df)
     if d is None:
         out["reason"] = "invalid_df"
-        return out
-
-    row, _pick_how = _last_confirmed_signal_row(d)
-    if row is None:
-        out["reason"] = "no_confirmed_closed_bar"
         return out
 
     mode = _trade_mode(p)
@@ -223,26 +254,106 @@ def evaluate(
     use_target = _bool_param(p, "useTarget", False)
     tp_mult = _float_param(p, "tpMultiplier", 2.0)
 
-    o = float(row["open"])
-    c = float(row["close"])
-    # Bullish: close > open → Buy. Bearish: close < open → Sell (strict; doji excluded).
-    if c > o:
-        side = "Buy"
-    elif c < o:
-        side = "Sell"
+    prev_row: pd.Series | None
+    target_row: pd.Series | None
+    sig_open = sig_close = conf_open = conf_close = 0.0
+
+    if use_conf:
+        prev_row, target_row = _extract_signal_and_confirmation_rows(d)
+        if prev_row is None or target_row is None:
+            out["signal"] = "Hold"
+            out["reason"] = "not_enough_data"
+            return out
+        sig_close = float(prev_row["close"])
+        sig_open = float(prev_row["open"])
+        conf_close = float(target_row["close"])
+        conf_open = float(target_row["open"])
+        is_signal_bullish = sig_close > sig_open
+        is_conf_bullish = conf_close > conf_open
+        is_signal_bearish = sig_close < sig_open
+        is_conf_bearish = conf_close < conf_open
+        bull_pattern = is_signal_bullish and is_conf_bullish
+        bear_pattern = is_signal_bearish and is_conf_bearish
+        side: str | None = None
+        if bull_pattern:
+            side = "Sell"
+        elif bear_pattern:
+            side = "Buy"
+        else:
+            out["signal"] = "Hold"
+            out["reason"] = "no_confirmation"
+            return out
     else:
-        out["reason"] = "doji_no_trade"
-        return out
+        prev_row = None
+        target_row = _select_single_candle_target_row(d)
+        if target_row is None:
+            out["signal"] = "Hold"
+            out["reason"] = "not_enough_data"
+            return out
+        conf_open = float(target_row["open"])
+        conf_close = float(target_row["close"])
+        sig_open, sig_close = conf_open, conf_close
+        if conf_close > conf_open:
+            side = "Sell"
+        elif conf_close < conf_open:
+            side = "Buy"
+        else:
+            out["signal"] = "Hold"
+            out["reason"] = "no_confirmation"
+            return out
 
     if side == "Buy" and mode == "Short":
+        out["signal"] = "Hold"
         out["reason"] = "tradeMode_blocks_long"
         return out
     if side == "Sell" and mode == "Long":
+        out["signal"] = "Hold"
         out["reason"] = "tradeMode_blocks_short"
         return out
 
-    entry_price = float(c)
-    sl_price = _sl_for_side(side, o, entry_price, sl_pts)
+    if use_ob and side in ("Buy", "Sell"):
+        import exchange_state as xst
+
+        sym = st_dict.get("symbol", xst.SYMBOL)
+        _bb, _ba, bq, aq = xst.orderbook_l1(sym, sym)
+        bq = float(bq or 0.0)
+        aq = float(aq or 0.0)
+        if side == "Buy" and not (bq > aq):
+            out["signal"] = "Hold"
+            out["reason"] = "orderbook_depth_rejected_long"
+            return out
+        if side == "Sell" and not (aq > bq):
+            out["signal"] = "Hold"
+            out["reason"] = "orderbook_depth_rejected_short"
+            return out
+
+    if use_touch and side in ("Buy", "Sell"):
+        import exchange_state as xst
+
+        sym = st_dict.get("symbol") or xst.SYMBOL
+        sym = str(sym).strip().upper() if sym else str(xst.SYMBOL)
+        bb, ba, _, _ = xst.orderbook_l1(sym, xst.SYMBOL)
+        live_price = 0.0
+        if bb > 0 and ba > 0:
+            live_price = (float(bb) + float(ba)) / 2.0
+        sig_bar = prev_row if (use_conf and prev_row is not None) else target_row
+        try:
+            sig_high = float(sig_bar["high"])
+            sig_low = float(sig_bar["low"])
+        except (TypeError, ValueError, KeyError):
+            sig_high = sig_low = 0.0
+        if live_price > 0 and math.isfinite(sig_high) and math.isfinite(sig_low):
+            if side == "Buy" and live_price < sig_high:
+                out["signal"] = "Hold"
+                out["reason"] = "waiting_for_high_touch"
+                return out
+            if side == "Sell" and live_price > sig_low:
+                out["signal"] = "Hold"
+                out["reason"] = "waiting_for_low_touch"
+                return out
+
+    entry_price = float(conf_close)
+    sl_price = _sl_for_side(side, conf_open, entry_price, sl_pts)
     tp_price = _tp_for_single_candle(
         side,
         entry_price,
@@ -254,17 +365,30 @@ def evaluate(
         "sl_price": float(sl_price),
         "tp_price": float(tp_price),
         "strategy_name": STRATEGY_NAME,
+        "use_confirmation_candle": use_conf,
+        "use_orderbook_volume": use_ob,
+        "signal_open": float(sig_open),
+        "signal_close": float(sig_close),
+        "confirmation_open": float(conf_open),
+        "confirmation_close": float(conf_close),
     }
     out["signal"] = side
     tp_note = f"target_TP={tp_price:.6f} (×{tp_mult} risk)" if use_target else f"dummy_TP={tp_price:.6f}"
-    out["reason"] = (
-        f"single_candle {side} O={o:.6f} C={entry_price:.6f} SL={sl_price:.6f} {tp_note}"
-    )
-    sig_row = row.to_dict()
+    if use_conf:
+        out["reason"] = (
+            f"single_candle contrarian {side} signal O={sig_open:.6f} C={sig_close:.6f} | "
+            f"confirm O={conf_open:.6f} C={entry_price:.6f} SL={sl_price:.6f} {tp_note}"
+        )
+    else:
+        out["reason"] = (
+            f"single_candle contrarian {side} (single bar) O={conf_open:.6f} C={entry_price:.6f} "
+            f"SL={sl_price:.6f} {tp_note}"
+        )
+    sig_row = target_row.to_dict()
     sig_row["closed"] = True
     try:
-        if "confirm" in row.index:
-            cfm = row["confirm"]
+        if "confirm" in target_row.index:
+            cfm = target_row["confirm"]
             sig_row["closed"] = bool(_confirm_value_fully_closed(cfm))
     except Exception:
         pass
@@ -282,6 +406,9 @@ def build_entry_checklists(
 ) -> dict[str, Any]:
     p = {**DEFAULT_PARAMS, **(params or {})}
     st = dict(state or {})
+    use_conf = str(p.get("useConfirmationCandle", "True")).lower() == "true"
+    use_touch = _bool_param(p, "useTouchEntry", True)
+    use_ob = str(p.get("useOrderbookVolume", "False")).lower() == "true"
     mode = _trade_mode(p)
     sl_pts = _float_param(p, "slPoints", 100.0)
     use_target = _bool_param(p, "useTarget", False)
@@ -301,21 +428,67 @@ def build_entry_checklists(
         }
 
     n_buf = len(d)
-    row, _how = _last_confirmed_signal_row(d)
-    if row is None:
-        note = f"tradeMode={mode} slPoints={sl_pts}. No confirmed closed bar to display."
-        return {
-            "rules_long": [{"text": "Waiting for a confirmed closed candle", "met": False}],
-            "rules_short": [{"text": "Waiting for a confirmed closed candle", "met": False}],
-            "note": note,
-            "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": n_buf},
-        }
+    prev_row: pd.Series | None = None
+    target_row: pd.Series | None = None
 
-    o, c = float(row["open"]), float(row["close"])
-    bull = c > o
-    bear = c < o
+    if use_conf:
+        prev_row, target_row = _extract_signal_and_confirmation_rows(d)
+        if prev_row is None or target_row is None:
+            wait = (
+                "Need ≥3 bars in buffer (no `closed` column), or ≥2 rows with `closed==True`."
+                if "closed" in d.columns
+                else "Need ≥3 bars (signal + confirmation + forming bar)."
+            )
+            note = f"tradeMode={mode} slPoints={sl_pts}. {wait}"
+            return {
+                "rules_long": [{"text": wait, "met": False}],
+                "rules_short": [{"text": wait, "met": False}],
+                "note": note,
+                "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": n_buf},
+            }
+    else:
+        target_row = _select_single_candle_target_row(d)
+        if target_row is None:
+            wait = (
+                "Need last closed bar (≥2 rows, or ≥1 row with `closed==True`)."
+                if "closed" in d.columns
+                else "Need ≥2 bars (closed bar + forming)."
+            )
+            note = f"tradeMode={mode} slPoints={sl_pts}. {wait}"
+            return {
+                "rules_long": [{"text": wait, "met": False}],
+                "rules_short": [{"text": wait, "met": False}],
+                "note": note,
+                "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": n_buf},
+            }
+
+    sig_o = float(prev_row["open"]) if prev_row is not None else float(target_row["open"])
+    sig_c = float(prev_row["close"]) if prev_row is not None else float(target_row["close"])
+    conf_o = float(target_row["open"])
+    conf_c = float(target_row["close"])
+    is_signal_bullish = sig_c > sig_o
+    is_conf_bullish = conf_c > conf_o
+    is_signal_bearish = sig_c < sig_o
+    is_conf_bearish = conf_c < conf_o
+    bull_pattern = is_signal_bullish and is_conf_bullish
+    bear_pattern = is_signal_bearish and is_conf_bearish
+    if not use_conf:
+        bull_pattern = is_conf_bullish
+        bear_pattern = is_conf_bearish
+
     long_allowed = mode in ("Both", "Long")
     short_allowed = mode in ("Both", "Short")
+
+    def _bar_label(prefix: str, o: float, c: float) -> str:
+        if c > o:
+            return f"{prefix}: bullish (O={o:.6f} C={c:.6f})"
+        if c < o:
+            return f"{prefix}: bearish (O={o:.6f} C={c:.6f})"
+        return f"{prefix}: doji (O={o:.6f} C={c:.6f})"
+
+    sig_txt = _bar_label("Signal candle", sig_o, sig_c)
+    conf_txt = _bar_label("Confirmation candle", conf_o, conf_c)
+    single_txt = _bar_label("Last closed candle", conf_o, conf_c)
 
     rules_long = [
         {
@@ -323,11 +496,6 @@ def build_entry_checklists(
             "met": flat_ok or in_pos,
         },
         {"text": f"tradeMode allows LONG ({mode})", "met": long_allowed},
-        {"text": "Latest candle bullish (close > open)", "met": bull},
-        {
-            "text": f"SL = min(open, close − {sl_pts}) using close as entry proxy",
-            "met": bool(bull and long_allowed),
-        },
     ]
     rules_short = [
         {
@@ -335,28 +503,176 @@ def build_entry_checklists(
             "met": flat_ok or in_pos,
         },
         {"text": f"tradeMode allows SHORT ({mode})", "met": short_allowed},
-        {"text": "Latest candle bearish (close < open)", "met": bear},
-        {
-            "text": f"SL = max(open, close + {sl_pts}) using close as entry proxy",
-            "met": bool(bear and short_allowed),
-        },
     ]
+
+    if use_conf:
+        rules_long.extend(
+            [
+                {"text": sig_txt, "met": is_signal_bearish},
+                {"text": conf_txt, "met": is_conf_bearish},
+                {
+                    "text": "Pattern is Bearish -> Triggering LONG (Buy)",
+                    "met": bear_pattern,
+                },
+                {
+                    "text": (
+                        f"SL = min(conf_open, conf_close − {sl_pts}) — confirmation candle; "
+                        "entry proxy = conf close (long)"
+                    ),
+                    "met": bool(bear_pattern and long_allowed),
+                },
+            ]
+        )
+        rules_short.extend(
+            [
+                {"text": sig_txt, "met": is_signal_bullish},
+                {"text": conf_txt, "met": is_conf_bullish},
+                {
+                    "text": "Pattern is Bullish -> Triggering SHORT (Sell)",
+                    "met": bull_pattern,
+                },
+                {
+                    "text": (
+                        f"SL = max(conf_open, conf_close + {sl_pts}) — confirmation candle; "
+                        "entry proxy = conf close (short)"
+                    ),
+                    "met": bool(bull_pattern and short_allowed),
+                },
+            ]
+        )
+    else:
+        rules_long.extend(
+            [
+                {"text": single_txt, "met": is_conf_bearish},
+                {
+                    "text": "Pattern is Bearish -> Triggering LONG (Buy)",
+                    "met": bear_pattern,
+                },
+                {
+                    "text": f"SL = min(open, close − {sl_pts}); entry proxy = close (long)",
+                    "met": bool(bear_pattern and long_allowed),
+                },
+            ]
+        )
+        rules_short.extend(
+            [
+                {"text": single_txt, "met": is_conf_bullish},
+                {
+                    "text": "Pattern is Bullish -> Triggering SHORT (Sell)",
+                    "met": bull_pattern,
+                },
+                {
+                    "text": f"SL = max(open, close + {sl_pts}); entry proxy = close (short)",
+                    "met": bool(bull_pattern and short_allowed),
+                },
+            ]
+        )
+
+    bq = aq = 0.0
+    if use_ob:
+        import exchange_state as xst
+
+        sym = st.get("symbol", xst.SYMBOL)
+        _bb, _ba, bq, aq = xst.orderbook_l1(sym, sym)
+        bq = float(bq or 0.0)
+        aq = float(aq or 0.0)
+        rules_long.append(
+            {
+                "text": (
+                    f"Orderbook (LONG): Top 20 bid vol > Top 20 ask vol "
+                    f"(bid {bq:g} vs ask {aq:g}) — required for Buy"
+                ),
+                "met": bq > aq,
+            }
+        )
+        rules_short.append(
+            {
+                "text": (
+                    f"Orderbook (SHORT): Top 20 ask vol > Top 20 bid vol "
+                    f"(ask {aq:g} vs bid {bq:g}) — required for Sell"
+                ),
+                "met": aq > bq,
+            }
+        )
+
+    if use_touch:
+        import exchange_state as xst
+
+        sym_ck = st.get("symbol") or xst.SYMBOL
+        sym_ck = str(sym_ck).strip().upper() if sym_ck else str(xst.SYMBOL)
+        bb_ck, ba_ck, _, _ = xst.orderbook_l1(sym_ck, xst.SYMBOL)
+        live_ck = 0.0
+        if bb_ck > 0 and ba_ck > 0:
+            live_ck = (float(bb_ck) + float(ba_ck)) / 2.0
+        sig_bar_ck = prev_row if (use_conf and prev_row is not None) else target_row
+        try:
+            sig_high_ck = float(sig_bar_ck["high"])
+            sig_low_ck = float(sig_bar_ck["low"])
+        except (TypeError, ValueError, KeyError):
+            sig_high_ck = sig_low_ck = 0.0
+        rules_long.append(
+            {
+                "text": (
+                    f"Live price ≥ signal high (touch entry) — high={sig_high_ck:g}, "
+                    f"mid={live_ck:g}"
+                ),
+                "met": live_ck > 0 and live_ck >= sig_high_ck,
+            }
+        )
+        rules_short.append(
+            {
+                "text": (
+                    f"Live price ≤ signal low (touch entry) — low={sig_low_ck:g}, "
+                    f"mid={live_ck:g}"
+                ),
+                "met": live_ck > 0 and live_ck <= sig_low_ck,
+            }
+        )
 
     tp_hint = (
         f"useTarget=ON → TP = entry ± (|entry−SL| × {tp_mult}). "
         if use_target
         else "useTarget=OFF → far dummy TP; exit on candle close (or SL). "
     )
+    skip_reason = ""
+    if not bull_pattern and not bear_pattern:
+        skip_reason = (
+            " No contrarian entry: need both bars bearish (LONG) or both bullish (SHORT), or mixed/doji "
+            "(no_confirmation)."
+            if use_conf
+            else " No contrarian entry: last bar must be clearly bullish (SHORT) or bearish (LONG); "
+            "doji skips (no_confirmation)."
+        )
+    conf_note = (
+        "Contrarian: bearish alignment -> Buy, bullish -> Sell. Confirmation ON: both bars same color. "
+        if use_conf
+        else "Contrarian: bearish bar -> Buy, bullish bar -> Sell. Confirmation OFF: one closed bar. "
+    )
+    ob_note = "Orderbook volume filter ON. " if use_ob else ""
+    touch_note = (
+        "Touch entry ON: Long after mid ≥ signal high; Short after mid ≤ signal low. "
+        if use_touch
+        else ""
+    )
     note = (
-        f"tradeMode={mode} slPoints={sl_pts}. "
+        f"tradeMode={mode} slPoints={sl_pts}. {conf_note}{touch_note}{ob_note}"
+        f"{skip_reason}"
         "Live: flatten on each closed candle (WS) unless flat from TP/SL; then same bar may re-enter. "
         + tp_hint
     )
     sync: dict[str, Any] = {"engine": STRATEGY_NAME, "rows_in_buffer": n_buf}
     try:
-        sync["conf_bar_start"] = int(row["start"])
+        sync["conf_bar_start"] = int(target_row["start"])
     except (TypeError, ValueError, KeyError):
         sync["conf_bar_start"] = None
+    try:
+        sync["signal_bar_start"] = (
+            int(prev_row["start"])
+            if prev_row is not None
+            else int(target_row["start"])
+        )
+    except (TypeError, ValueError, KeyError):
+        sync["signal_bar_start"] = None
 
     return {
         "rules_long": rules_long,

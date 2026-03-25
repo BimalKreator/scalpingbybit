@@ -111,6 +111,15 @@
       box-shadow: 0 2px 8px rgba(0,0,0,0.4);
       transition: left 0.35s ease;
     }
+    .risk-bar-partial-marks {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      pointer-events: none;
+      z-index: 3;
+    }
     .badge-blink {
       animation: badgeBlink 1s steps(2, start) infinite;
     }
@@ -629,13 +638,13 @@
       );
     }
 
-    /** Single Candle: last closed bar direction; absolute SL from points; optional risk-based TP + candle time exit. */
+    /** Single Candle: optional confirmation candle + optional orderbook volume; SL from points; candle time exit. */
     function singleCandleExecutionBlock(p) {
       p = p || {};
       var tm = p.tradeMode != null && p.tradeMode !== '' ? String(p.tradeMode) : 'Both';
       return (
         '<p class="text-xs font-semibold text-slate-400 mt-3">Single Candle</p>' +
-        '<p class="text-[10px] text-slate-500 mb-2">Bullish bar → long, bearish → short (doji skipped). SL from signal open vs entry. Optional target TP = entry ± (|entry−SL| × multiplier). If off, far dummy TP so the primary exit is candle close (SL still applies).</p>' +
+        '<p class="text-[10px] text-slate-500 mb-2">Contrarian: aligned bearish bars trigger LONG (Buy); aligned bullish bars trigger SHORT (Sell). With confirmation: both bars must match (both red or both green) before inverting. Optional orderbook: top-20 bid vs ask depth must favor your side. Uncheck &quot;Exit on Candle Close&quot; to skip bar-close flatten; optional &quot;Trailing Candle Exit&quot; then closes longs if close &lt; prior low (shorts if close &gt; prior high). SL/TP unchanged. SL from candle open vs entry close; optional TP.</p>' +
         '<div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">' +
         '<label class="block text-slate-400">Trade mode<select data-p="tradeMode" class="mt-1 w-full rounded-lg bg-slate-900 border border-slate-600 px-2 py-1.5 text-sm text-white">' +
         ['Both', 'Long', 'Short'].map(function (x) {
@@ -648,7 +657,20 @@
         numFieldL('TP multiplier (× risk)', 'tpMultiplier', p.tpMultiplier, 2, '0.1') +
         '</div>' +
         '<div class="flex flex-wrap gap-4 text-xs text-slate-300 mt-2">' +
+        chkFieldL('Use Confirmation Candle', 'useConfirmationCandle', p.useConfirmationCandle, true) +
+        chkFieldL('Use Touch Entry (Breakout Signal High/Low)', 'useTouchEntry', p.useTouchEntry, true) +
+        chkFieldL('Use Orderbook Volume', 'useOrderbookVolume', p.useOrderbookVolume, false) +
+        chkFieldL('Exit on Candle Close', 'exitOnCandleClose', p.exitOnCandleClose, true) +
+        chkFieldL('Trailing Candle Exit (Close &lt; Prev Low / Close &gt; Prev High)', 'trailingCandleExit', p.trailingCandleExit, false) +
+        chkFieldL('Use Partial Qty Exit', 'usePartialExit', p.usePartialExit, false) +
         chkFieldL('Use Target', 'useTarget', p.useTarget, false) +
+        '</div>' +
+        '<div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs mt-2">' +
+        numFieldL('Partial step (% of Target Distance)', 'partialMovePct', p.partialMovePct, 10, '0.1') +
+        numFieldL('Exit Qty % (of initial)', 'partialQtyPct', p.partialQtyPct, 10, '1.0') +
+        '</div>' +
+        '<div class="flex flex-wrap gap-4 text-xs text-slate-300 mt-2">' +
+        chkFieldL('Move SL to Entry at Half Target (Breakeven)', 'moveSlToEntryAtHalfTarget', p.moveSlToEntryAtHalfTarget, true) +
         '</div>' +
         paperFeeBlock(p)
       );
@@ -998,7 +1020,7 @@
       return '<div class="rounded-lg bg-slate-900/60 border border-slate-700 p-2 mb-3 text-[11px] text-slate-300 leading-relaxed">' + lines.join(' · ') + '</div>';
     }
 
-    function applyRiskBarInContainer(container, sl, tp, entry, mid, side) {
+    function applyRiskBarInContainer(container, sl, tp, entry, mid, side, posRow) {
       if (!container) return;
       var zSl = container.querySelector('[data-rb="zone-sl"]');
       var zTp = container.querySelector('[data-rb="zone-tp"]');
@@ -1006,6 +1028,7 @@
       var dot = container.querySelector('[data-rb="dot"]');
       var fg = container.querySelector('[data-rb="fill-green"]');
       var fr = container.querySelector('[data-rb="fill-red"]');
+      var marksWrap = container.querySelector('[data-rb="partial-marks"]');
       if (!zSl || !zTp || !eline || !dot || !fg || !fr) return;
       function resetBar() {
         zSl.style.width = '0%';
@@ -1015,6 +1038,7 @@
         dot.style.left = '50%';
         fg.style.display = 'none';
         fr.style.display = 'none';
+        if (marksWrap) marksWrap.innerHTML = '';
       }
       var slF = parseFloat(sl);
       var tpF = parseFloat(tp);
@@ -1051,6 +1075,34 @@
         fr.style.left = Math.min(entryPct, currentPct) + '%';
         fr.style.width = Math.abs(entryPct - currentPct) + '%';
         fg.style.display = 'none';
+      }
+      if (marksWrap) {
+        marksWrap.innerHTML = '';
+        var p = posRow || {};
+        var pm = Number(p.partialMovePct);
+        if (isFinite(pm) && pm > 0 && isFinite(entryF) && entryF > 0 && marksWrap) {
+          /* partialMovePct = % of entry→TP distance (same as backend tp_distance), not % of entry price */
+          var tpDistP = Math.abs(tpF - entryF);
+          if (!isFinite(tpDistP) || tpDistP <= 1e-12) {
+            tpDistP = Number(p.partialTpDistancePoints);
+            if (!isFinite(tpDistP) || tpDistP <= 1e-12) tpDistP = 0;
+          }
+          var moveVal = tpDistP * (pm / 100.0);
+          if (tpDistP > 1e-12 && moveVal > 1e-18) {
+            var maxSteps = Math.floor(tpDistP / moveVal);
+            var im;
+            for (im = 1; im <= maxSteps; im++) {
+              var markPx = buy ? (entryF + moveVal * im) : (entryF - moveVal * im);
+              var okBetween = buy ? (markPx > entryF && markPx < tpF) : (markPx < entryF && markPx > tpF);
+              if (!okBetween) continue;
+              var mPct = (Math.abs(markPx - slF) / range) * 100;
+              mPct = Math.max(0, Math.min(100, mPct));
+              var div = document.createElement('div');
+              div.style.cssText = 'position:absolute;top:2px;bottom:2px;left:' + mPct + '%;width:2px;margin-left:-1px;background:rgba(253,224,71,0.85);z-index:3;border-radius:1px;pointer-events:none;box-shadow:0 0 6px rgba(250,204,21,0.45);';
+              marksWrap.appendChild(div);
+            }
+          }
+        }
       }
     }
 
@@ -1254,6 +1306,18 @@
       var entryN = Number(p.entryPrice);
       var midN = Number(p.markPrice);
       if (!isFinite(midN) || midN <= 0) midN = entryN;
+      var pmPx = Number(p.partialMovePct);
+      var exQ = Number(p.exitedQty);
+      var rPnL = Number(p.realizedPnlCurrent);
+      var partialStatsHtml = '';
+      if ((isFinite(pmPx) && pmPx > 0) || (isFinite(exQ) && exQ > 0)) {
+        var exStr = isFinite(exQ) ? exQ.toFixed(4) : '0';
+        var rpStr = isFinite(rPnL) ? ((rPnL >= 0 ? '+' : '') + formatNum(rPnL)) : '–';
+        var rpCls = !isFinite(rPnL) ? 'text-slate-400' : (rPnL >= 0 ? 'text-emerald-400' : 'text-red-400');
+        partialStatsHtml =
+          '<span class="text-slate-500">Exited</span><span class="text-slate-200 font-mono">' + escapeHtmlUnified(exStr) + '</span>' +
+          '<span class="text-slate-500">RPnL (trade)</span><span class="' + rpCls + ' font-semibold font-mono">' + escapeHtmlUnified(rpStr) + '</span>';
+      }
       return '<div class="space-y-3" data-has-position="1">' +
         '<div class="flex flex-wrap items-center gap-2">' +
         '<span class="text-lg font-bold text-white font-mono tracking-tight">' + escapeHtmlUnified(sym) + '</span>' +
@@ -1275,6 +1339,7 @@
           : '') +
         '<span class="text-slate-500">Size</span><span class="text-slate-200 font-mono">' + escapeHtmlUnified(p.size || '–') + '</span>' +
         '<span class="text-slate-500">uPNL</span><span class="' + uPnlClass + ' font-semibold font-mono">' + (isFinite(uPnl) ? ((uPnl >= 0 ? '+' : '') + formatNum(p.unrealisedPnl)) : '–') + '</span>' +
+        partialStatsHtml +
         '</div>' +
         '<div class="risk-bar-outer">' +
         '<div class="flex justify-between items-end gap-3 mb-1 min-h-[2.5rem]">' +
@@ -1291,8 +1356,9 @@
         '<div data-rb="fill-green" class="risk-bar-fill risk-bar-fill-green" style="left:0%;width:0%;display:none"></div>' +
         '<div data-rb="fill-red" class="risk-bar-fill risk-bar-fill-red" style="left:0%;width:0%;display:none"></div>' +
         '<div data-rb="entry-line" class="risk-bar-entry" style="left:50%"></div>' +
+        '<div data-rb="partial-marks" class="risk-bar-partial-marks"></div>' +
         '<div data-rb="dot" class="risk-bar-dot" style="left:50%"></div></div></div>' +
-        '<p class="text-[10px] text-slate-500">Bar: red zone = SL side · green = TP side · line = entry · dot = mark</p>' +
+        '<p class="text-[10px] text-slate-500">Bar: red = SL side · green = TP side · line = entry · dot = mark · yellow ticks = partial steps (% of Target Distance)</p>' +
         '<button type="button" class="closePos w-full rounded-lg bg-slate-700 hover:bg-slate-600 text-white text-sm font-medium py-2 px-3 transition" data-symbol="' + escapeHtmlUnified(p.symbol || sym) + '" data-side="' + escapeHtmlUnified(p.side || '') + '">Close position</button>' +
         '</div>';
     }
@@ -1405,7 +1471,7 @@
         var entryN = Number(p2.entryPrice);
         var midN = Number(p2.markPrice);
         if (!isFinite(midN) || midN <= 0) midN = entryN;
-        applyRiskBarInContainer(rbRoot, slN, tpN, entryN, midN, p2.side);
+        applyRiskBarInContainer(rbRoot, slN, tpN, entryN, midN, p2.side, p2);
       }
     }
 

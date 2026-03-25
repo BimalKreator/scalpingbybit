@@ -5,9 +5,13 @@ Thread-safe dicts; main.py routes WS + execution by normalized symbol.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from typing import Any
+
+# Default trading symbol for callers that omit one (e.g. strategy orderbook checks).
+SYMBOL = os.getenv("TRADING_SYMBOL") or os.getenv("SYMBOL", "BTCUSDT")
 
 _pos_lock = threading.Lock()
 _ob_lock = threading.Lock()
@@ -91,6 +95,7 @@ def _empty_tracker() -> dict[str, Any]:
         "paper_fee_pct": None,
         "paper_fee_on_entry": None,
         "paper_fee_on_exit": None,
+        "paper_entry_notional_usd": None,
     }
 
 
@@ -133,6 +138,7 @@ def set_position_fields(sym: str, fallback: str, **kwargs: Any) -> None:
 def orderbook_set_l1(
     sym: str, fallback: str, bid: float, ask: float, bid_qty: float, ask_qty: float
 ) -> None:
+    """Best bid/ask prices are L1; ``bid_qty`` / ``ask_qty`` may aggregate top-N depth (e.g. top 20)."""
     u = ensure_symbol(sym, fallback)
     with _ob_lock:
         ob = _orderbooks[u]

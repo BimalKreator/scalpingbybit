@@ -1021,10 +1021,10 @@ class DeltaLiveStream:
                     bid_p = bid_q = ask_p = ask_q = 0.0
                     if buys:
                         bid_p = float(buys[0].get("limit_price") or 0)
-                        bid_q = float(buys[0].get("size") or 0)
+                        bid_q = sum(float(b.get("size") or 0) for b in buys[:20])
                     if sells:
                         ask_p = float(sells[0].get("limit_price") or 0)
-                        ask_q = float(sells[0].get("size") or 0)
+                        ask_q = sum(float(s.get("size") or 0) for s in sells[:20])
                     try:
                         on_orderbook(
                             user_sym,

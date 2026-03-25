@@ -812,9 +812,9 @@ class BybitLiveStream:
             def _ob_cb(msg: dict, s: str = sym) -> None:
                 on_orderbook(s, msg)
 
-            ws_ob.orderbook_stream(depth=1, symbol=sym, callback=_ob_cb)
+            ws_ob.orderbook_stream(depth=50, symbol=sym, callback=_ob_cb)
             self.ws_orderbook_list.append(ws_ob)
-            print("Subscribed to orderbook.1 " + sym + " (public WebSocket).")
+            print("Subscribed to orderbook.50 " + sym + " (public WebSocket; engine sums top 20 levels for size).")
         self.ws_orderbook = self.ws_orderbook_list[0] if self.ws_orderbook_list else None
 
         self.ws_private = WebSocket(

@@ -293,6 +293,8 @@ _CLOSED_KLINE_DF_BY_KEY: dict[tuple[str, int], pd.DataFrame] = {}
 KLINES: list = []
 _instances_runtime_lock = threading.Lock()
 _STRATEGY_INSTANCES_CACHE: list[dict] = []
+# Optional in-memory keys ``{instance_id}_{bar_start}`` (e.g. for S&R after close); dedup is primarily ``last_signal_start``.
+queued_signals_cache: dict[str, Any] = {}
 _active_order_instance_id: str | None = None
 # Snapshot of active position's instance params for SL decay / breakeven / partial TP (None → use .env)
 _active_instance_monitor_params: dict | None = None
@@ -584,6 +586,21 @@ _instrument_min_notional: float = 6.0
 # Per-symbol (qty_step, min_order_qty) for multi-coin order sizing
 _instrument_constraints_by_symbol: dict[str, tuple[float, float]] = {}
 
+# Serialize live partial-touch evaluation per instance (WS can deliver bursts before disk/cache sync).
+_partial_touch_exit_locks: dict[str, threading.Lock] = {}
+_partial_touch_exit_locks_mutex = threading.Lock()
+
+
+def _partial_touch_exit_lock(iid: str) -> threading.Lock:
+    key = (iid or "").strip()
+    with _partial_touch_exit_locks_mutex:
+        lk = _partial_touch_exit_locks.get(key)
+        if lk is None:
+            lk = threading.Lock()
+            _partial_touch_exit_locks[key] = lk
+        return lk
+
+
 # Event loop reference for bridging WS callbacks into asyncio
 _loop: asyncio.AbstractEventLoop | None = None
 # SL trigger delay: only one delayed SL check at a time
@@ -863,8 +880,15 @@ def _read_virtual_paper_fee_tracker(sym: str) -> tuple[float, bool, bool]:
 
 def _virtual_paper_notional_usd(price: float, qty: float, contract_symbol: str | None = None) -> float:
     """
-    Dollar notional for fee math: Bybit-style linear uses qty × price (base × USD price).
-    Delta uses qty × contract_value × price (matches _virtual_linear_pnl_usd geometry).
+    Dollar notional for fee math when deriving from fill geometry:
+
+    - **Linear (Bybit-style)**: ``qty`` is base-asset size (e.g. BTC); notional = qty × price.
+      That equals ``tradeCapitalUsd × leverage`` when qty was sized as (margin×lev)/price.
+    - **Delta**: qty × contract_value × price (same as :func:`_virtual_linear_pnl_usd`).
+
+    ``qty`` must **not** be interpreted as USD margin here — multiplying margin × price again
+    would blow up fees. Prefer :func:`_xst_record_filled_entry` ``paper_notional_usd`` for
+    virtual entry fees (stored notional = margin × leverage).
     """
     if price <= 0 or qty <= 0:
         return 0.0
@@ -927,12 +951,15 @@ def _append_virtual_closed_trade_row(
         updated_ms = created_ms
         sym_row = _norm_sym(trade_symbol or SYMBOL)
         fee_f = float(fee) if math.isfinite(float(fee)) else 0.0
+        qf = float(qty) if math.isfinite(float(qty)) else 0.0
         row = {
             "exchange": "Virtual (Paper)",
             "symbol": sym_row,
             "side": "BUY" if str(side).strip().lower() == "buy" else "SELL",
             "createdTime": str(created_ms),
             "updatedTime": str(updated_ms),
+            "qty": f"{qf:g}" if qf > 0 else "",
+            "size": f"{qf:g}" if qf > 0 else "",
             "avgEntryPrice": f"{float(entry_price):g}" if entry_price > 0 else "",
             "avgExitPrice": f"{float(exit_price):g}" if exit_price > 0 else "",
             "leverage": str(int(lev)) if abs(lev - round(lev)) < 1e-9 else str(lev),
@@ -1015,89 +1042,269 @@ def get_paper_position_rows_for_ui(symbol: str = "") -> list[dict]:
                 mid_s = f"{(bb + ba) / 2.0:.8f}".rstrip("0").rstrip(".")
         except (TypeError, ValueError):
             mid_s = ""
-        rows.append(
-            {
-                "symbol": sym,
-                "side": ps,
-                "entryPrice": ent_s,
-                "size": str(sz),
-                "positionValue": "",
-                "liqPrice": "",
-                "stop_loss": str(sl) if sl is not None else "-",
-                "take_profit": str(tp) if tp is not None else "-",
-                "markPrice": mid_s,
-                "unrealisedPnl": upnl,
-                "createdTime": ct_ms,
-                "paper": True,
-                "strategy_name": strat_nm,
-            }
-        )
+        row_ui: dict[str, Any] = {
+            "symbol": sym,
+            "side": ps,
+            "entryPrice": ent_s,
+            "size": str(sz),
+            "positionValue": "",
+            "liqPrice": "",
+            "stop_loss": str(sl) if sl is not None else "-",
+            "take_profit": str(tp) if tp is not None else "-",
+            "markPrice": mid_s,
+            "unrealisedPnl": upnl,
+            "createdTime": ct_ms,
+            "paper": True,
+            "strategy_name": strat_nm,
+        }
+        enrich_dashboard_position_row(row_ui)
+        rows.append(row_ui)
     return rows
 
 
+def _match_single_candle_instance_for_position(sym_u: str) -> dict | None:
+    """Best-effort Strategy Hub row for open single_candle partial UI (active id, else in_position)."""
+    aid = str(_active_order_instance_id or "").strip()
+    candidates: list[dict] = []
+    for inst in get_strategy_instances():
+        if not inst.get("enabled", True):
+            continue
+        if _norm_sym(str(inst.get("symbol") or "")) != sym_u:
+            continue
+        if str(inst.get("strategy_type") or "").strip().lower() != "single_candle":
+            continue
+        candidates.append(dict(inst))
+    if aid:
+        for inst in candidates:
+            if str(inst.get("id") or "") == aid:
+                return inst
+    for inst in candidates:
+        st = dict(inst.get("state") or {})
+        if st.get("in_position"):
+            return inst
+    return candidates[0] if candidates else None
+
+
+def enrich_dashboard_position_row(pos: dict[str, Any]) -> None:
+    """Attach single_candle partial-exit fields for the positions API / dashboard."""
+    if not isinstance(pos, dict):
+        return
+    sym_u = _norm_sym(str(pos.get("symbol") or ""))
+    if not sym_u:
+        pos.setdefault("partialMovePct", 0.0)
+        pos.setdefault("partialQtyPct", 0.0)
+        pos.setdefault("partialRiskSlPoints", 50.0)
+        pos.setdefault("partialTpDistancePoints", 100.0)
+        pos.setdefault("initialEntryQty", 0.0)
+        pos.setdefault("partialStepsTaken", 0)
+        pos.setdefault("exitedQty", 0.0)
+        pos.setdefault("realizedPnlCurrent", 0.0)
+        return
+    inst = _match_single_candle_instance_for_position(sym_u)
+    try:
+        size_f = float(pos.get("size") or 0)
+    except (TypeError, ValueError):
+        size_f = 0.0
+    if not inst:
+        pos.setdefault("partialMovePct", 0.0)
+        pos.setdefault("partialQtyPct", 0.0)
+        pos.setdefault("partialRiskSlPoints", 50.0)
+        pos.setdefault("partialTpDistancePoints", 100.0)
+        pos.setdefault("initialEntryQty", float(size_f))
+        pos.setdefault("partialStepsTaken", 0)
+        pos.setdefault("exitedQty", 0.0)
+        pos.setdefault("realizedPnlCurrent", 0.0)
+        return
+    inst_params = dict(inst.get("params") or {})
+    st = dict(inst.get("state") or {})
+    use_p = str(inst_params.get("usePartialExit", "False")).lower() == "true"
+    try:
+        p_move = float(inst_params.get("partialMovePct", 0) or 0)
+    except (TypeError, ValueError):
+        p_move = 0.0
+    try:
+        p_qty = float(inst_params.get("partialQtyPct", 0) or 0)
+    except (TypeError, ValueError):
+        p_qty = 0.0
+    pos["partialMovePct"] = float(p_move) if use_p else 0.0
+    pos["partialQtyPct"] = float(p_qty)
+    try:
+        pos["partialRiskSlPoints"] = float(inst_params.get("slPoints", 50.0) or 50.0)
+    except (TypeError, ValueError):
+        pos["partialRiskSlPoints"] = 50.0
+    if not math.isfinite(pos["partialRiskSlPoints"]) or pos["partialRiskSlPoints"] <= 0:
+        pos["partialRiskSlPoints"] = 50.0
+    try:
+        tp_m = float(inst_params.get("tpMultiplier", 2.0) or 2.0)
+    except (TypeError, ValueError):
+        tp_m = 2.0
+    if not math.isfinite(tp_m) or tp_m <= 0:
+        tp_m = 2.0
+    pos["partialTpDistancePoints"] = float(pos["partialRiskSlPoints"]) * tp_m
+    try:
+        initial_q = float(st.get("initial_entry_qty") or size_f or 0)
+    except (TypeError, ValueError):
+        initial_q = float(size_f)
+    pos["initialEntryQty"] = initial_q
+    try:
+        pos["partialStepsTaken"] = int(st.get("partial_steps_taken") or 0)
+    except (TypeError, ValueError):
+        pos["partialStepsTaken"] = 0
+    exited = max(0.0, float(initial_q) - float(size_f))
+    pos["exitedQty"] = exited
+    try:
+        pos["realizedPnlCurrent"] = float(st.get("realized_pnl_current_trade") or 0.0)
+    except (TypeError, ValueError):
+        pos["realizedPnlCurrent"] = 0.0
+
+
 def _finalize_virtual_position_close(
-    exit_price: float, exit_reason: str, symbol: str | None = None
+    exit_price: float,
+    exit_reason: str,
+    symbol: str | None = None,
+    *,
+    close_qty: float | None = None,
 ) -> None:
-    """Update wallet, log closed trade, clear trackers (paper mode)."""
+    """Update wallet, log closed trade, clear trackers (paper mode). Optional ``close_qty`` scales out."""
     global _monitor_had_position, _position_size, _position_entry_price, _local_close_reason, _is_closing_position
     sym = _norm_sym(symbol or SYMBOL)
-    if "manual" in (exit_reason or "").lower():
-        _local_close_reason = "MANUAL"
-        xst.tracker_update(sym, SYMBOL, local_close_reason="MANUAL")
     snap_sz, entry_raw, ps = _read_position_for_symbol(sym)
     entry = float(entry_raw or 0.0)
     if snap_sz <= 0:
         return
     ex = float(exit_price)
-    gross = _virtual_linear_pnl_usd(entry, ex, snap_sz, ps, contract_symbol=sym)
+    want_partial = close_qty is not None
+    cq_req = float(close_qty) if want_partial else float(snap_sz)
+    if want_partial:
+        if not math.isfinite(cq_req) or cq_req <= 0:
+            return
+        cq_req = min(cq_req, snap_sz)
+    do_partial = bool(want_partial and cq_req + 1e-12 < snap_sz)
+
+    if not do_partial and "manual" in (exit_reason or "").lower():
+        _local_close_reason = "MANUAL"
+        xst.tracker_update(sym, SYMBOL, local_close_reason="MANUAL")
+
+    if not do_partial:
+        gross = _virtual_linear_pnl_usd(entry, ex, snap_sz, ps, contract_symbol=sym)
+        fee_pct, fee_on_entry, fee_on_exit = _read_virtual_paper_fee_tracker(sym)
+        tr = xst.tracker(sym, SYMBOL)
+        fee_multiplier = float(fee_pct) / 100.0
+        stored_n = tr.get("paper_entry_notional_usd")
+        try:
+            entry_notional_stored = float(stored_n) if stored_n is not None else 0.0
+        except (TypeError, ValueError):
+            entry_notional_stored = 0.0
+        if entry_notional_stored > 0 and math.isfinite(entry_notional_stored):
+            entry_notional = entry_notional_stored
+        else:
+            entry_notional = _virtual_paper_notional_usd(entry, snap_sz, sym)
+        entry_fee = (entry_notional * fee_multiplier) if fee_on_entry else 0.0
+        exit_fee = (
+            (_virtual_paper_notional_usd(ex, snap_sz, sym) * fee_multiplier)
+            if fee_on_exit
+            else 0.0
+        )
+        total_fee = entry_fee + exit_fee
+        net_pnl = gross - total_fee
+        update_virtual_wallet(net_pnl)
+        strat_snap = (_active_trade_strategy_name or "Manual").strip()
+        _append_virtual_closed_trade_row(
+            entry_price=entry,
+            exit_price=ex,
+            qty=snap_sz,
+            side=ps,
+            pnl=net_pnl,
+            exit_reason=exit_reason,
+            strategy_name=strat_snap,
+            trade_symbol=sym,
+            fee=total_fee,
+        )
+        if sym == _norm_sym(SYMBOL):
+            _monitor_had_position = False
+        ep = float(exit_price)
+        sl_hit = _was_closed_by_sl(ep, sym)
+        on_position_closed(ep, sym)
+        _clear_active_instance_on_flat(sl_loss=sl_hit, symbol=sym)
+        xst.set_position_fields(sym, SYMBOL, size=0.0, entry=None, side=None)
+        xst.tracker_reset_flat(sym, SYMBOL)
+        xst.set_closing(sym, SYMBOL, False)
+        if sym == _norm_sym(SYMBOL):
+            _clear_sl_tp_tracker_on_file_and_globals()
+            with _position_lock:
+                _position_size = 0.0
+                _position_entry_price = None
+            _is_closing_position = False
+        _sync_position_risk_to_state()
+        try:
+            _flush_live_state_file_with_tracker()
+        except Exception:
+            pass
+        return
+
+    cq = float(cq_req)
+    gross = _virtual_linear_pnl_usd(entry, ex, cq, ps, contract_symbol=sym)
     fee_pct, fee_on_entry, fee_on_exit = _read_virtual_paper_fee_tracker(sym)
-    # feePct in instance UI is a percent: 0.05 => 0.05% => multiplier 0.0005 (not 5%).
+    tr = xst.tracker(sym, SYMBOL)
     fee_multiplier = float(fee_pct) / 100.0
-    entry_fee = (
-        (_virtual_paper_notional_usd(entry, snap_sz, sym) * fee_multiplier)
-        if fee_on_entry
-        else 0.0
-    )
+    stored_n = tr.get("paper_entry_notional_usd")
+    try:
+        entry_notional_stored = float(stored_n) if stored_n is not None else 0.0
+    except (TypeError, ValueError):
+        entry_notional_stored = 0.0
+    if entry_notional_stored > 0 and math.isfinite(entry_notional_stored):
+        entry_notional = entry_notional_stored
+    else:
+        entry_notional = _virtual_paper_notional_usd(entry, snap_sz, sym)
+    ratio = cq / max(snap_sz, 1e-18)
+    entry_notional_slice = entry_notional * ratio
+    entry_fee = (entry_notional_slice * fee_multiplier) if fee_on_entry else 0.0
     exit_fee = (
-        (_virtual_paper_notional_usd(ex, snap_sz, sym) * fee_multiplier)
-        if fee_on_exit
-        else 0.0
+        (_virtual_paper_notional_usd(ex, cq, sym) * fee_multiplier) if fee_on_exit else 0.0
     )
     total_fee = entry_fee + exit_fee
     net_pnl = gross - total_fee
     update_virtual_wallet(net_pnl)
     strat_snap = (_active_trade_strategy_name or "Manual").strip()
+    er = str(exit_reason or "")
+    row_reason = er if "partial" in er.lower() else f"Partial Close (paper) — {er}"
     _append_virtual_closed_trade_row(
         entry_price=entry,
         exit_price=ex,
-        qty=snap_sz,
+        qty=cq,
         side=ps,
         pnl=net_pnl,
-        exit_reason=exit_reason,
+        exit_reason=row_reason,
         strategy_name=strat_snap,
         trade_symbol=sym,
         fee=total_fee,
     )
+    new_sz = max(0.0, snap_sz - cq)
+    new_notional = max(0.0, entry_notional * (new_sz / max(snap_sz, 1e-18)))
+    xst.set_position_fields(sym, SYMBOL, size=new_sz, entry=entry, side=ps)
+    xst.tracker_update(sym, SYMBOL, paper_entry_notional_usd=new_notional)
     if sym == _norm_sym(SYMBOL):
-        _monitor_had_position = False
-    ep = float(exit_price)
-    sl_hit = _was_closed_by_sl(ep, sym)
-    on_position_closed(ep, sym)
-    _clear_active_instance_on_flat(sl_loss=sl_hit, symbol=sym)
-    xst.set_position_fields(sym, SYMBOL, size=0.0, entry=None, side=None)
-    xst.tracker_reset_flat(sym, SYMBOL)
-    xst.set_closing(sym, SYMBOL, False)
-    if sym == _norm_sym(SYMBOL):
-        _clear_sl_tp_tracker_on_file_and_globals()
         with _position_lock:
-            _position_size = 0.0
-            _position_entry_price = None
-        _is_closing_position = False
+            _position_size = new_sz
     _sync_position_risk_to_state()
     try:
         _flush_live_state_file_with_tracker()
     except Exception:
         pass
+    iid_rp = str(_active_order_instance_id or "").strip()
+    if iid_rp and math.isfinite(net_pnl):
+        inst_rp = instance_storage.get_instance_by_id(iid_rp)
+        if inst_rp and _norm_sym(str(inst_rp.get("symbol") or "")) == sym:
+            st_rp = dict(inst_rp.get("state") or {})
+            prev_rp = float(st_rp.get("realized_pnl_current_trade") or 0.0)
+            if not math.isfinite(prev_rp):
+                prev_rp = 0.0
+            instance_storage.merge_instance_state(
+                iid_rp, {"realized_pnl_current_trade": prev_rp + float(net_pnl)}
+            )
+            _patch_instance_state_cache(
+                iid_rp, {"realized_pnl_current_trade": prev_rp + float(net_pnl)}
+            )
 
 
 def virtual_market_close_sync(exit_price: float, symbol: str | None = None) -> dict:
@@ -2488,7 +2695,7 @@ def _compute_active_sl_price(mid_price: float, symbol: str | None = None) -> flo
 
 
 def handle_orderbook_message(symbol: str, message: dict) -> None:
-    """Update per-symbol L1 orderbook; optional legacy mirror for primary SYMBOL."""
+    """Update per-symbol orderbook: L1 bid/ask prices; bid_qty/ask_qty = sum of top 20 level sizes."""
     global best_bid, best_ask, bid_qty, ask_qty, _sl_persist_ts, _last_ws_msg_ts
     sym = xst.norm_symbol(symbol, SYMBOL)
     _last_ws_msg_ts = time.time()
@@ -2499,10 +2706,18 @@ def handle_orderbook_message(symbol: str, message: dict) -> None:
     bq = aq = 0.0
     if bids:
         bb = float(bids[0][0])
-        bq = float(bids[0][1])
+        bq = sum(
+            float(row[1])
+            for row in bids[:20]
+            if isinstance(row, (list, tuple)) and len(row) >= 2
+        )
     if asks:
         ba = float(asks[0][0])
-        aq = float(asks[0][1])
+        aq = sum(
+            float(row[1])
+            for row in asks[:20]
+            if isinstance(row, (list, tuple)) and len(row) >= 2
+        )
     xst.orderbook_set_l1(sym, SYMBOL, bb, ba, bq, aq)
     if sym == _norm_sym(SYMBOL):
         with _orderbook_lock:
@@ -3363,6 +3578,7 @@ async def execute_strategy_signal(
             tp=float(tp),
             sl_mx=float(sl_mx),
             exchange_sl_ok=True,
+            paper_notional_usd=float(usd_amount) * float(leverage),
         )
         if sym_u == _norm_sym(SYMBOL):
             with _position_lock:
@@ -3467,6 +3683,7 @@ def _xst_record_filled_entry(
     tp: float,
     sl_mx: float,
     exchange_sl_ok: bool,
+    paper_notional_usd: float | None = None,
 ) -> None:
     """Persist open position + SL/TP tracker in exchange_state (multi-coin)."""
     now = time.time()
@@ -3478,6 +3695,13 @@ def _xst_record_filled_entry(
         side=side,
     )
     _fp, _fe, _fx = _virtual_paper_fee_params_from_instance_id(_active_order_instance_id)
+    pn = None
+    if paper_notional_usd is not None:
+        try:
+            pnv = float(paper_notional_usd)
+            pn = pnv if math.isfinite(pnv) and pnv > 0 else None
+        except (TypeError, ValueError):
+            pn = None
     xst.set_tracker_fields(
         order_sym,
         SYMBOL,
@@ -3502,6 +3726,7 @@ def _xst_record_filled_entry(
         paper_fee_pct=float(_fp),
         paper_fee_on_entry=bool(_fe),
         paper_fee_on_exit=bool(_fx),
+        paper_entry_notional_usd=pn,
     )
 
 
@@ -3721,12 +3946,10 @@ async def _place_order_async(
                 tp=float(tp),
                 sl_mx=float(sl_mx),
                 exchange_sl_ok=True,
+                paper_notional_usd=float(trade_amount_usd) * float(leverage),
             )
             _set_exchange_sl_health("ok", "")
-            if meta and meta.get("instance_id"):
-                iid = str(meta["instance_id"])
-                instance_storage.merge_instance_state(iid, {"in_position": True})
-                _patch_instance_state_cache(iid, {"in_position": True})
+            _merge_instance_in_position_true_from_meta(meta, total_qty)
             _sync_position_risk_to_state()
             _flush_live_state_file_with_tracker()
             _append_trade_journal_entry(
@@ -3839,10 +4062,7 @@ async def _place_order_async(
                 sl_mx=float(sl_mx),
                 exchange_sl_ok=bool(ok_rev),
             )
-            if meta and meta.get("instance_id"):
-                iid = str(meta["instance_id"])
-                instance_storage.merge_instance_state(iid, {"in_position": True})
-                _patch_instance_state_cache(iid, {"in_position": True})
+            _merge_instance_in_position_true_from_meta(meta, total_qty)
             _sync_position_risk_to_state()
             _flush_live_state_file_with_tracker()
             if not ok_rev:
@@ -3906,10 +4126,7 @@ async def _place_order_async(
             sl_mx=float(sl_mx),
             exchange_sl_ok=bool(ok),
         )
-        if meta and meta.get("instance_id"):
-            iid = str(meta["instance_id"])
-            instance_storage.merge_instance_state(iid, {"in_position": True})
-            _patch_instance_state_cache(iid, {"in_position": True})
+        _merge_instance_in_position_true_from_meta(meta, total_qty)
         _sync_position_risk_to_state()
         _flush_live_state_file_with_tracker()
         _append_trade_journal_entry(
@@ -4537,6 +4754,8 @@ def _append_delta_closed_trade_to_file(
             "side": side_upper,
             "createdTime": str(created_ms),
             "updatedTime": str(updated_ms),
+            "qty": f"{sz:g}" if sz > 0 else "",
+            "size": f"{sz:g}" if sz > 0 else "",
             "avgEntryPrice": f"{entry_f:g}" if entry_f > 0 else "",
             "avgExitPrice": f"{exit_f:g}" if exit_f > 0 else "",
             "leverage": str(int(lev)) if abs(lev - round(lev)) < 1e-9 else str(lev),
@@ -4839,6 +5058,21 @@ def _sync_closed_kline_df_cache(symbol: str, interval_minutes: int) -> None:
     _CLOSED_KLINE_DF_BY_KEY[(sym_u, iv)] = _closed_kline_dataframe(list(buf))
 
 
+def _raw_kline_dataframe(symbol_normalized: str, interval_minutes: int) -> pd.DataFrame:
+    """Full WS/rest kline buffer (includes the current in-progress bar). Used by single_candle."""
+    sym_u = _norm_sym(symbol_normalized)
+    iv = max(1, int(interval_minutes))
+    buf = kline_buffer(sym_u, iv)
+    df = pd.DataFrame(list(buf))
+    if df.empty:
+        return df
+    return (
+        df.sort_values("start").reset_index(drop=True)
+        if "start" in df.columns
+        else df.reset_index(drop=True)
+    )
+
+
 def _instance_closed_kline_df(symbol_normalized: str, interval_minutes: int) -> pd.DataFrame:
     """
     Same closed-bar slice used by instance evaluation and Live Monitor checklists.
@@ -4969,10 +5203,12 @@ def _rebuild_instance_checks_live_state(symbol_normalized: str) -> None:
                 }
             checks[iid] = entry
         elif strat == "single_candle":
+            df_sc_live = _raw_kline_dataframe(sym_u, iv)
+            st_sc = {**st, "symbol": sym_u}
             built = single_candle.build_entry_checklists(
-                df_closed if len(df_closed) else None,
+                df_sc_live if len(df_sc_live) else None,
                 dict(inst.get("params") or {}),
-                st,
+                st_sc,
             )
             entry = {
                 "name": name,
@@ -4986,9 +5222,14 @@ def _rebuild_instance_checks_live_state(symbol_normalized: str) -> None:
             sync = built.get("sync")
             if isinstance(sync, dict):
                 try:
-                    cstart = int(df_closed.iloc[-1]["start"]) if len(df_closed) >= 1 else None
-                except (TypeError, ValueError, KeyError):
+                    cstart = int(sync.get("conf_bar_start")) if sync.get("conf_bar_start") is not None else None
+                except (TypeError, ValueError):
                     cstart = None
+                if cstart is None and len(df_closed) >= 1:
+                    try:
+                        cstart = int(df_closed.iloc[-1]["start"])
+                    except (TypeError, ValueError, KeyError):
+                        cstart = None
                 lss = int(st.get("last_signal_start") or 0)
                 entry["monitor_sync"] = {
                     **sync,
@@ -5025,6 +5266,24 @@ def _rebuild_instance_checks_live_state(symbol_normalized: str) -> None:
         live_strategy_state[sym_u] = cur
 
 
+def _merge_instance_in_position_true_from_meta(
+    meta: dict | None, total_qty: float
+) -> None:
+    """Mark instance in_position; single_candle also resets partial-exit counters and stores initial size."""
+    if not meta or not meta.get("instance_id"):
+        return
+    iid = str(meta["instance_id"])
+    patch: dict[str, Any] = {"in_position": True}
+    if str(meta.get("strategy_type", "")).strip().lower() == "single_candle":
+        patch["partial_steps_taken"] = 0
+        patch["partial_qty_closed_total"] = 0.0
+        patch["initial_entry_qty"] = float(total_qty)
+        patch["realized_pnl_current_trade"] = 0.0
+        patch["breakeven_sl_triggered"] = False
+    instance_storage.merge_instance_state(iid, patch)
+    _patch_instance_state_cache(iid, patch)
+
+
 def _clear_active_instance_on_flat(*, sl_loss: bool, symbol: str | None = None) -> None:
     """When flat, release instance lock + optional cooldown after SL."""
     global _active_order_instance_id, _active_instance_monitor_params, _active_trade_strategy_name
@@ -5036,7 +5295,14 @@ def _clear_active_instance_on_flat(*, sl_loss: bool, symbol: str | None = None) 
         inst_sym = _norm_sym(str(inst.get("symbol") or SYMBOL))
         if inst_sym != _norm_sym(symbol):
             return
-    patch: dict = {"in_position": False}
+    patch: dict[str, Any] = {
+        "in_position": False,
+        "partial_steps_taken": 0,
+        "partial_qty_closed_total": 0.0,
+        "initial_entry_qty": None,
+        "realized_pnl_current_trade": 0.0,
+        "breakeven_sl_triggered": False,
+    }
     if sl_loss and inst:
         strat = str(inst.get("strategy_type") or "").strip().lower()
         if strat != "ema_trap":
@@ -5060,16 +5326,16 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
     if len(df_closed) < 1 or _loop is None or _signal_queue is None:
         return
     conf_start = int(df_closed.iloc[-1]["start"])
-    try:
-        _tail_closed_row = df_closed.iloc[-1].to_dict()
-    except Exception:
-        _tail_closed_row = {}
-    try:
-        _paper_exit_from_bar = float(_tail_closed_row.get("close") or 0.0)
-    except (TypeError, ValueError):
-        _paper_exit_from_bar = 0.0
+    df_sc_raw = _raw_kline_dataframe(sym_u, interval_minutes)
+    _paper_exit_from_bar = float(single_candle.paper_exit_bar_close(df_sc_raw))
     if not math.isfinite(_paper_exit_from_bar) or _paper_exit_from_bar <= 0:
-        _paper_exit_from_bar = 0.0
+        try:
+            _tail_closed_row = df_closed.iloc[-1].to_dict()
+            _paper_exit_from_bar = float(_tail_closed_row.get("close") or 0.0)
+        except Exception:
+            _paper_exit_from_bar = 0.0
+        if not math.isfinite(_paper_exit_from_bar) or _paper_exit_from_bar <= 0:
+            _paper_exit_from_bar = 0.0
 
     sym_row0 = xst.read_position_for_symbol(sym_u, SYMBOL)
     sym_sz0 = float(sym_row0.get("size") or 0)
@@ -5094,13 +5360,17 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             "symbol": sym_u,
         }
 
-        # Single Candle: time exit only on WS-confirmed closed bar (signal_row.closed), not on in-progress ticks;
-        # still require a new candle vs entry (conf_start > last_signal_start) so we do not flatten on the entry bar.
+        # Single Candle: optional exit on each new closed bar, and/or trailing candle exit when bar-close exit is off.
         allow_entry_despite_open_pos = False
         if strat == "single_candle" and symbol_has_open_position:
-            ev_sc = single_candle.evaluate(
-                df_closed, dict(inst.get("params") or {}), st
-            )
+            inst_params = dict(inst.get("params") or {})
+            exit_on_close = str(inst_params.get("exitOnCandleClose", "True")).lower() == "true"
+            trailing_candle_exit = str(
+                inst_params.get("trailingCandleExit", "False")
+            ).lower() == "true"
+
+            st_sc = {**st, "symbol": sym_u}
+            ev_sc = single_candle.evaluate(df_closed, inst_params, st_sc)
             is_kline_closed = False
             if isinstance(ev_sc, dict):
                 if "signal_row" in ev_sc:
@@ -5109,41 +5379,419 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
                         is_kline_closed = bool(_sr.get("closed", False))
                 elif "closed" in ev_sc:
                     is_kline_closed = bool(ev_sc["closed"])
+            if not is_kline_closed and len(df_closed) >= 1:
+                try:
+                    is_kline_closed = _is_ws_kline_fully_closed(
+                        df_closed.iloc[-1].to_dict()
+                    )
+                except Exception:
+                    pass
+
             iid = str(inst.get("id") or "").strip()
             aid = str(_active_order_instance_id or "").strip()
             hub_in = bool(st.get("in_position"))
             our_trade = (aid == iid) or (hub_in and (not aid or aid == iid))
             last_sig_start = int(st.get("last_signal_start") or 0)
-            new_bar_after_entry = last_sig_start > 0 and conf_start > last_sig_start
-            if our_trade and is_kline_closed and new_bar_after_entry:
-                if _is_autotrade_enabled() and not single_candle_close_queued_this_message:
-                    label = AVAILABLE_STRATEGIES.get(strat, strat)
+            new_bar_after_entry = (last_sig_start > 0) and (int(conf_start) > last_sig_start)
+
+            partial_queued_here = False
+            snap_tr, ent_tr, side_tr = _read_position_for_symbol(sym_u)
+            bb_l, ba_l, _, _ = xst.get_orderbook_l1(sym_u, SYMBOL)
+            live_mid = 0.0
+            if bb_l > 0 and ba_l > 0:
+                live_mid = (float(bb_l) + float(ba_l)) / 2.0
+
+            use_partial_ev = str(
+                inst_params.get("usePartialExit", "False")
+            ).lower() == "true"
+            try:
+                move_pct_ev = float(inst_params.get("partialMovePct", 10.0) or 10.0)
+            except (TypeError, ValueError):
+                move_pct_ev = 10.0
+            try:
+                qty_pct_ev = float(inst_params.get("partialQtyPct", 10.0) or 10.0)
+            except (TypeError, ValueError):
+                qty_pct_ev = 10.0
+            if (
+                our_trade
+                and new_bar_after_entry
+                and live_mid > 0
+                and use_partial_ev
+                and math.isfinite(move_pct_ev)
+                and move_pct_ev > 0
+                and math.isfinite(qty_pct_ev)
+                and qty_pct_ev > 0
+                and snap_tr > 1e-18
+            ):
+                try:
+                    ent_f = float(ent_tr or 0.0)
+                except (TypeError, ValueError):
+                    ent_f = 0.0
+                ps_l = str(side_tr or "").strip().lower()
+
+                # Do not queue partials at/through hard SL or TP — full local SL/TP close must run.
+                is_sl_tp_hit = False
+                tr_guard = xst.tracker(sym_u, SYMBOL)
+                try:
+                    sl_raw = tr_guard.get("last_active_sl_price")
+                    if sl_raw is None:
+                        sl_raw = tr_guard.get("last_sl_price")
+                    sl_price = float(sl_raw or 0.0)
+                except (TypeError, ValueError):
+                    sl_price = 0.0
+                try:
+                    tp_price = float(tr_guard.get("last_tp_price") or 0.0)
+                except (TypeError, ValueError):
+                    tp_price = 0.0
+                if not math.isfinite(sl_price) or sl_price <= 0:
+                    sl_price = 0.0
+                if not math.isfinite(tp_price) or tp_price <= 0:
+                    tp_price = 0.0
+                if ps_l == "buy":
+                    if (sl_price > 0 and live_mid <= sl_price) or (
+                        tp_price > 0 and live_mid >= tp_price
+                    ):
+                        is_sl_tp_hit = True
+                elif ps_l == "sell":
+                    if (sl_price > 0 and live_mid >= sl_price) or (
+                        tp_price > 0 and live_mid <= tp_price
+                    ):
+                        is_sl_tp_hit = True
+
+                if not is_sl_tp_hit:
+                    points_moved = 0.0
+                    if ent_f > 0 and ps_l == "buy":
+                        points_moved = max(0.0, live_mid - ent_f)
+                    elif ent_f > 0 and ps_l == "sell":
+                        points_moved = max(0.0, ent_f - live_mid)
+                    try:
+                        sl_basis = float(inst_params.get("slPoints", 50.0) or 50.0)
+                    except (TypeError, ValueError):
+                        sl_basis = 50.0
+                    if not math.isfinite(sl_basis) or sl_basis <= 0:
+                        sl_basis = 50.0
+                    try:
+                        tp_mult = float(inst_params.get("tpMultiplier", 2.0) or 2.0)
+                    except (TypeError, ValueError):
+                        tp_mult = 2.0
+                    if not math.isfinite(tp_mult) or tp_mult <= 0:
+                        tp_mult = 2.0
+                    tp_distance = sl_basis * tp_mult
+                    favorable_move_pct = (
+                        (points_moved / tp_distance) * 100.0
+                        if tp_distance > 0
+                        else 0.0
+                    )
+                    if math.isfinite(favorable_move_pct) and favorable_move_pct >= 0:
+                        current_target_step = int(
+                            math.floor(favorable_move_pct / move_pct_ev)
+                        )
+                        if current_target_step < 0:
+                            current_target_step = 0
+                        with _partial_touch_exit_lock(iid):
+                            highest_step_taken = int(st.get("partial_steps_taken") or 0)
+                            if (
+                                current_target_step > highest_step_taken
+                                and _is_autotrade_enabled()
+                            ):
+                                init_q = float(st.get("initial_entry_qty") or 0.0)
+                                if init_q <= 0:
+                                    init_q = float(snap_tr)
+                                    instance_storage.merge_instance_state(
+                                        iid, {"initial_entry_qty": init_q}
+                                    )
+                                    _patch_instance_state_cache(
+                                        iid, {"initial_entry_qty": init_q}
+                                    )
+                                    st["initial_entry_qty"] = init_q
+                                steps_to_exec = int(current_target_step) - int(
+                                    highest_step_taken
+                                )
+                                state_patch: dict[str, Any] = {
+                                    "partial_steps_taken": int(current_target_step),
+                                }
+                                if steps_to_exec < 1:
+                                    st["partial_steps_taken"] = int(current_target_step)
+                                    instance_storage.merge_instance_state(
+                                        iid, state_patch
+                                    )
+                                    _patch_instance_state_cache(iid, state_patch)
+                                else:
+                                    initial_qty = float(init_q)
+                                    raw_chunk_per_step = initial_qty * (
+                                        qty_pct_ev / 100.0
+                                    )
+                                    qstep, qmin = _qty_constraints_for_symbol(sym_u)
+                                    rounded_chunk = max(
+                                        qmin,
+                                        round(raw_chunk_per_step / qstep) * qstep,
+                                    )
+                                    qty_to_close = rounded_chunk * float(steps_to_exec)
+                                    qty_to_close = round(qty_to_close / qstep) * qstep
+                                    if qty_to_close > snap_tr:
+                                        qty_to_close = float(snap_tr)
+                                    qty_to_close = math.floor(qty_to_close / qstep) * qstep
+                                    if (
+                                        qty_to_close + 1e-18 < qmin
+                                        or qty_to_close <= 1e-18
+                                    ):
+                                        st["partial_steps_taken"] = int(
+                                            current_target_step
+                                        )
+                                        instance_storage.merge_instance_state(
+                                            iid, state_patch
+                                        )
+                                        _patch_instance_state_cache(iid, state_patch)
+                                    else:
+                                        try:
+                                            already_closed = float(
+                                                st.get("partial_qty_closed_total")
+                                                or 0.0
+                                            )
+                                        except (TypeError, ValueError):
+                                            already_closed = 0.0
+                                        if (
+                                            not math.isfinite(already_closed)
+                                            or already_closed < 0
+                                        ):
+                                            already_closed = 0.0
+                                        new_closed_total = already_closed + qty_to_close
+                                        st["partial_steps_taken"] = int(
+                                            current_target_step
+                                        )
+                                        st["partial_qty_closed_total"] = float(
+                                            new_closed_total
+                                        )
+                                        state_patch["partial_qty_closed_total"] = float(
+                                            new_closed_total
+                                        )
+                                        instance_storage.merge_instance_state(
+                                            iid, state_patch
+                                        )
+                                        _patch_instance_state_cache(iid, state_patch)
+                                        label = AVAILABLE_STRATEGIES.get(strat, strat)
+                                        logging.info(
+                                            "[instances] [%s] Single Candle partial exit: "
+                                            "step %d → %d (+%d steps). Closing %.4f qty "
+                                            "(total partial closed so far: %.4f) mid=%.1f",
+                                            iid,
+                                            highest_step_taken,
+                                            current_target_step,
+                                            steps_to_exec,
+                                            qty_to_close,
+                                            new_closed_total,
+                                            live_mid,
+                                        )
+                                        print(
+                                            f"[{datetime.now().isoformat()}] ◫ PARTIAL (touch) "
+                                            f"({sym_u} {interval_minutes}m) [{label}] "
+                                            f"[{inst.get('name')}] qty={qty_to_close:.4f} "
+                                            f"partial_total={new_closed_total:.4f} "
+                                            f"mid={live_mid:.6g}"
+                                        )
+                                        meta_partial: dict[str, Any] = {
+                                            **meta_base,
+                                            "reason": "partial_qty_exit_touch",
+                                            "close_qty": float(qty_to_close),
+                                            "partial_steps_target": int(
+                                                current_target_step
+                                            ),
+                                            "paper_exit_price": float(live_mid),
+                                        }
+                                        _loop.call_soon_threadsafe(
+                                            _signal_queue.put_nowait,
+                                            ("partial_close", meta_partial),
+                                        )
+                                        partial_queued_here = True
+
+            # ---------------------------------------------------------
+            # BREAKEVEN STOPLOSS (move SL to entry at 50% of target path)
+            # ---------------------------------------------------------
+            use_breakeven = (
+                str(inst_params.get("moveSlToEntryAtHalfTarget", True)).lower()
+                == "true"
+            )
+            breakeven_done = bool(st.get("breakeven_sl_triggered"))
+            if (
+                our_trade
+                and live_mid > 0
+                and snap_tr > 1e-18
+                and use_breakeven
+                and not breakeven_done
+                and _is_autotrade_enabled()
+            ):
+                try:
+                    ent_be = float(ent_tr or 0.0)
+                except (TypeError, ValueError):
+                    ent_be = 0.0
+                ps_be = str(side_tr or "").strip().lower()
+                try:
+                    sl_b = float(inst_params.get("slPoints", 50.0) or 50.0)
+                except (TypeError, ValueError):
+                    sl_b = 50.0
+                if not math.isfinite(sl_b) or sl_b <= 0:
+                    sl_b = 50.0
+                try:
+                    tp_m = float(inst_params.get("tpMultiplier", 2.0) or 2.0)
+                except (TypeError, ValueError):
+                    tp_m = 2.0
+                if not math.isfinite(tp_m) or tp_m <= 0:
+                    tp_m = 2.0
+                tp_dist_be = sl_b * tp_m
+                half_target_dist = tp_dist_be * 0.5
+                reached_half = False
+                if ent_be > 0 and half_target_dist > 0:
+                    if ps_be == "buy" and (live_mid - ent_be) >= half_target_dist:
+                        reached_half = True
+                    elif ps_be == "sell" and (ent_be - live_mid) >= half_target_dist:
+                        reached_half = True
+                if reached_half:
+                    be_patch = {"breakeven_sl_triggered": True}
+                    st["breakeven_sl_triggered"] = True
+                    instance_storage.merge_instance_state(iid, be_patch)
+                    _patch_instance_state_cache(iid, be_patch)
                     logging.info(
-                        "[instances] [%s] Single Candle time exit on candle close (%s %dm conf_start=%s last_signal_start=%s)",
+                        "[Breakeven] Half-target reached for %s. Moving SL to entry: %.8g (mid=%.8g)",
                         iid,
-                        sym_u,
-                        interval_minutes,
-                        conf_start,
-                        last_sig_start,
+                        ent_be,
+                        live_mid,
                     )
-                    print(
-                        f"[{datetime.now().isoformat()}] ⏹ CLOSE ({sym_u} {interval_minutes}m) "
-                        f"[{label}] [{inst.get('name')}] single_candle_candle_close"
-                    )
-                    close_meta: dict[str, Any] = {
+                    meta_be: dict[str, Any] = {
                         **meta_base,
-                        "reason": "single_candle_candle_close",
+                        "reason": "breakeven_sl_update",
+                        "new_sl_price": float(ent_be),
                     }
-                    if _paper_exit_from_bar > 0:
-                        close_meta["paper_exit_price"] = float(_paper_exit_from_bar)
                     _loop.call_soon_threadsafe(
                         _signal_queue.put_nowait,
-                        ("close", close_meta),
+                        ("update_sl", meta_be),
                     )
-                    single_candle_close_queued_this_message = True
-                allow_entry_despite_open_pos = (
-                    _is_autotrade_enabled() and single_candle_close_queued_this_message
-                )
+
+            if our_trade and is_kline_closed and new_bar_after_entry:
+                should_close = exit_on_close
+                close_reason = "single_candle_candle_close"
+
+                if not should_close and trailing_candle_exit:
+                    snap_tr, ent_tr, side_tr = _read_position_for_symbol(sym_u)
+                    # Trailing uses current book vs entry only (no partial_steps / instance flags).
+                    trailing_ok = not partial_queued_here
+                    if partial_queued_here:
+                        trailing_ok = False
+                        try:
+                            e_tr = float(ent_tr or 0.0)
+                        except (TypeError, ValueError):
+                            e_tr = 0.0
+                        if e_tr > 0 and snap_tr > 1e-18:
+                            bb, ba, _, _ = xst.get_orderbook_l1(sym_u, SYMBOL)
+                            mid_mk = (
+                                (float(bb) + float(ba)) / 2.0
+                                if bb > 0 and ba > 0
+                                else 0.0
+                            )
+                            if mid_mk > 0:
+                                upnl = _virtual_linear_pnl_usd(
+                                    e_tr,
+                                    mid_mk,
+                                    snap_tr,
+                                    side_tr,
+                                    contract_symbol=sym_u,
+                                )
+                                if upnl < 0:
+                                    trailing_ok = True
+                    if trailing_ok and snap_tr > 1e-18:
+                        # Trailing Candle Profit Logic (Strictly Timestamp-Based)
+                        closed_row_data: dict[str, Any] | None = None
+                        if isinstance(ev_sc, dict):
+                            _sr = ev_sc.get("signal_row")
+                            if isinstance(_sr, dict) and "close" in _sr:
+                                closed_row_data = dict(_sr)
+                            elif hasattr(_sr, "to_dict"):
+                                try:
+                                    closed_row_data = _sr.to_dict()
+                                except Exception:
+                                    closed_row_data = None
+                        if closed_row_data is None and len(df_closed) >= 1:
+                            for _j in range(len(df_closed) - 1, -1, -1):
+                                try:
+                                    if int(df_closed.iloc[_j]["start"]) == int(
+                                        conf_start
+                                    ):
+                                        closed_row_data = df_closed.iloc[
+                                            _j
+                                        ].to_dict()
+                                        break
+                                except (TypeError, ValueError, KeyError):
+                                    continue
+                        if (
+                            isinstance(closed_row_data, dict)
+                            and "close" in closed_row_data
+                            and int(closed_row_data.get("start") or 0) > 0
+                        ):
+                            closed_start = int(closed_row_data["start"])
+                            if closed_start > last_sig_start:
+                                interval_ms = int(interval_minutes) * 60 * 1000
+                                prev_start = closed_start - interval_ms
+                                prev_row = None
+                                for i in range(len(df_closed) - 1, -1, -1):
+                                    try:
+                                        if int(df_closed.iloc[i]["start"]) == prev_start:
+                                            prev_row = df_closed.iloc[i]
+                                            break
+                                    except (TypeError, ValueError, KeyError):
+                                        continue
+                                if prev_row is not None:
+                                    curr_c = float(closed_row_data["close"])
+                                    prev_l = float(prev_row["low"])
+                                    prev_h = float(prev_row["high"])
+                                    _, _, pos_side_raw = _read_position_for_symbol(
+                                        sym_u
+                                    )
+                                    ps = str(pos_side_raw or "").strip().lower()
+                                    if ps == "buy" and curr_c < prev_l:
+                                        should_close = True
+                                        close_reason = "trailing_candle_exit_long"
+                                    elif ps == "sell" and curr_c > prev_h:
+                                        should_close = True
+                                        close_reason = (
+                                            "trailing_candle_exit_short"
+                                        )
+
+                if should_close:
+                    if _is_autotrade_enabled() and not single_candle_close_queued_this_message:
+                        label = AVAILABLE_STRATEGIES.get(strat, strat)
+                        logging.info(
+                            "[instances] [%s] Single Candle exit triggered (%s %dm) reason=%s",
+                            iid,
+                            sym_u,
+                            interval_minutes,
+                            close_reason,
+                        )
+                        print(
+                            f"[{datetime.now().isoformat()}] ⏹ CLOSE ({sym_u} {interval_minutes}m) "
+                            f"[{label}] [{inst.get('name')}] {close_reason}"
+                        )
+                        close_meta: dict[str, Any] = {
+                            **meta_base,
+                            "reason": close_reason,
+                        }
+                        if _paper_exit_from_bar > 0:
+                            close_meta["paper_exit_price"] = float(_paper_exit_from_bar)
+                        _loop.call_soon_threadsafe(
+                            _signal_queue.put_nowait,
+                            ("close", close_meta),
+                        )
+                        single_candle_close_queued_this_message = True
+                    allow_entry_despite_open_pos = (
+                        _is_autotrade_enabled() and single_candle_close_queued_this_message
+                    )
+                    if allow_entry_despite_open_pos:
+                        cache_key = f"{iid}_{conf_start}"
+                        queued_signals_cache.pop(cache_key, None)
+                        # Stop-and-reverse: clear bar dedup so entry can fire on this same closed bar.
+                        instance_storage.merge_instance_state(
+                            iid, {"last_signal_start": None}
+                        )
+                        _patch_instance_state_cache(iid, {"last_signal_start": None})
+                        st["last_signal_start"] = None
 
         if symbol_has_open_position and not allow_entry_despite_open_pos:
             continue
@@ -5177,9 +5825,10 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             reason = str(ev.get("reason") or "")
             row_dict = ev.get("signal_row")
         elif strat == "single_candle":
-            # df_closed = only confirmed bars from buffer (see _closed_kline_dataframe).
+            # Live buffer so iloc[-1] can be forming; strategy picks last closed == True or iloc[-2].
+            st_sc = {**st, "symbol": sym_u}
             ev = single_candle.evaluate(
-                df_closed, dict(inst.get("params") or {}), st
+                df_sc_raw, dict(inst.get("params") or {}), st_sc
             )
             signal = ev.get("signal") if ev else None
             reason = str((ev or {}).get("reason") or "")
@@ -5201,9 +5850,9 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
                 signal_bar_start_for_dedup = conf_start
         if int(st.get("last_signal_start") or 0) == signal_bar_start_for_dedup:
             logging.info(
-                "[instances] Skip %s — already queued signal for conf_start=%s (wait for next candle)",
+                "[instances] Skip %s — already queued signal for bar_start=%s (wait for next candle)",
                 inst.get("id"),
-                conf_start,
+                signal_bar_start_for_dedup,
             )
             continue
 
@@ -5537,8 +6186,16 @@ async def _async_instance_time_exit_close(meta: dict | None) -> None:
         )
         return
     if not get_open_position(sym):
-        instance_storage.merge_instance_state(iid, {"in_position": False})
-        _patch_instance_state_cache(iid, {"in_position": False})
+        _flat_sc = {
+            "in_position": False,
+            "partial_steps_taken": 0,
+            "partial_qty_closed_total": 0.0,
+            "initial_entry_qty": None,
+            "realized_pnl_current_trade": 0.0,
+            "breakeven_sl_triggered": False,
+        }
+        instance_storage.merge_instance_state(iid, _flat_sc)
+        _patch_instance_state_cache(iid, _flat_sc)
         return
     trigger = 0.0
     if _virtual_trading_enabled():
@@ -5580,6 +6237,181 @@ async def _async_instance_time_exit_close(meta: dict | None) -> None:
     await _async_local_sl_tp_close(trigger, sym)
 
 
+async def _async_single_candle_partial_close(meta: dict | None) -> None:
+    """Reduce open size by ``close_qty`` (virtual wallet + fees, or live chunk IOC)."""
+    m = dict(meta or {})
+    iid = str(m.get("instance_id") or "").strip()
+    sym = _norm_sym(str(m.get("symbol") or SYMBOL))
+    if not iid:
+        return
+    aid = str(_active_order_instance_id or "").strip()
+    if aid and aid != iid:
+        logging.info(
+            "[single_candle] Partial exit skipped: active instance %s != %s",
+            aid,
+            iid,
+        )
+        return
+    try:
+        target_steps = int(m.get("partial_steps_target", 0))
+    except (TypeError, ValueError):
+        target_steps = 0
+    try:
+        cq_req = float(m.get("close_qty") or 0.0)
+    except (TypeError, ValueError):
+        cq_req = 0.0
+    if cq_req <= 1e-18:
+        return
+    reason = str(m.get("reason") or "single_candle_partial_exit")
+    sz, _, ps_raw = _read_position_for_symbol(sym)
+    if sz <= 1e-18:
+        return
+    qstep, qmin = _qty_constraints_for_symbol(sym)
+    cq = min(float(cq_req), float(sz))
+    cq = math.floor(cq / qstep) * qstep
+    if cq < qmin:
+        logging.info(
+            "[single_candle] Partial exit qty %s below min %s after step; skip",
+            cq_req,
+            qmin,
+        )
+        return
+    if cq > sz + 1e-12:
+        cq = math.floor(float(sz) / qstep) * qstep
+    if cq < qmin or cq <= 1e-18:
+        return
+
+    trigger = 0.0
+    if _virtual_trading_enabled():
+        try:
+            pep = m.get("paper_exit_price")
+            if pep is not None:
+                trigger = float(pep)
+        except (TypeError, ValueError):
+            trigger = 0.0
+        if not math.isfinite(trigger) or trigger <= 0:
+            trigger = 0.0
+        else:
+            _, ent_raw, _ = _read_position_for_symbol(sym)
+            ent = float(ent_raw or 0.0)
+            if ent > 0 and (trigger < ent * 0.5 or trigger > ent * 2.0):
+                logging.warning(
+                    "[single_candle] partial paper_exit_price=%s inconsistent with entry=%s; L1",
+                    trigger,
+                    ent,
+                )
+                trigger = 0.0
+    if trigger <= 0:
+        bb, ba, _, _ = xst.get_orderbook_l1(sym, SYMBOL)
+        if bb > 0 and ba > 0:
+            trigger = (float(bb) + float(ba)) / 2.0
+        elif bb > 0:
+            trigger = float(bb)
+        elif ba > 0:
+            trigger = float(ba)
+    if trigger <= 0:
+        logging.warning("[single_candle] Partial exit: no exit price for %s", sym)
+        return
+
+    if _virtual_trading_enabled():
+        _finalize_virtual_position_close(
+            float(trigger), reason, symbol=sym, close_qty=float(cq)
+        )
+        instance_storage.merge_instance_state(
+            iid, {"partial_steps_taken": int(target_steps)}
+        )
+        _patch_instance_state_cache(iid, {"partial_steps_taken": int(target_steps)})
+        return
+
+    if ws_trade is None:
+        logging.error("[single_candle] Partial exit: ws_trade not ready")
+        return
+    ps = str(ps_raw or "").strip()
+    close_side = "Sell" if ps.lower() == "buy" else "Buy"
+    loop = asyncio.get_running_loop()
+    try:
+        await execute_chunk_order_ws(
+            close_side,
+            cq,
+            sym,
+            qstep,
+            qmin,
+            lambda: _get_orderbook_l1(sym),
+            loop,
+            ws_trade,
+            _pending_fills,
+            _pending_fills_lock,
+            HTTP_CLIENT,
+            is_entry=False,
+        )
+    except Exception as e:
+        logging.error("[single_candle] Partial exit failed: %s", e, exc_info=True)
+        return
+    await asyncio.sleep(0.5)
+    instance_storage.merge_instance_state(iid, {"partial_steps_taken": int(target_steps)})
+    _patch_instance_state_cache(iid, {"partial_steps_taken": int(target_steps)})
+    try:
+        _flush_live_state_file_with_tracker()
+    except Exception:
+        pass
+    _sync_position_risk_to_state()
+
+
+async def _async_apply_sl_update(meta: dict | None) -> None:
+    """Apply ``new_sl_price`` to per-symbol tracker (paper + dashboard); optional exchange amend for primary symbol."""
+    global _last_active_sl_price, _breakeven_triggered, _half_target_reached
+    m = dict(meta or {})
+    iid = str(m.get("instance_id") or "").strip()
+    aid = str(_active_order_instance_id or "").strip()
+    if aid and iid and aid != iid:
+        logging.info(
+            "[update_sl] Skipped: active instance %s != meta %s",
+            aid,
+            iid,
+        )
+        return
+    sym = _norm_sym(str(m.get("symbol") or SYMBOL))
+    if not sym:
+        return
+    if not get_open_position(sym):
+        return
+    try:
+        new_sl = float(m.get("new_sl_price"))
+    except (TypeError, ValueError):
+        return
+    if not math.isfinite(new_sl) or new_sl <= 0:
+        return
+    xst.ensure_symbol(sym, SYMBOL)
+    xst.tracker_update(
+        sym,
+        SYMBOL,
+        last_active_sl_price=float(new_sl),
+        breakeven_triggered=True,
+        half_target_reached=True,
+    )
+    sym_primary = _norm_sym(SYMBOL)
+    if sym == sym_primary:
+        _last_active_sl_price = float(new_sl)
+        _breakeven_triggered = True
+        _half_target_reached = True
+    _sync_position_risk_to_state()
+    try:
+        _flush_live_state_file_with_tracker()
+    except Exception:
+        pass
+    reason = str(m.get("reason") or "")
+    if _virtual_trading_enabled():
+        logging.info(
+            "[update_sl] Paper tracker SL -> %.8g sym=%s (%s)",
+            new_sl,
+            sym,
+            reason or "update_sl",
+        )
+        return
+    if sym == sym_primary:
+        _schedule_exchange_sl_tp_resync_from_globals()
+
+
 async def _signal_consumer() -> None:
     """Consume entry signals from queue and run async chunk order + SL/TP."""
     global _signal_queue
@@ -5593,6 +6425,18 @@ async def _signal_consumer() -> None:
                 meta_close = item[1] if len(item) >= 2 else {}
                 await _async_instance_time_exit_close(
                     meta_close if isinstance(meta_close, dict) else {}
+                )
+                continue
+            if item[0] == "partial_close":
+                meta_p = item[1] if len(item) >= 2 else {}
+                await _async_single_candle_partial_close(
+                    meta_p if isinstance(meta_p, dict) else {}
+                )
+                continue
+            if item[0] == "update_sl":
+                meta_u = item[1] if len(item) >= 2 else {}
+                await _async_apply_sl_update(
+                    meta_u if isinstance(meta_u, dict) else {}
                 )
                 continue
             if item[0] != "entry":

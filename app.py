@@ -57,6 +57,7 @@ from main import (
     execute_strategy_signal,
     get_active_strategies_from_env,
     get_live_strategy_status_for_api,
+    enrich_dashboard_position_row,
     get_paper_position_rows_for_ui,
     get_virtual_wallet,
     register_manual_trade,
@@ -384,6 +385,7 @@ def _inject_local_sl_tp_into_positions(positions: list, *, is_delta: bool) -> li
         if is_delta or _exchange_sl_tp_missing(p.get("stop_loss"), p.get("take_profit")):
             p["stop_loss"] = sl_s
             p["take_profit"] = tp_s
+        enrich_dashboard_position_row(p)
     return positions
 
 
@@ -821,6 +823,8 @@ async def api_closed_trades():
                 "side": r.get("side", ""),
                 "createdTime": r.get("createdTime", "0"),
                 "updatedTime": r.get("updatedTime", "0"),
+                "qty": f"{qty:g}" if qty and qty > 0 else (r.get("qty") or r.get("closedSize") or ""),
+                "size": f"{qty:g}" if qty and qty > 0 else (r.get("qty") or r.get("closedSize") or ""),
                 "avgEntryPrice": r.get("avgEntryPrice", ""),
                 "avgExitPrice": r.get("avgExitPrice", ""),
                 "leverage": r.get("leverage", ""),
