@@ -29,15 +29,15 @@
       "useTouchEntry": true
     },
     "state": {
-      "in_position": true,
+      "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 1124,
-      "last_evaluated_start": 1774452360000,
+      "bar_seq": 1129,
+      "last_evaluated_start": 1774452660000,
       "last_signal_start": 1774452120000,
-      "partial_steps_taken": 1,
-      "initial_entry_qty": 21.0,
-      "realized_pnl_current_trade": 0.10797619047619045,
-      "partial_qty_closed_total": 5.0,
+      "partial_steps_taken": 0,
+      "initial_entry_qty": null,
+      "realized_pnl_current_trade": 0.0,
+      "partial_qty_closed_total": 0.0,
       "breakeven_sl_triggered": false
     }
   }

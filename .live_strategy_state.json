@@ -3,16 +3,16 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 70969.0,
+      "price": 71033.0,
       "indicators": {
-        "RSI": 83.33,
-        "RSI_SMA": 38.92,
+        "RSI": 81.21,
+        "RSI_SMA": 56.23,
         "volume_signal_vs_prev": true,
-        "body_size": 59.0,
-        "open": 70910.0,
-        "close": 70969.0,
-        "volume": 25000.0,
-        "Expected_Profit_Pct": 0.22
+        "body_size": 39.5,
+        "open": 70993.5,
+        "close": 71033.0,
+        "volume": 42786.0,
+        "Expected_Profit_Pct": 0.14
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -84,7 +84,7 @@
               "met": true
             },
             {
-              "text": "Last closed candle: bullish (O=70910.000000 C=70969.000000)",
+              "text": "Last closed candle: bullish (O=70993.500000 C=71033.000000)",
               "met": false
             },
             {
@@ -96,8 +96,8 @@
               "met": false
             },
             {
-              "text": "Live price \u2265 signal high (touch entry) \u2014 high=70985, mid=70967.5",
-              "met": false
+              "text": "Live price \u2265 signal high (touch entry) \u2014 high=71034.5, mid=71047",
+              "met": true
             }
           ],
           "rules_short": [
@@ -110,7 +110,7 @@
               "met": true
             },
             {
-              "text": "Last closed candle: bullish (O=70910.000000 C=70969.000000)",
+              "text": "Last closed candle: bullish (O=70993.500000 C=71033.000000)",
               "met": true
             },
             {
@@ -122,7 +122,7 @@
               "met": true
             },
             {
-              "text": "Live price \u2264 signal low (touch entry) \u2014 low=70881, mid=70967.5",
+              "text": "Live price \u2264 signal low (touch entry) \u2014 low=70967, mid=71047",
               "met": false
             }
           ],
@@ -130,51 +130,37 @@
           "monitor_sync": {
             "engine": "single_candle",
             "rows_in_buffer": 1000,
-            "conf_bar_start": 1774452300000,
-            "signal_bar_start": 1774452300000,
+            "conf_bar_start": 1774452600000,
+            "signal_bar_start": 1774452600000,
             "last_signal_start": 1774452120000,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
           }
         }
       },
-      "checks_updated_unix": 1774452360.5933561,
-      "status": "Position Open",
-      "sl_price": 70747.0,
-      "tp_price": 70997.0,
-      "entry_price": 70907.0,
-      "position_size": 16.0,
-      "sl_amount_usd": -2.56,
-      "tp_amount_usd": 1.44,
+      "checks_updated_unix": 1774452666.5766943,
+      "status": "Short Signal",
+      "sl_price": null,
+      "tp_price": null,
+      "entry_price": null,
+      "position_size": 0.0,
+      "sl_amount_usd": null,
+      "tp_amount_usd": null,
       "position_risk": {
-        "open": true,
-        "has_levels": true,
-        "side": "Buy",
-        "strategy_name": "Single Candle 15m",
-        "entry_price": 70907.0,
-        "size": 16.0,
-        "sl_price": 70747.0,
-        "tp_price": 70997.0,
-        "sl_amount_usd": -2.56,
-        "tp_amount_usd": 1.44,
-        "position_value_usd": 226.9,
-        "live_mid": 70967.5,
-        "entry_pct": 64.0,
-        "live_mid_pct": 88.2,
-        "breakeven_buffer_active": false
+        "open": false
       },
       "last_signal_candle_start": null,
-      "strategy_name": "Single Candle 15m",
-      "last_sl_price": 70747.0,
-      "last_tp_price": 70997.0,
-      "last_position_side": "Buy",
-      "tracker_sl_max": 70747.0,
-      "tracker_sl_min": 70747.0,
-      "sl_entry_time_unix": 1774452215.3956656,
+      "strategy_name": null,
+      "last_sl_price": 0.0,
+      "last_tp_price": 0.0,
+      "last_position_side": "",
+      "tracker_sl_max": 0.0,
+      "tracker_sl_min": 0.0,
+      "sl_entry_time_unix": 0.0,
       "sl_breakeven_triggered": false,
       "sl_half_target_exited": false,
-      "sl_half_target_reached": true,
-      "base_risk_dist": 160.0
+      "sl_half_target_reached": false,
+      "base_risk_dist": 0.0
     },
     "ETHUSDT": {
       "symbol": "ETHUSDT",

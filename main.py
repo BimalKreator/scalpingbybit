@@ -3843,11 +3843,55 @@ async def _place_order_async(
                 print("No best bid; cannot place SHORT.")
                 return
             base = float(b_bid)
-        sl_wide = sl_tight = float(abs_sl)
-        tp = float(abs_tp)
-        sl = sl_wide
+
         current_price = base
-        range_ = max(abs(float(base) - float(abs_sl)), 1e-12)
+
+        st_type = str(mmeta.get("strategy_type", "")).strip().lower()
+        if st_type == "single_candle":
+            iid_sc = str(mmeta.get("instance_id") or "").strip()
+            inst_sc = (
+                instance_storage.get_instance_by_id(iid_sc) if iid_sc else None
+            )
+            inst_p = dict(inst_sc.get("params") or {}) if inst_sc else {}
+
+            try:
+                sl_points = float(inst_p.get("slPoints", 50.0) or 50.0)
+            except (TypeError, ValueError):
+                sl_points = 50.0
+            if not math.isfinite(sl_points) or sl_points <= 0:
+                sl_points = 50.0
+
+            try:
+                tp_mult_sc = float(inst_p.get("tpMultiplier", 2.0) or 2.0)
+            except (TypeError, ValueError):
+                tp_mult_sc = 2.0
+            if not math.isfinite(tp_mult_sc) or tp_mult_sc <= 0:
+                tp_mult_sc = 2.0
+
+            use_target = (
+                str(inst_p.get("useTarget", "False")).strip().lower() == "true"
+            )
+
+            if side == "Buy":
+                sl_wide = sl_tight = base - sl_points
+                tp = (
+                    base + (sl_points * tp_mult_sc)
+                    if use_target
+                    else base * 1.10
+                )
+            else:
+                sl_wide = sl_tight = base + sl_points
+                tp = (
+                    base - (sl_points * tp_mult_sc)
+                    if use_target
+                    else base * 0.90
+                )
+        else:
+            sl_wide = sl_tight = float(abs_sl)
+            tp = float(abs_tp)
+
+        sl = sl_wide
+        range_ = max(abs(float(base) - float(sl_wide)), 1e-12)
         sl_mx = 1.0
         sl_mn = 1.0
     elif side == "Buy":

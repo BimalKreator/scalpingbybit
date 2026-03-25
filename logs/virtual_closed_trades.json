@@ -176,5 +176,23 @@
     "fees": 0.18452381,
     "exitReason": "partial_qty_exit_touch",
     "strategy_name": "Single Candle 15m"
+  },
+  {
+    "exchange": "Virtual (Paper)",
+    "symbol": "BTCUSDT",
+    "side": "BUY",
+    "createdTime": "1774452596116",
+    "updatedTime": "1774452596116",
+    "qty": "16",
+    "size": "16",
+    "avgEntryPrice": "70907",
+    "avgExitPrice": "70999.8",
+    "leverage": "5",
+    "marginUsed": "",
+    "closedPnl": "0.893524",
+    "fee": 0.59047619,
+    "fees": 0.59047619,
+    "exitReason": "Take Profit (paper)",
+    "strategy_name": "Single Candle 15m"
   }
 ]

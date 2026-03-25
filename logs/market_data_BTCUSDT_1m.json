@@ -93615,6 +93615,71 @@
       "turnover": 0.0,
       "confirm": true,
       "timestamp": 1774452360000
+    },
+    {
+      "start": 1774452420000,
+      "end": 1774452480000,
+      "interval": "1",
+      "open": 70936.0,
+      "high": 70936.0,
+      "low": 70931.5,
+      "close": 70931.5,
+      "volume": 47.0,
+      "turnover": 0.0,
+      "confirm": true,
+      "timestamp": 1774452420000
+    },
+    {
+      "start": 1774452480000,
+      "end": 1774452540000,
+      "interval": "1",
+      "open": 70901.5,
+      "high": 70901.5,
+      "low": 70901.5,
+      "close": 70901.5,
+      "volume": 3.0,
+      "turnover": 0.0,
+      "confirm": true,
+      "timestamp": 1774452480000
+    },
+    {
+      "start": 1774452540000,
+      "end": 1774452600000,
+      "interval": "1",
+      "open": 70929.0,
+      "high": 70929.0,
+      "low": 70928.0,
+      "close": 70929.0,
+      "volume": 12.0,
+      "turnover": 0.0,
+      "confirm": true,
+      "timestamp": 1774452540000
+    },
+    {
+      "start": 1774452600000,
+      "end": 1774452660000,
+      "interval": "1",
+      "open": 70993.5,
+      "high": 71000.5,
+      "low": 70993.5,
+      "close": 71000.5,
+      "volume": 527.0,
+      "turnover": 0.0,
+      "confirm": true,
+      "timestamp": 1774452600000
+    },
+    {
+      "start": 1774452660000,
+      "end": 1774452720000,
+      "interval": "1",
+      "open": 71032.0,
+      "high": 71032.0,
+      "low": 71026.5,
+      "close": 71026.5,
+      "volume": 411.0,
+      "turnover": 0.0,
+      "confirm": true,
+      "timestamp": 1774452660000
     }
   ]
 }
