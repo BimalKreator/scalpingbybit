@@ -3,39 +3,39 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 68512.0,
+      "price": 68585.5,
       "indicators": {
-        "RSI": 10.35,
-        "RSI_SMA": 23.52,
-        "volume_signal_vs_prev": true,
-        "body_size": 41.5,
-        "open": 68553.5,
-        "close": 68512.0,
-        "volume": 18365.0,
-        "Expected_Profit_Pct": 0.14
+        "RSI": 55.62,
+        "RSI_SMA": 41.03,
+        "volume_signal_vs_prev": false,
+        "body_size": 26.5,
+        "open": 68559.0,
+        "close": 68585.5,
+        "volume": 3405.0,
+        "Expected_Profit_Pct": 0.08
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
         "long": [
           {
             "name": "Signal Candle Bearish (open > close)",
-            "met": true
+            "met": false
           },
           {
             "name": "Previous Candle Bearish",
-            "met": true
+            "met": false
           },
           {
             "name": "Both Bearish",
-            "met": true
+            "met": false
           },
           {
             "name": "Volume: signal > previous",
-            "met": true
+            "met": false
           },
           {
             "name": "RSI < 40.0",
-            "met": true
+            "met": false
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -45,19 +45,19 @@
         "short": [
           {
             "name": "Signal Candle Bullish (close > open)",
-            "met": false
+            "met": true
           },
           {
             "name": "Previous Candle Bullish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bullish",
-            "met": false
+            "met": true
           },
           {
             "name": "Volume: signal > previous",
-            "met": true
+            "met": false
           },
           {
             "name": "RSI > 60.0",
@@ -77,7 +77,7 @@
           "rules_long": [
             {
               "text": "Instance flat (no open position)",
-              "met": true
+              "met": false
             },
             {
               "text": "tradeMode allows LONG (Both)",
@@ -88,14 +88,14 @@
               "met": false
             },
             {
-              "text": "SL = signal close \u2212 50.0 pts, TP = signal close + 100.0 pts (absolute)",
+              "text": "SL = signal close \u2212 50.0 pts, TP = signal close + 1000.0 pts (absolute); RSI exit widens TP 10\u00d7",
               "met": false
             }
           ],
           "rules_short": [
             {
               "text": "Instance flat (no open position)",
-              "met": true
+              "met": false
             },
             {
               "text": "tradeMode allows SHORT (Both)",
@@ -106,50 +106,67 @@
               "met": false
             },
             {
-              "text": "SL = signal close + 50.0 pts, TP = signal close \u2212 100.0 pts (absolute)",
+              "text": "SL = signal close + 50.0 pts, TP = signal close \u2212 1000.0 pts (absolute); RSI exit widens TP 10\u00d7",
               "met": false
             }
           ],
-          "note": "ATR period=50 factor=1.0 tradeMode=Both. Prior closed: bearish (DOWN); latest closed: bearish (DOWN). Entry: Supertrend direction flip on candle close only (no touch entry). Exit: live opposite-band touch, candle-close trend against you, SL/TP, or exchange stops.",
+          "note": "ATR period=50 factor=1.0 tradeMode=Both. Prior closed: bullish (UP); latest closed: bullish (UP). Entry: Supertrend direction flip on candle close only (no touch entry). Exit: live opposite-band touch, RSI target exit ON: RSI(5) on last close \u2014 flatten long if \u226580.0, short if \u226420.0. Last RSI(5)=54.08.  candle-close trend against you, SL/TP, or exchange stops.",
           "monitor_sync": {
             "engine": "supertrend_scalping",
             "rows_in_buffer": 1000,
-            "prev_dir": -1.0,
-            "curr_dir": -1.0,
+            "prev_dir": 1.0,
+            "curr_dir": 1.0,
             "flip_long_ok": false,
             "flip_short_ok": false,
-            "last_closed_start": 1774589580000,
-            "prior_closed_start": 1774589520000,
-            "live_mid": 68495.75,
-            "last_signal_start": 1774588620000,
+            "use_rsi_target": true,
+            "target_rsi_length": 5,
+            "last_rsi": 54.0797,
+            "last_closed_start": 1774590180000,
+            "prior_closed_start": 1774590120000,
+            "live_mid": 68588.5,
+            "last_signal_start": 1774590120000,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
           }
         }
       },
-      "checks_updated_unix": 1774589599.6532655,
-      "status": "Long Signal",
-      "sl_price": null,
-      "tp_price": null,
-      "entry_price": null,
-      "position_size": 0.0,
-      "sl_amount_usd": null,
-      "tp_amount_usd": null,
+      "checks_updated_unix": 1774590236.6690598,
+      "status": "Position Open",
+      "sl_price": 68520.5,
+      "tp_price": 69570.5,
+      "entry_price": 68569.0,
+      "position_size": 14.0,
+      "sl_amount_usd": -0.679,
+      "tp_amount_usd": 14.021,
       "position_risk": {
-        "open": false
+        "open": true,
+        "has_levels": true,
+        "side": "Buy",
+        "strategy_name": "Supertrend Scalping 1m",
+        "entry_price": 68569.0,
+        "size": 14.0,
+        "sl_price": 68520.5,
+        "tp_price": 69570.5,
+        "sl_amount_usd": -0.679,
+        "tp_amount_usd": 14.021,
+        "position_value_usd": 191.99,
+        "live_mid": 68588.5,
+        "entry_pct": 4.62,
+        "live_mid_pct": 6.48,
+        "breakeven_buffer_active": false
       },
       "last_signal_candle_start": null,
-      "strategy_name": null,
-      "last_sl_price": 0.0,
-      "last_tp_price": 0.0,
-      "last_position_side": "",
-      "tracker_sl_max": 0.0,
-      "tracker_sl_min": 0.0,
-      "sl_entry_time_unix": 0.0,
+      "strategy_name": "Supertrend Scalping 1m",
+      "last_sl_price": 68520.5,
+      "last_tp_price": 69570.5,
+      "last_position_side": "Buy",
+      "tracker_sl_max": 68520.5,
+      "tracker_sl_min": 68520.5,
+      "sl_entry_time_unix": 1774590147.746201,
       "sl_breakeven_triggered": false,
       "sl_half_target_exited": false,
       "sl_half_target_reached": false,
-      "base_risk_dist": 0.0
+      "base_risk_dist": 48.5
     },
     "ETHUSDT": {
       "symbol": "ETHUSDT",

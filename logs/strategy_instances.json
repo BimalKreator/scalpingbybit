@@ -17,14 +17,18 @@
       "usePartialExit": false,
       "feePct": 0.05,
       "feeOnEntry": true,
-      "feeOnExit": false
+      "feeOnExit": false,
+      "useRsiTarget": true,
+      "targetRsiLength": 5,
+      "targetRsiLong": 80,
+      "targetRsiShort": 20
     },
     "state": {
-      "in_position": false,
+      "in_position": true,
       "cooldown_until_bar": 0,
-      "bar_seq": 88,
-      "last_evaluated_start": 1774589580000,
-      "last_signal_start": 1774588620000,
+      "bar_seq": 98,
+      "last_evaluated_start": 1774590180000,
+      "last_signal_start": 1774590120000,
       "partial_steps_taken": 0,
       "partial_qty_closed_total": 0.0,
       "initial_entry_qty": null,

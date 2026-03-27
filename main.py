@@ -974,6 +974,7 @@ def _append_virtual_closed_trade_row(
     strategy_name: str | None = None,
     trade_symbol: str | None = None,
     fee: float = 0.0,
+    gross_pnl: float | None = None,
 ) -> None:
     try:
         VIRTUAL_CLOSED_TRADES_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -983,6 +984,9 @@ def _append_virtual_closed_trade_row(
         sym_row = _norm_sym(trade_symbol or SYMBOL)
         fee_f = float(fee) if math.isfinite(float(fee)) else 0.0
         qf = float(qty) if math.isfinite(float(qty)) else 0.0
+        gp = gross_pnl
+        gp_ok = gp is not None and math.isfinite(float(gp))
+        net_f = float(pnl) if math.isfinite(float(pnl)) else 0.0
         row = {
             "exchange": "Virtual (Paper)",
             "symbol": sym_row,
@@ -995,7 +999,10 @@ def _append_virtual_closed_trade_row(
             "avgExitPrice": f"{float(exit_price):g}" if exit_price > 0 else "",
             "leverage": str(int(lev)) if abs(lev - round(lev)) < 1e-9 else str(lev),
             "marginUsed": "",
-            "closedPnl": str(round(float(pnl), 6)),
+            # closedPnl / netPnl are after fees; grossPnl is pre-fee (for UI / debugging).
+            "closedPnl": str(round(net_f, 6)),
+            "netPnl": str(round(net_f, 6)),
+            "grossPnl": str(round(float(gp), 6)) if gp_ok else "",
             "fee": round(fee_f, 8),
             "fees": round(fee_f, 8),
             "exitReason": exit_reason,
@@ -1234,8 +1241,8 @@ def _finalize_virtual_position_close(
         entry_fee = (entry_notional * fee_rate) if fee_on_entry else 0.0
         exit_fee = (exit_notional * fee_rate) if fee_on_exit else 0.0
         total_fee = entry_fee + exit_fee
-        net_pnl = gross_pnl - total_fee
-        update_virtual_wallet(net_pnl)
+        net_pnl = float(gross_pnl) - float(total_fee)
+        update_virtual_wallet(pnl_change=net_pnl)
         strat_snap = (_active_trade_strategy_name or "Manual").strip()
         _append_virtual_closed_trade_row(
             entry_price=entry,
@@ -1247,6 +1254,7 @@ def _finalize_virtual_position_close(
             strategy_name=strat_snap,
             trade_symbol=sym,
             fee=total_fee,
+            gross_pnl=gross_pnl,
         )
         if sym == _norm_sym(SYMBOL):
             _monitor_had_position = False
@@ -1280,8 +1288,8 @@ def _finalize_virtual_position_close(
     entry_fee = (entry_notional_closed * fee_rate) if fee_on_entry else 0.0
     exit_fee = (exit_notional_closed * fee_rate) if fee_on_exit else 0.0
     total_fee = entry_fee + exit_fee
-    net_pnl = gross_pnl - total_fee
-    update_virtual_wallet(net_pnl)
+    net_pnl = float(gross_pnl) - float(total_fee)
+    update_virtual_wallet(pnl_change=net_pnl)
     strat_snap = (_active_trade_strategy_name or "Manual").strip()
     er = str(exit_reason or "")
     row_reason = er if "partial" in er.lower() else f"Partial Close (paper) — {er}"
@@ -1295,6 +1303,7 @@ def _finalize_virtual_position_close(
         strategy_name=strat_snap,
         trade_symbol=sym,
         fee=total_fee,
+        gross_pnl=gross_pnl,
     )
     new_sz = max(0.0, snap_sz - cq)
     tr_rem = xst.tracker(sym, SYMBOL)

@@ -88,5 +88,41 @@
     "fees": 0.5,
     "exitReason": "TIME_EXIT (paper)",
     "strategy_name": "Supertrend Scalping 1m"
+  },
+  {
+    "exchange": "Virtual (Paper)",
+    "symbol": "BTCUSDT",
+    "side": "BUY",
+    "createdTime": "1774589884242",
+    "updatedTime": "1774589884242",
+    "qty": "14",
+    "size": "14",
+    "avgEntryPrice": "68518.5",
+    "avgExitPrice": "68624",
+    "leverage": "5",
+    "marginUsed": "",
+    "closedPnl": "0.997371",
+    "fee": 0.4796295,
+    "fees": 0.4796295,
+    "exitReason": "TIME_EXIT (paper)",
+    "strategy_name": "Supertrend Scalping 1m"
+  },
+  {
+    "exchange": "Virtual (Paper)",
+    "symbol": "BTCUSDT",
+    "side": "SELL",
+    "createdTime": "1774589890686",
+    "updatedTime": "1774589890686",
+    "qty": "14",
+    "size": "14",
+    "avgEntryPrice": "68623.5",
+    "avgExitPrice": "68624",
+    "leverage": "5",
+    "marginUsed": "",
+    "closedPnl": "-0.487365",
+    "fee": 0.4803645,
+    "fees": 0.4803645,
+    "exitReason": "TIME_EXIT (paper)",
+    "strategy_name": "Supertrend Scalping 1m"
   }
 ]

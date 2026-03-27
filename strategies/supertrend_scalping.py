@@ -2,6 +2,8 @@
 Supertrend Scalping — entries only on candle close when Supertrend direction flips vs the prior closed bar;
 fixed SL/TP in points from the signal bar close (TP widened when optional RSI target exit is on);
 exits: live opposite-band touch, optional candle-close RSI target, then candle-close Supertrend flip.
+
+SUPERTd convention (pandas_ta / TradingView-style): direction < 0 = uptrend, > 0 = downtrend.
 """
 
 from __future__ import annotations
@@ -283,11 +285,24 @@ def evaluate(
             and curr_lower is not None
         )
         if live_price > 0 and touch_ok:
-            if pos_side == "buy" and curr_dir > 0 and live_price <= curr_lower:
+            # SUPERTd: <0 = uptrend, >0 = downtrend (TradingView / pandas_ta convention used here).
+            if (
+                pos_side == "buy"
+                and curr_dir is not None
+                and curr_dir < 0
+                and (curr_lower or 0) > 0
+                and live_price <= curr_lower
+            ):
                 out["signal"] = "Flat"
                 out["reason"] = "sl_hit_opposite_signal_short_touch"
                 return out
-            if pos_side == "sell" and curr_dir < 0 and live_price >= curr_upper:
+            if (
+                pos_side == "sell"
+                and curr_dir is not None
+                and curr_dir > 0
+                and (curr_upper or 0) > 0
+                and live_price >= curr_upper
+            ):
                 out["signal"] = "Flat"
                 out["reason"] = "sl_hit_opposite_signal_long_touch"
                 return out
@@ -313,11 +328,11 @@ def evaluate(
                     return out
 
         if curr_dir is not None:
-            if pos_side == "buy" and curr_dir < 0:
+            if pos_side == "buy" and curr_dir > 0:
                 out["signal"] = "Flat"
                 out["reason"] = "supertrend_changed_to_bearish_close"
                 return out
-            if pos_side == "sell" and curr_dir > 0:
+            if pos_side == "sell" and curr_dir < 0:
                 out["signal"] = "Flat"
                 out["reason"] = "supertrend_changed_to_bullish_close"
                 return out
@@ -354,15 +369,15 @@ def evaluate(
     sl_price = tp_price = None
     actual_tp_points = tp_points * 10.0 if use_rsi_target else tp_points
 
-    # LONG: trend officially flipped down → up on the close of target_row (prev bearish, curr bullish).
-    if prev_dir < 0 and curr_dir > 0:
+    # LONG: flipped DOWNTREND (>0) → UPTREND (<0) on candle close.
+    if prev_dir > 0 and curr_dir < 0:
         if mode in ("Both", "Long"):
             side = "Buy"
             reason = "supertrend_flip_long"
             sl_price = entry_close - sl_points
             tp_price = entry_close + actual_tp_points
-    # SHORT: trend officially flipped up → down on the close of target_row (prev bullish, curr bearish).
-    elif prev_dir > 0 and curr_dir < 0:
+    # SHORT: flipped UPTREND (<0) → DOWNTREND (>0) on candle close.
+    elif prev_dir < 0 and curr_dir > 0:
         if mode in ("Both", "Short"):
             side = "Sell"
             reason = "supertrend_flip_short"
@@ -479,24 +494,33 @@ def build_entry_checklists(
     prev_row_ck = d.iloc[-2]
     curr_dir = _dir_value(target_row, dir_col)
     prev_dir = _dir_value(prev_row_ck, dir_col)
+    # SUPERTd: <0 = uptrend, >0 = downtrend (TradingView / pandas_ta convention).
     curr_txt = (
-        "bullish (UP)" if (curr_dir is not None and curr_dir > 0) else "bearish (DOWN)" if (curr_dir is not None and curr_dir < 0) else "n/a"
+        "bullish (UP)"
+        if (curr_dir is not None and curr_dir < 0)
+        else "bearish (DOWN)"
+        if (curr_dir is not None and curr_dir > 0)
+        else "n/a"
     )
     prev_txt = (
-        "bullish (UP)" if (prev_dir is not None and prev_dir > 0) else "bearish (DOWN)" if (prev_dir is not None and prev_dir < 0) else "n/a"
+        "bullish (UP)"
+        if (prev_dir is not None and prev_dir < 0)
+        else "bearish (DOWN)"
+        if (prev_dir is not None and prev_dir > 0)
+        else "n/a"
     )
 
-    flip_long = (
-        prev_dir is not None
-        and curr_dir is not None
-        and prev_dir < 0
-        and curr_dir > 0
-    )
-    flip_short = (
+    flip_long_ok = (
         prev_dir is not None
         and curr_dir is not None
         and prev_dir > 0
         and curr_dir < 0
+    )
+    flip_short_ok = (
+        prev_dir is not None
+        and curr_dir is not None
+        and prev_dir < 0
+        and curr_dir > 0
     )
 
     long_ok = mode in ("Both", "Long")
@@ -506,30 +530,30 @@ def build_entry_checklists(
         {"text": "Instance flat (no open position)", "met": not in_pos},
         {"text": f"tradeMode allows LONG ({mode})", "met": long_ok},
         {
-            "text": "Trend flipped to UPTREND on candle close (prior bar bearish → latest bar bullish)",
-            "met": bool(flip_long and not in_pos),
+            "text": "Trend flipped to UPTREND on candle close (prior bar downtrend → latest bar uptrend)",
+            "met": bool(flip_long_ok and not in_pos),
         },
         {
             "text": (
                 f"SL = signal close − {sl_pts} pts, TP = signal close + {tp_widened} pts (absolute)"
                 + ("; RSI exit widens TP 10×" if use_rsi else "")
             ),
-            "met": bool(flip_long and long_ok and not in_pos),
+            "met": bool(flip_long_ok and long_ok and not in_pos),
         },
     ]
     rules_short = [
         {"text": "Instance flat (no open position)", "met": not in_pos},
         {"text": f"tradeMode allows SHORT ({mode})", "met": short_ok},
         {
-            "text": "Trend flipped to DOWNTREND on candle close (prior bar bullish → latest bar bearish)",
-            "met": bool(flip_short and not in_pos),
+            "text": "Trend flipped to DOWNTREND on candle close (prior bar uptrend → latest bar downtrend)",
+            "met": bool(flip_short_ok and not in_pos),
         },
         {
             "text": (
                 f"SL = signal close + {sl_pts} pts, TP = signal close − {tp_widened} pts (absolute)"
                 + ("; RSI exit widens TP 10×" if use_rsi else "")
             ),
-            "met": bool(flip_short and short_ok and not in_pos),
+            "met": bool(flip_short_ok and short_ok and not in_pos),
         },
     ]
 
@@ -567,8 +591,8 @@ def build_entry_checklists(
         "rows_in_buffer": n_buf,
         "prev_dir": prev_dir,
         "curr_dir": curr_dir,
-        "flip_long_ok": flip_long,
-        "flip_short_ok": flip_short,
+        "flip_long_ok": flip_long_ok,
+        "flip_short_ok": flip_short_ok,
         "use_rsi_target": use_rsi,
         "target_rsi_length": trsi_len,
         "last_rsi": round(crsi_sync, 4)
