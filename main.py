@@ -296,6 +296,24 @@ _instances_runtime_lock = threading.Lock()
 _STRATEGY_INSTANCES_CACHE: list[dict] = []
 # Optional in-memory keys ``{instance_id}_{bar_start}`` (e.g. for S&R after close); dedup is primarily ``last_signal_start``.
 queued_signals_cache: dict[str, Any] = {}
+
+
+def _clear_instance_bar_entry_dedup(
+    instance_id: str, conf_start: int | None = None
+) -> None:
+    """
+    Reset per-instance entry anti-spam so a new signal can queue on the same closed bar.
+
+    Used for stop-and-reverse: e.g. Supertrend trend-flip close then immediate opposite entry
+    on that bar's close (``last_signal_start`` would otherwise match ``signal_row['start']``).
+    """
+    if not instance_id:
+        return
+    if conf_start is not None:
+        queued_signals_cache.pop(f"{instance_id}_{conf_start}", None)
+    p = {"last_signal_start": None, "forming_bar_start": None}
+    instance_storage.merge_instance_state(instance_id, p)
+    _patch_instance_state_cache(instance_id, p)
 _active_order_instance_id: str | None = None
 # Snapshot of active position's instance params for SL decay / breakeven / partial TP (None → use .env)
 _active_instance_monitor_params: dict | None = None
@@ -5428,6 +5446,7 @@ def _clear_active_instance_on_flat(*, sl_loss: bool, symbol: str | None = None) 
                 patch["cooldown_until_bar"] = seq + cd
     instance_storage.merge_instance_state(iid, patch)
     _patch_instance_state_cache(iid, patch)
+    _clear_instance_bar_entry_dedup(iid)
     _active_order_instance_id = None
     _active_instance_monitor_params = None
     _active_trade_strategy_name = None
@@ -5523,6 +5542,8 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
                         ("close", close_meta_st),
                     )
                     supertrend_flat_close_queued_this_message = True
+                    # Same-bar SAR: entry dedup must not treat the prior entry bar as blocking the reverse.
+                    _clear_instance_bar_entry_dedup(iid_st, conf_start)
                     continue
 
         # Single Candle: optional exit on each new closed bar, and/or trailing candle exit when bar-close exit is off.
@@ -6392,6 +6413,8 @@ async def _async_instance_time_exit_close(meta: dict | None) -> None:
             "initial_entry_qty": None,
             "realized_pnl_current_trade": 0.0,
             "breakeven_sl_triggered": False,
+            "last_signal_start": None,
+            "forming_bar_start": None,
         }
         instance_storage.merge_instance_state(iid, _flat_sc)
         _patch_instance_state_cache(iid, _flat_sc)
