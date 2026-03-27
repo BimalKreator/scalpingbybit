@@ -3,8 +3,10 @@ Supertrend Scalping — entries: **prior ``SUPERTd`` regime** plus **two-bar cro
 bands (``iloc[-2]``): long when ``prev_dir > 0``, ``prev_upper > 0``, ``prev_close <= prev_upper``,
 ``target_close > prev_upper``; short when ``prev_dir < 0``, ``prev_lower > 0``,
 ``prev_close >= prev_lower``, ``target_close < prev_lower``.
-Bands use columns ``SUPERTd/l/s_{atrPeriod}_{factor}`` from instance params; all ``SUPERT*`` columns
-are stripped before each recompute so stale multipliers (e.g. 3.0) cannot mix with the UI factor.
+After each ``prepare_dataframe`` pass, ``evaluate`` / checklists **sniff** the active column names
+(``SUPERTd_*``, ``SUPERTl_*``, ``SUPERTs_*``) from ``d.columns`` so reads always match what
+``_tradingview_supertrend`` wrote (no float/string suffix mismatch). All ``SUPERT*`` columns are
+stripped before recompute so only one ST family exists.
 ``[ST DEBUG]`` logs immediately after ``target_row``/``prev_row`` (before ``in_pos`` or entry returns)
 so PM2/console can trace values; optional ``print`` mirrors the log line.
 Fixed SL/TP in points from the signal bar close (TP widened when optional RSI target exit is on).
@@ -116,6 +118,22 @@ def _drop_all_supertrend_columns(d: pd.DataFrame) -> pd.DataFrame:
     return d
 
 
+def _sniff_supertrend_band_columns(
+    d: pd.DataFrame,
+) -> tuple[str | None, str | None, str | None]:
+    """
+    Resolve active indicator columns after ``prepare_dataframe`` / ``_tradingview_supertrend``.
+    That routine writes ``cols[''dir'']`` → ``SUPERTd_{suffix}``, ``lower`` → ``SUPERTl_*``,
+    ``upper`` → ``SUPERTs_*`` (see ``supertrend_column_names``). With ``_drop_all_supertrend_columns``,
+    at most one of each prefix exists.
+    """
+    all_cols = d.columns.tolist()
+    dir_col = next((c for c in all_cols if str(c).startswith("SUPERTd_")), None)
+    long_line_col = next((c for c in all_cols if str(c).startswith("SUPERTl_")), None)
+    short_line_col = next((c for c in all_cols if str(c).startswith("SUPERTs_")), None)
+    return dir_col, long_line_col, short_line_col
+
+
 def _wilder_tr_and_atr(
     high: np.ndarray, low: np.ndarray, close: np.ndarray, length: int
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -151,6 +169,9 @@ def _tradingview_supertrend(
 
     Stored ``SUPERTd`` is the internal direction array: **< 0** = uptrend (line on lower band),
     **> 0** = downtrend (line on upper band).
+
+    Column keys in ``cols`` must use the standard prefixes ``SUPERTd_``, ``SUPERTl_``, ``SUPERTs_``
+    (and ``SUPERT_`` for the line series) so ``_sniff_supertrend_band_columns`` can find them.
     """
     high = d["high"].astype(float).to_numpy()
     low = d["low"].astype(float).to_numpy()
@@ -416,9 +437,6 @@ def evaluate(
         target_rsi_short = 20.0
     rsi_col = f"RSI_{target_rsi_len}"
     mode = _trade_mode(p)
-    dir_col, long_line_col, short_line_col = dynamic_supertrend_line_columns(
-        atr_len, mult
-    )
 
     out: dict[str, Any] = {
         "signal": "Hold",
@@ -435,7 +453,9 @@ def evaluate(
     if d is None or len(d) < 1:
         out["reason"] = "invalid_df"
         return out
-    if dir_col not in d.columns:
+
+    dir_col, long_line_col, short_line_col = _sniff_supertrend_band_columns(d)
+    if not dir_col or not long_line_col or not short_line_col:
         out["reason"] = "indicators_missing"
         return out
 
@@ -475,7 +495,7 @@ def evaluate(
     _st_dbg = (
         f"[ST DEBUG] TargetClose: {target_close} | PrevClose: {prev_close} | "
         f"PrevDir: {prev_dir_raw} | PrevUpper: {prev_upper_raw} | PrevLower: {prev_lower_raw} | "
-        f"cols ATR={atr_len} mult={mult} → dir={dir_col} upper={short_line_col} lower={long_line_col}"
+        f"sniffed cols (params ATR={atr_len} mult={mult}) → dir={dir_col} upper={short_line_col} lower={long_line_col}"
     )
     logging.info("%s", _st_dbg)
     print(_st_dbg, flush=True)
@@ -720,9 +740,6 @@ def build_entry_checklists(
     tp_widened = tp_pts * 10.0 if use_rsi else tp_pts
     mode = _trade_mode(p)
     in_pos = bool(st.get("in_position"))
-    dir_col, long_line_ck, short_line_ck = dynamic_supertrend_line_columns(
-        atr_len, mult
-    )
 
     d = prepare_dataframe(df, p)
     n_buf = 0 if df is None else len(df)
@@ -733,11 +750,13 @@ def build_entry_checklists(
             "note": f"ATR={atr_len} factor={mult} SL pts={sl_pts} TP pts={tp_pts}. Waiting for data.",
             "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": n_buf},
         }
-    if dir_col not in d.columns:
+
+    dir_col, long_line_ck, short_line_ck = _sniff_supertrend_band_columns(d)
+    if not dir_col or not long_line_ck or not short_line_ck:
         return {
             "rules_long": [{"text": "Supertrend columns missing", "met": False}],
             "rules_short": [{"text": "Supertrend columns missing", "met": False}],
-            "note": "Indicator build failed.",
+            "note": "Indicator columns (SUPERTd_/SUPERTl_/SUPERTs_) not found after build.",
             "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": n_buf},
         }
 
