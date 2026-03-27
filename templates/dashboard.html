@@ -684,7 +684,7 @@
       var tm = p.tradeMode != null && p.tradeMode !== '' ? String(p.tradeMode) : 'Both';
       return (
         '<p class="text-xs font-semibold text-slate-400 mt-3">Supertrend Scalping</p>' +
-        '<p class="text-[10px] text-slate-500 mb-2">Entries only when a candle <strong class="text-slate-400">closes</strong> and Supertrend flips vs the prior closed bar (bearish→bullish = long, bullish→bearish = short). SL/TP are from that bar&apos;s <strong class="text-slate-400">close</strong> ± points. Exits: live mid opposite-band touch, then candle-close trend against you (paper exit uses L1 mid).</p>' +
+        '<p class="text-[10px] text-slate-500 mb-2">Entries only when a candle <strong class="text-slate-400">closes</strong> and Supertrend flips vs the prior closed bar (bearish→bullish = long, bullish→bearish = short). SL/TP are from that bar&apos;s <strong class="text-slate-400">close</strong> ± points (TP ×10 when RSI target exit is on so fixed TP rarely fires first). Exits: live mid opposite-band touch, optional <strong class="text-slate-400">candle-close RSI</strong> target, then candle-close trend flip (paper exit uses L1 mid).</p>' +
         '<div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">' +
         '<label class="block text-slate-400">Trade mode<select data-p="tradeMode" class="mt-1 w-full rounded-lg bg-slate-900 border border-slate-600 px-2 py-1.5 text-sm text-white">' +
         ['Both', 'Long', 'Short'].map(function (x) {
@@ -697,6 +697,14 @@
         numFieldL('TP (points)', 'tpPoints', p.tpPoints, 100) +
         numFieldL('Trade capital (USD)', 'tradeCapitalUsd', p.tradeCapitalUsd, 100) +
         numFieldL('Leverage (×)', 'leverage', p.leverage, 10) +
+        '</div>' +
+        '<div class="flex flex-wrap gap-4 text-xs text-slate-300 mt-2">' +
+        chkFieldL('RSI target exit (candle close; widens TP 10×)', 'useRsiTarget', p.useRsiTarget, false) +
+        '</div>' +
+        '<div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs mt-2">' +
+        numFieldL('RSI length', 'targetRsiLength', p.targetRsiLength, 5, '1') +
+        numFieldL('RSI long exit (≥)', 'targetRsiLong', p.targetRsiLong, 80, '0.1') +
+        numFieldL('RSI short exit (≤)', 'targetRsiShort', p.targetRsiShort, 20, '0.1') +
         '</div>' +
         paperFeeBlock(p)
       );

@@ -1,6 +1,7 @@
 """
 Supertrend Scalping — entries only on candle close when Supertrend direction flips vs the prior closed bar;
-fixed SL/TP in points from the signal bar close; exits use live opposite-band touch plus candle-close trend flip.
+fixed SL/TP in points from the signal bar close (TP widened when optional RSI target exit is on);
+exits: live opposite-band touch, optional candle-close RSI target, then candle-close Supertrend flip.
 """
 
 from __future__ import annotations
@@ -30,6 +31,10 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "tradeCapitalUsd": 100.0,
     "leverage": 10.0,
     "usePartialExit": False,
+    "useRsiTarget": False,
+    "targetRsiLength": 5,
+    "targetRsiLong": 80.0,
+    "targetRsiShort": 20.0,
 }
 
 
@@ -131,6 +136,23 @@ def prepare_dataframe(
     except Exception as e:
         logging.warning("[supertrend_scalping] ta.supertrend failed (%s); using manual", e)
         _manual_supertrend(d, atr_len, mult, cols)
+
+    use_rsi = _bool_param(p, "useRsiTarget", False)
+    if use_rsi and "close" in d.columns:
+        try:
+            rsi_len = max(1, int(p.get("targetRsiLength", 5) or 5))
+        except (TypeError, ValueError):
+            rsi_len = 5
+        rsi_col = f"RSI_{rsi_len}"
+        if rsi_col not in d.columns:
+            try:
+                if ta is None:
+                    raise RuntimeError("pandas_ta missing")
+                d.ta.rsi(close=d["close"], length=rsi_len, append=True)
+            except Exception as e:
+                logging.error(
+                    "[supertrend_scalping] Failed to calc RSI(%s): %s", rsi_len, e
+                )
     return d
 
 
@@ -142,6 +164,17 @@ def _trade_mode(params: dict) -> str:
     if raw in ("Long", "Short", "Both"):
         return raw
     return "Both"
+
+
+def _bool_param(p: dict, key: str, default: bool) -> bool:
+    v = p.get(key, default)
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        return v.strip().lower() in ("1", "true", "yes", "on")
+    return default
 
 
 def _float_param(p: dict, key: str, default: float) -> float:
@@ -178,6 +211,20 @@ def evaluate(
         mult = 3.0
     sl_points = _float_param(p, "slPoints", 50.0)
     tp_points = _float_param(p, "tpPoints", 100.0)
+    use_rsi_target = _bool_param(p, "useRsiTarget", False)
+    try:
+        target_rsi_len = max(1, int(p.get("targetRsiLength", 5) or 5))
+    except (TypeError, ValueError):
+        target_rsi_len = 5
+    try:
+        target_rsi_long = float(p.get("targetRsiLong", 80.0) or 80.0)
+    except (TypeError, ValueError):
+        target_rsi_long = 80.0
+    try:
+        target_rsi_short = float(p.get("targetRsiShort", 20.0) or 20.0)
+    except (TypeError, ValueError):
+        target_rsi_short = 20.0
+    rsi_col = f"RSI_{target_rsi_len}"
     mode = _trade_mode(p)
     cols = supertrend_column_names(atr_len, mult)
     dir_col = cols["dir"]
@@ -245,6 +292,26 @@ def evaluate(
                 out["reason"] = "sl_hit_opposite_signal_long_touch"
                 return out
 
+        if use_rsi_target and rsi_col in d.columns:
+            raw_rsi = target_row.get(rsi_col)
+            curr_rsi: float | None = None
+            if raw_rsi is not None and not pd.isna(raw_rsi):
+                try:
+                    rv = float(raw_rsi)
+                    if math.isfinite(rv):
+                        curr_rsi = rv
+                except (TypeError, ValueError):
+                    curr_rsi = None
+            if curr_rsi is not None:
+                if pos_side == "buy" and curr_rsi >= target_rsi_long:
+                    out["signal"] = "Flat"
+                    out["reason"] = f"target_hit_rsi_{target_rsi_len}_overbought"
+                    return out
+                if pos_side == "sell" and curr_rsi <= target_rsi_short:
+                    out["signal"] = "Flat"
+                    out["reason"] = f"target_hit_rsi_{target_rsi_len}_oversold"
+                    return out
+
         if curr_dir is not None:
             if pos_side == "buy" and curr_dir < 0:
                 out["signal"] = "Flat"
@@ -285,6 +352,7 @@ def evaluate(
     side: str | None = None
     reason = "no_signal"
     sl_price = tp_price = None
+    actual_tp_points = tp_points * 10.0 if use_rsi_target else tp_points
 
     # LONG: trend officially flipped down → up on the close of target_row (prev bearish, curr bullish).
     if prev_dir < 0 and curr_dir > 0:
@@ -292,14 +360,14 @@ def evaluate(
             side = "Buy"
             reason = "supertrend_flip_long"
             sl_price = entry_close - sl_points
-            tp_price = entry_close + tp_points
+            tp_price = entry_close + actual_tp_points
     # SHORT: trend officially flipped up → down on the close of target_row (prev bullish, curr bearish).
     elif prev_dir > 0 and curr_dir < 0:
         if mode in ("Both", "Short"):
             side = "Sell"
             reason = "supertrend_flip_short"
             sl_price = entry_close + sl_points
-            tp_price = entry_close - tp_points
+            tp_price = entry_close - actual_tp_points
 
     if side not in ("Buy", "Sell") or sl_price is None or tp_price is None:
         out["reason"] = reason
@@ -337,6 +405,11 @@ def evaluate(
     if curr_upper is not None and curr_lower is not None:
         meta["curr_upper"] = float(curr_upper)
         meta["curr_lower"] = float(curr_lower)
+    if use_rsi_target:
+        meta["use_rsi_target"] = True
+        meta["target_rsi_length"] = int(target_rsi_len)
+        meta["target_rsi_long"] = float(target_rsi_long)
+        meta["target_rsi_short"] = float(target_rsi_short)
     out["signal"] = side
     out["reason"] = reason
     out["signal_row"] = signal_row
@@ -359,6 +432,21 @@ def build_entry_checklists(
         mult = 3.0
     sl_pts = _float_param(p, "slPoints", 50.0)
     tp_pts = _float_param(p, "tpPoints", 100.0)
+    use_rsi = _bool_param(p, "useRsiTarget", False)
+    try:
+        trsi_len = max(1, int(p.get("targetRsiLength", 5) or 5))
+    except (TypeError, ValueError):
+        trsi_len = 5
+    try:
+        trsi_long = float(p.get("targetRsiLong", 80.0) or 80.0)
+    except (TypeError, ValueError):
+        trsi_long = 80.0
+    try:
+        trsi_short = float(p.get("targetRsiShort", 20.0) or 20.0)
+    except (TypeError, ValueError):
+        trsi_short = 20.0
+    rsi_col_ck = f"RSI_{trsi_len}"
+    tp_widened = tp_pts * 10.0 if use_rsi else tp_pts
     mode = _trade_mode(p)
     in_pos = bool(st.get("in_position"))
     dir_col = supertrend_column_names(atr_len, mult)["dir"]
@@ -422,7 +510,10 @@ def build_entry_checklists(
             "met": bool(flip_long and not in_pos),
         },
         {
-            "text": f"SL = signal close − {sl_pts} pts, TP = signal close + {tp_pts} pts (absolute)",
+            "text": (
+                f"SL = signal close − {sl_pts} pts, TP = signal close + {tp_widened} pts (absolute)"
+                + ("; RSI exit widens TP 10×" if use_rsi else "")
+            ),
             "met": bool(flip_long and long_ok and not in_pos),
         },
     ]
@@ -434,7 +525,10 @@ def build_entry_checklists(
             "met": bool(flip_short and not in_pos),
         },
         {
-            "text": f"SL = signal close + {sl_pts} pts, TP = signal close − {tp_pts} pts (absolute)",
+            "text": (
+                f"SL = signal close + {sl_pts} pts, TP = signal close − {tp_widened} pts (absolute)"
+                + ("; RSI exit widens TP 10×" if use_rsi else "")
+            ),
             "met": bool(flip_short and short_ok and not in_pos),
         },
     ]
@@ -443,11 +537,30 @@ def build_entry_checklists(
     bb, ba, _, _ = xst.orderbook_l1(sym, xst.SYMBOL)
     live = (float(bb) + float(ba)) / 2.0 if bb > 0 and ba > 0 else 0.0
 
+    rsi_note = ""
+    crsi_sync: float | None = None
+    if use_rsi:
+        rsi_note = (
+            f" RSI target exit ON: RSI({trsi_len}) on last close — flatten long if ≥{trsi_long}, "
+            f"short if ≤{trsi_short}. "
+        )
+        if rsi_col_ck in d.columns:
+            rv = target_row.get(rsi_col_ck)
+            if rv is not None and not pd.isna(rv):
+                try:
+                    crsi_sync = float(rv)
+                except (TypeError, ValueError):
+                    crsi_sync = None
+        if crsi_sync is not None and math.isfinite(crsi_sync):
+            rsi_note += f"Last RSI({trsi_len})={crsi_sync:.2f}. "
+
     note = (
         f"ATR period={atr_len} factor={mult} tradeMode={mode}. "
         f"Prior closed: {prev_txt}; latest closed: {curr_txt}. "
         "Entry: Supertrend direction flip on candle close only (no touch entry). "
-        "Exit: live opposite-band touch, candle-close trend against you, SL/TP, or exchange stops."
+        "Exit: live opposite-band touch,"
+        f"{rsi_note}"
+        " candle-close trend against you, SL/TP, or exchange stops."
     )
     sync: dict[str, Any] = {
         "engine": STRATEGY_NAME,
@@ -456,6 +569,11 @@ def build_entry_checklists(
         "curr_dir": curr_dir,
         "flip_long_ok": flip_long,
         "flip_short_ok": flip_short,
+        "use_rsi_target": use_rsi,
+        "target_rsi_length": trsi_len,
+        "last_rsi": round(crsi_sync, 4)
+        if crsi_sync is not None and math.isfinite(crsi_sync)
+        else None,
     }
     try:
         sync["last_closed_start"] = int(target_row["start"])

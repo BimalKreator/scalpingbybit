@@ -3,23 +3,23 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 68681.0,
+      "price": 68512.0,
       "indicators": {
-        "RSI": 26.09,
-        "RSI_SMA": 62.58,
+        "RSI": 10.35,
+        "RSI_SMA": 23.52,
         "volume_signal_vs_prev": true,
-        "body_size": 3.0,
-        "open": 68678.0,
-        "close": 68681.0,
-        "volume": 10625.0,
-        "Expected_Profit_Pct": 0.07
+        "body_size": 41.5,
+        "open": 68553.5,
+        "close": 68512.0,
+        "volume": 18365.0,
+        "Expected_Profit_Pct": 0.14
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
         "long": [
           {
             "name": "Signal Candle Bearish (open > close)",
-            "met": false
+            "met": true
           },
           {
             "name": "Previous Candle Bearish",
@@ -27,7 +27,7 @@
           },
           {
             "name": "Both Bearish",
-            "met": false
+            "met": true
           },
           {
             "name": "Volume: signal > previous",
@@ -45,7 +45,7 @@
         "short": [
           {
             "name": "Signal Candle Bullish (close > open)",
-            "met": true
+            "met": false
           },
           {
             "name": "Previous Candle Bullish",
@@ -118,17 +118,17 @@
             "curr_dir": -1.0,
             "flip_long_ok": false,
             "flip_short_ok": false,
-            "last_closed_start": 1774588980000,
-            "prior_closed_start": 1774588920000,
-            "live_mid": 68653.0,
+            "last_closed_start": 1774589580000,
+            "prior_closed_start": 1774589520000,
+            "live_mid": 68495.75,
             "last_signal_start": 1774588620000,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
           }
         }
       },
-      "checks_updated_unix": 1774589020.6440759,
-      "status": "Waiting",
+      "checks_updated_unix": 1774589599.6532655,
+      "status": "Long Signal",
       "sl_price": null,
       "tp_price": null,
       "entry_price": null,
