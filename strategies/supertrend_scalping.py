@@ -1,22 +1,18 @@
 """
-Supertrend Scalping — entries: **prior ``SUPERTd`` regime** plus **two-bar crossover** vs prior bar
-bands (``iloc[-2]``): long when ``prev_dir > 0``, ``prev_upper > 0``, ``prev_close <= prev_upper``,
-``target_close > prev_upper``; short when ``prev_dir < 0``, ``prev_lower > 0``,
-``prev_close >= prev_lower``, ``target_close < prev_lower``.
-After each ``prepare_dataframe`` pass, ``evaluate`` / checklists **sniff** the active column names
-(``SUPERTd_*``, ``SUPERTl_*``, ``SUPERTs_*``) from ``d.columns`` so reads always match what
-``_tradingview_supertrend`` wrote (no float/string suffix mismatch). All ``SUPERT*`` columns are
-stripped before recompute so only one ST family exists.
-``[ST DEBUG]`` logs immediately after ``target_row``/``prev_row`` (before ``in_pos`` or entry returns)
-so PM2/console can trace values; optional ``print`` mirrors the log line.
-Fixed SL/TP in points from the signal bar close (TP widened when optional RSI target exit is on).
-Exits: live touch of current bands when valid, optional RSI target, then candle close vs bands when
-usable; if bands are missing/zero or close is non-finite, **fallback** to ``curr_dir`` (long exits
-bearish if ``curr_dir > 0``, short exits bullish if ``curr_dir < 0``).
+Supertrend Scalping — SuperTrend from **pandas_ta** (``d.ta.supertrend``) on the bot’s OHLC slice.
+**SUPERTd (pandas_ta):** ``1`` = uptrend (green / support regime), ``-1`` = downtrend (red / resistance regime).
 
-SUPERTd convention (matches ``_tradingview_supertrend``): **< 0** (e.g. −1) = **uptrend** (green line below price);
-**> 0** (e.g. +1) = **downtrend** (red line above price).
-Core SuperTrend is computed with Wilder ATR and Pine-style bands (TradingView-style), not pandas_ta.supertrend.
+Entries (prior bar ``iloc[-2]`` + crossover vs prior bands): **long** when prior downtrend
+(``prev_dir == -1``), ``prev_upper > 0``, ``prev_close < prev_upper``, ``target_close > prev_upper``;
+**short** when prior uptrend (``prev_dir == 1``), ``prev_lower > 0``, ``prev_close > prev_lower``,
+``target_close < prev_lower``.
+
+After ``prepare_dataframe``, column names are **sniffed** (``SUPERTd_*``, ``SUPERTl_*``, ``SUPERTs_*``)
+so reads match whatever suffix ``pandas_ta`` emitted. All ``SUPERT*`` columns are dropped before each run.
+
+``[ST DEBUG]`` logs after ``target_row``/``prev_row`` (before ``in_pos`` / entry). Exits: band touch,
+optional RSI, then **formal trend flip** on the latest close (long flat if ``SUPERTd < 0``, short flat
+if ``SUPERTd > 0``).
 """
 
 from __future__ import annotations
@@ -25,7 +21,6 @@ import logging
 import math
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 try:
@@ -51,11 +46,6 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "targetRsiLong": 80.0,
     "targetRsiShort": 20.0,
 }
-
-
-def _st_column_suffix(atr_len: int, mult: float) -> str:
-    """Suffix for ST columns; must match UI ``atrPeriod`` / ``factor`` (``float(mult)`` in the name)."""
-    return f"{int(atr_len)}_{float(mult)}"
 
 
 def _atr_len_from_params(p: dict[str, Any]) -> int:
@@ -90,26 +80,6 @@ def _factor_mult_from_params(p: dict[str, Any]) -> float:
     return mult
 
 
-def dynamic_supertrend_line_columns(atr_len: int, mult: float) -> tuple[str, str, str]:
-    """
-    ``(dir_col, lower_col, upper_col)`` exactly as written by ``prepare_dataframe`` /
-    ``_tradingview_supertrend`` for this ``atr_len`` and ``mult``.
-    """
-    s = _st_column_suffix(atr_len, mult)
-    return (f"SUPERTd_{s}", f"SUPERTl_{s}", f"SUPERTs_{s}")
-
-
-def supertrend_column_names(atr_len: int, mult: float) -> dict[str, str]:
-    s = _st_column_suffix(atr_len, mult)
-    d_col, lo_col, up_col = dynamic_supertrend_line_columns(atr_len, mult)
-    return {
-        "line": f"SUPERT_{s}",
-        "dir": d_col,
-        "lower": lo_col,
-        "upper": up_col,
-    }
-
-
 def _drop_all_supertrend_columns(d: pd.DataFrame) -> pd.DataFrame:
     """Remove any prior ST columns (e.g. pandas_ta 10×3 or another instance factor) before recomputing."""
     drop_cols = [c for c in d.columns if str(c).startswith("SUPERT")]
@@ -122,158 +92,14 @@ def _sniff_supertrend_band_columns(
     d: pd.DataFrame,
 ) -> tuple[str | None, str | None, str | None]:
     """
-    Resolve active indicator columns after ``prepare_dataframe`` / ``_tradingview_supertrend``.
-    That routine writes ``cols[''dir'']`` → ``SUPERTd_{suffix}``, ``lower`` → ``SUPERTl_*``,
-    ``upper`` → ``SUPERTs_*`` (see ``supertrend_column_names``). With ``_drop_all_supertrend_columns``,
-    at most one of each prefix exists.
+    Active ``pandas_ta`` supertrend columns: ``SUPERTd_*``, ``SUPERTl_*``, ``SUPERTs_*``.
+    With ``_drop_all_supertrend_columns``, at most one of each prefix exists.
     """
     all_cols = d.columns.tolist()
     dir_col = next((c for c in all_cols if str(c).startswith("SUPERTd_")), None)
     long_line_col = next((c for c in all_cols if str(c).startswith("SUPERTl_")), None)
     short_line_col = next((c for c in all_cols if str(c).startswith("SUPERTs_")), None)
     return dir_col, long_line_col, short_line_col
-
-
-def _wilder_tr_and_atr(
-    high: np.ndarray, low: np.ndarray, close: np.ndarray, length: int
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    True range and Wilder / RMA ATR as used by TradingView ``ta.atr``:
-    first ATR = SMA(TR, length); then ATR = (ATR[1] * (length - 1) + TR) / length.
-    """
-    n = len(close)
-    tr = np.zeros(n, dtype=float)
-    tr[0] = float(high[0] - low[0])
-    for i in range(1, n):
-        tr[i] = max(
-            float(high[i] - low[i]),
-            abs(float(high[i] - close[i - 1])),
-            abs(float(low[i] - close[i - 1])),
-        )
-    atr = np.full(n, np.nan, dtype=float)
-    L = max(1, int(length))
-    if n < L:
-        return tr, atr
-    atr[L - 1] = float(np.sum(tr[:L]) / L)
-    for i in range(L, n):
-        atr[i] = (atr[i - 1] * (L - 1) + tr[i]) / L
-    return tr, atr
-
-
-def _tradingview_supertrend(
-    d: pd.DataFrame, atr_len: int, mult: float, cols: dict[str, str]
-) -> None:
-    """
-    TradingView-style SuperTrend (HL2 ± mult × Wilder ATR, trailing final bands,
-    direction from prior supertrend line vs final bands).
-
-    Stored ``SUPERTd`` is the internal direction array: **< 0** = uptrend (line on lower band),
-    **> 0** = downtrend (line on upper band).
-
-    Column keys in ``cols`` must use the standard prefixes ``SUPERTd_``, ``SUPERTl_``, ``SUPERTs_``
-    (and ``SUPERT_`` for the line series) so ``_sniff_supertrend_band_columns`` can find them.
-    """
-    high = d["high"].astype(float).to_numpy()
-    low = d["low"].astype(float).to_numpy()
-    close = d["close"].astype(float).to_numpy()
-    n = len(d)
-    L = max(1, int(atr_len))
-    m = float(mult)
-    if not math.isfinite(m) or m <= 0:
-        m = 3.0
-
-    _, atr = _wilder_tr_and_atr(high, low, close, L)
-    hl2 = (high + low) * 0.5
-    basic_ub = hl2 + m * atr
-    basic_lb = hl2 - m * atr
-
-    final_ub = np.full(n, np.nan, dtype=float)
-    final_lb = np.full(n, np.nan, dtype=float)
-    supertrend = np.full(n, np.nan, dtype=float)
-    direction = np.full(n, np.nan, dtype=float)
-
-    i0 = L - 1
-    if i0 >= n or not math.isfinite(float(atr[i0])):
-        d[cols["line"]] = supertrend
-        d[cols["dir"]] = direction
-        d[cols["lower"]] = final_lb
-        d[cols["upper"]] = final_ub
-        return
-
-    bub0 = float(basic_ub[i0])
-    blb0 = float(basic_lb[i0])
-    if not math.isfinite(bub0) or not math.isfinite(blb0):
-        d[cols["line"]] = supertrend
-        d[cols["dir"]] = direction
-        d[cols["lower"]] = final_lb
-        d[cols["upper"]] = final_ub
-        return
-
-    final_ub[i0] = bub0
-    final_lb[i0] = blb0
-    c0 = float(close[i0])
-    # Initial bar: same idea as Pine after ATR is defined — default bearish line = upper band.
-    if c0 > final_ub[i0]:
-        direction[i0] = -1.0
-        supertrend[i0] = final_lb[i0]
-    elif c0 < final_lb[i0]:
-        direction[i0] = 1.0
-        supertrend[i0] = final_ub[i0]
-    else:
-        direction[i0] = 1.0
-        supertrend[i0] = final_ub[i0]
-
-    rtol = 1e-9
-    atol = 1e-12
-
-    for i in range(i0 + 1, n):
-        if not math.isfinite(float(atr[i])):
-            continue
-        bub = float(basic_ub[i])
-        blb = float(basic_lb[i])
-        if not math.isfinite(bub) or not math.isfinite(blb):
-            continue
-
-        fup_prev = float(final_ub[i - 1])
-        flp_prev = float(final_lb[i - 1])
-        c_prev = float(close[i - 1])
-
-        if bub < fup_prev or c_prev > fup_prev:
-            final_ub[i] = bub
-        else:
-            final_ub[i] = fup_prev
-
-        if blb > flp_prev or c_prev < flp_prev:
-            final_lb[i] = blb
-        else:
-            final_lb[i] = flp_prev
-
-        st_prev = float(supertrend[i - 1])
-        fu_prev = float(final_ub[i - 1])
-        fl_prev = float(final_lb[i - 1])
-        ci = float(close[i])
-        fui = float(final_ub[i])
-        fli = float(final_lb[i])
-
-        on_upper = np.isclose(fu_prev, st_prev, rtol=rtol, atol=atol)
-        on_lower = np.isclose(fl_prev, st_prev, rtol=rtol, atol=atol)
-
-        if on_upper and ci > fui:
-            direction[i] = -1.0
-        elif on_lower and ci < fli:
-            direction[i] = 1.0
-        else:
-            direction[i] = float(direction[i - 1])
-
-        if direction[i] < 0:
-            supertrend[i] = fli
-        else:
-            supertrend[i] = fui
-
-    d[cols["line"]] = supertrend
-    d[cols["dir"]] = direction
-    d[cols["lower"]] = final_lb
-    d[cols["upper"]] = final_ub
 
 
 def prepare_dataframe(
@@ -285,7 +111,6 @@ def prepare_dataframe(
     p = {**DEFAULT_PARAMS, **(params or {})}
     atr_len = _atr_len_from_params(p)
     mult = _factor_mult_from_params(p)
-    cols = supertrend_column_names(atr_len, mult)
     d = (
         df.sort_values("start").reset_index(drop=True)
         if "start" in df.columns
@@ -293,12 +118,26 @@ def prepare_dataframe(
     )
     d = _drop_all_supertrend_columns(d)
 
-    # TradingView-aligned SuperTrend (Wilder ATR + Pine-style bands); do not use pandas_ta.supertrend
-    # here — its ATR / rules often diverge from TradingView's built-in indicator.
-    _tradingview_supertrend(d, atr_len, mult, cols)
-    if cols["dir"] not in d.columns or bool(d[cols["dir"]].isna().all()):
+    try:
+        if ta is None:
+            raise RuntimeError("pandas_ta is not installed")
+        d.ta.supertrend(
+            length=int(atr_len),
+            multiplier=float(mult),
+            append=True,
+        )
+    except Exception as e:
+        logging.error(
+            "[supertrend_scalping] pandas_ta.supertrend failed (ATR=%s mult=%s): %s",
+            atr_len,
+            mult,
+            e,
+        )
+
+    _dc, _, _ = _sniff_supertrend_band_columns(d)
+    if not _dc or _dc not in d.columns or bool(d[_dc].isna().all()):
         logging.warning(
-            "[supertrend_scalping] SuperTrend columns empty (need enough bars for ATR length=%s)",
+            "[supertrend_scalping] SuperTrend columns missing or empty (need bars ≥ ATR length=%s)",
             atr_len,
         )
 
@@ -354,7 +193,7 @@ def _float_param(p: dict, key: str, default: float) -> float:
 
 
 def _dir_flip_scalar(row: pd.Series, dir_col: str) -> float:
-    """SUPERTd as float for flip rules; NaN if missing or non-finite."""
+    """pandas_ta SUPERTd as float (typically 1 or -1); NaN if missing or non-finite."""
     if dir_col not in row.index:
         return float("nan")
     v = row[dir_col]
@@ -572,34 +411,15 @@ def evaluate(
                     out["reason"] = f"target_hit_rsi_{target_rsi_len}_oversold"
                     return out
 
-        try:
-            close_bar = float(target_row["close"])
-        except (TypeError, ValueError, KeyError):
-            close_bar = float("nan")
-        close_ok = math.isfinite(close_bar)
-        bands_usable_long = curr_lower is not None and curr_lower > 0
-        bands_usable_short = curr_upper is not None and curr_upper > 0
-        bands_long_exit = bands_usable_long and close_ok and close_bar < curr_lower
-        bands_short_exit = bands_usable_short and close_ok and close_bar > curr_upper
-        dir_bearish = not math.isnan(curr_dir_f) and curr_dir_f > 0
-        dir_bullish = not math.isnan(curr_dir_f) and curr_dir_f < 0
-
-        # LONG: band cross when band+close comparison is valid; else SUPERTd bearish fallback.
-        if pos_side == "buy":
-            if bands_long_exit or (
-                not (bands_usable_long and close_ok) and dir_bearish
-            ):
-                out["signal"] = "Flat"
-                out["reason"] = "supertrend_changed_to_bearish_close"
-                return out
-        # SHORT: band cross when valid; else SUPERTd bullish fallback.
-        if pos_side == "sell":
-            if bands_short_exit or (
-                not (bands_usable_short and close_ok) and dir_bullish
-            ):
-                out["signal"] = "Flat"
-                out["reason"] = "supertrend_changed_to_bullish_close"
-                return out
+        # Formal trend flip (pandas_ta SUPERTd: -1 = downtrend, 1 = uptrend).
+        if pos_side == "buy" and not math.isnan(curr_dir_f) and curr_dir_f < 0:
+            out["signal"] = "Flat"
+            out["reason"] = "supertrend_changed_to_bearish_close"
+            return out
+        if pos_side == "sell" and not math.isnan(curr_dir_f) and curr_dir_f > 0:
+            out["signal"] = "Flat"
+            out["reason"] = "supertrend_changed_to_bullish_close"
+            return out
 
         out["reason"] = (
             "supertrend_bands_nan_exit_hold"
@@ -615,8 +435,9 @@ def evaluate(
     sl_price = tp_price = None
     actual_tp_points = tp_points * 10.0 if use_rsi_target else tp_points
 
-    long_dir_ok = not math.isnan(prev_dir_f) and prev_dir_f > 0.0
-    short_dir_ok = not math.isnan(prev_dir_f) and prev_dir_f < 0.0
+    # pandas_ta SUPERTd: -1 = downtrend (resistance), 1 = uptrend (support).
+    long_dir_ok = not math.isnan(prev_dir_f) and prev_dir_f < 0.0
+    short_dir_ok = not math.isnan(prev_dir_f) and prev_dir_f > 0.0
     closes_ok = (
         math.isfinite(target_close)
         and target_close > 0.0
@@ -627,7 +448,7 @@ def evaluate(
         closes_ok
         and long_dir_ok
         and prev_upper > 0.0
-        and prev_close <= prev_upper
+        and prev_close < prev_upper
         and target_close > prev_upper
     ):
         if mode in ("Both", "Long"):
@@ -639,7 +460,7 @@ def evaluate(
         closes_ok
         and short_dir_ok
         and prev_lower > 0.0
-        and prev_close >= prev_lower
+        and prev_close > prev_lower
         and target_close < prev_lower
     ):
         if mode in ("Both", "Short"):
@@ -803,22 +624,22 @@ def build_entry_checklists(
 
     long_cross_valid = (
         prev_dir is not None
-        and prev_dir > 0
+        and prev_dir < 0
         and prev_upper_ck is not None
         and prev_upper_ck > 0
         and math.isfinite(prev_close_ck)
         and math.isfinite(close_ck)
-        and prev_close_ck <= prev_upper_ck
+        and prev_close_ck < prev_upper_ck
         and close_ck > prev_upper_ck
     )
     short_cross_valid = (
         prev_dir is not None
-        and prev_dir < 0
+        and prev_dir > 0
         and prev_lower_ck is not None
         and prev_lower_ck > 0
         and math.isfinite(prev_close_ck)
         and math.isfinite(close_ck)
-        and prev_close_ck >= prev_lower_ck
+        and prev_close_ck > prev_lower_ck
         and close_ck < prev_lower_ck
     )
 
@@ -857,9 +678,9 @@ def build_entry_checklists(
             rsi_note += f"Last RSI({trsi_len})={crsi_sync:.2f}. "
 
     note = (
-        f"ATR={atr_len} factor={mult} tradeMode={mode}. "
-        "Long: prior downtrend (SUPERTd>0) + close crosses above prior upper band. "
-        "Short: prior uptrend (SUPERTd<0) + close crosses below prior lower band. "
+        f"ATR={atr_len} factor={mult} tradeMode={mode}. pandas_ta SUPERTd: 1=uptrend, -1=downtrend. "
+        "Long: prior SUPERTd=-1 + close crosses above prior upper band. "
+        "Short: prior SUPERTd=1 + close crosses below prior lower band. "
         f"SL/TP in points (TP×10 if RSI exit on).{rsi_note}"
     )
     n_trim = len(d)

@@ -3,27 +3,27 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 65753.5,
+      "price": 65817.0,
       "indicators": {
-        "RSI": 37.52,
-        "RSI_SMA": 22.76,
-        "volume_signal_vs_prev": false,
-        "body_size": 33.0,
-        "open": 65786.5,
-        "close": 65753.5,
-        "volume": 14367.0,
-        "Expected_Profit_Pct": 0.15
+        "RSI": 47.82,
+        "RSI_SMA": 51.15,
+        "volume_signal_vs_prev": true,
+        "body_size": 24.5,
+        "open": 65792.5,
+        "close": 65817.0,
+        "volume": 14727.0,
+        "Expected_Profit_Pct": 0.19
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
         "long": [
           {
             "name": "Signal Candle Bearish (open > close)",
-            "met": true
+            "met": false
           },
           {
             "name": "Previous Candle Bearish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bearish",
@@ -31,11 +31,11 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": false
+            "met": true
           },
           {
             "name": "RSI < 40.0",
-            "met": true
+            "met": false
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -45,11 +45,11 @@
         "short": [
           {
             "name": "Signal Candle Bullish (close > open)",
-            "met": false
+            "met": true
           },
           {
             "name": "Previous Candle Bullish",
-            "met": true
+            "met": false
           },
           {
             "name": "Both Bullish",
@@ -57,7 +57,7 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": false
+            "met": true
           },
           {
             "name": "RSI > 60.0",
@@ -86,7 +86,7 @@
               "met": false
             }
           ],
-          "note": "ATR=10 factor=0.2 tradeMode=Both. Long: prior downtrend (SUPERTd>0) + close crosses above prior upper band. Short: prior uptrend (SUPERTd<0) + close crosses below prior lower band. SL/TP in points (TP\u00d710 if RSI exit on). RSI target exit ON: RSI(4) on last close \u2014 flatten long if \u226580.0, short if \u226420.0. Last RSI(4)=34.34. ",
+          "note": "ATR=10 factor=0.2 tradeMode=Both. Long: prior downtrend (SUPERTd>0) + close crosses above prior upper band. Short: prior uptrend (SUPERTd<0) + close crosses below prior lower band. SL/TP in points (TP\u00d710 if RSI exit on). RSI target exit ON: RSI(4) on last close \u2014 flatten long if \u226580.0, short if \u226420.0. Last RSI(4)=47.50. ",
           "monitor_sync": {
             "engine": "supertrend_scalping",
             "rows_in_buffer": 1000,
@@ -98,29 +98,29 @@
             "dir_col": "SUPERTd_10_0.2",
             "upper_col": "SUPERTs_10_0.2",
             "lower_col": "SUPERTl_10_0.2",
-            "prev_dir": 1.0,
-            "curr_dir": 1.0,
+            "prev_dir": -1.0,
+            "curr_dir": -1.0,
             "long_cross_valid": false,
             "short_cross_valid": false,
-            "prev_upper": 65773.39259583,
-            "prev_lower": 65777.73044908,
-            "prev_close": 65753.5,
-            "last_close": 65742.5,
+            "prev_upper": 65805.79392236,
+            "prev_lower": 65776.20607764,
+            "prev_close": 65817.0,
+            "last_close": 65816.0,
             "use_rsi_target": true,
             "target_rsi_length": 4,
-            "last_rsi": 34.3367,
-            "last_closed_start": 1774621980000,
-            "prior_closed_start": 1774621920000,
-            "flip_eval_target_start_ms": 1774621980000,
-            "flip_eval_prev_start_ms": 1774621920000,
-            "live_mid": 65743.0,
+            "last_rsi": 47.4955,
+            "last_closed_start": 1774622640000,
+            "prior_closed_start": 1774622580000,
+            "flip_eval_target_start_ms": 1774622640000,
+            "flip_eval_prev_start_ms": 1774622580000,
+            "live_mid": 65825.0,
             "last_signal_start": 0,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
           }
         }
       },
-      "checks_updated_unix": 1774621989.671266,
+      "checks_updated_unix": 1774622640.759268,
       "status": "Waiting",
       "sl_price": null,
       "tp_price": null,
