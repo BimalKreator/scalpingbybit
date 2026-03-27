@@ -1,6 +1,6 @@
 """
-Supertrend Scalping — touch entry on L1 mid vs the latest fully closed bar's Supertrend bands;
-fixed SL/TP in points from entry proxy; flatten on live opposite touch or when that bar's trend opposes the position.
+Supertrend Scalping — entries only on candle close when Supertrend direction flips vs the prior closed bar;
+fixed SL/TP in points from the signal bar close; exits use live opposite-band touch plus candle-close trend flip.
 """
 
 from __future__ import annotations
@@ -205,10 +205,8 @@ def evaluate(
 
     in_pos = bool(st_dict.get("in_position"))
     sym = str(st_dict.get("symbol") or xst.SYMBOL).strip().upper()
-    bb, ba, _, _ = xst.orderbook_l1(sym, xst.SYMBOL)
-    live_price = (float(bb) + float(ba)) / 2.0 if bb > 0 and ba > 0 else 0.0
 
-    # Latest fully closed candle: static bands vs live mid for this forming bar
+    # Latest fully closed candle; bands used for live touch exits while in position
     target_row = d.iloc[-1]
     curr_dir = _dir_value(target_row, dir_col)
     curr_upper: float | None = None
@@ -222,6 +220,9 @@ def evaluate(
         curr_upper, curr_lower = cu, cl
 
     if in_pos:
+        bb, ba, _, _ = xst.orderbook_l1(sym, xst.SYMBOL)
+        live_price = (float(bb) + float(ba)) / 2.0 if bb > 0 and ba > 0 else 0.0
+
         pos = xst.read_position_for_symbol(sym, xst.SYMBOL)
         sz = float(pos.get("size") or 0.0)
         pos_side = str(pos.get("side") or "").strip().lower()
@@ -261,68 +262,79 @@ def evaluate(
         )
         return out
 
-    if live_price <= 0:
-        out["reason"] = "no_live_price"
+    # --- ENTRY: candle-close trend flip (prev_row vs target_row); no touch / no live mid required ---
+    if len(d) < 2:
+        out["reason"] = "not_enough_bars_for_flip"
         return out
 
-    if curr_dir is None:
-        out["reason"] = "latest_closed_supertrend_nan"
+    prev_row = d.iloc[-2]
+    prev_dir = _dir_value(prev_row, dir_col)
+    if curr_dir is None or prev_dir is None:
+        out["reason"] = "supertrend_dir_nan_entry"
         return out
-    if curr_upper is None or curr_lower is None:
-        out["reason"] = "band_values_invalid"
+
+    try:
+        entry_close = float(target_row["close"])
+    except (TypeError, ValueError, KeyError):
+        out["reason"] = "signal_close_invalid"
+        return out
+    if not math.isfinite(entry_close) or entry_close <= 0:
+        out["reason"] = "signal_close_invalid"
         return out
 
     side: str | None = None
     reason = "no_signal"
     sl_price = tp_price = None
 
-    if curr_dir < 0 and live_price >= curr_upper:
+    if prev_dir < 0 and curr_dir > 0:
         if mode in ("Both", "Long"):
             side = "Buy"
-            reason = "supertrend_touch_long"
-            sl_price = live_price - sl_points
-            tp_price = live_price + tp_points
-    elif curr_dir > 0 and live_price <= curr_lower:
+            reason = "supertrend_flip_long"
+            sl_price = entry_close - sl_points
+            tp_price = entry_close + tp_points
+    elif prev_dir > 0 and curr_dir < 0:
         if mode in ("Both", "Short"):
             side = "Sell"
-            reason = "supertrend_touch_short"
-            sl_price = live_price + sl_points
-            tp_price = live_price - tp_points
+            reason = "supertrend_flip_short"
+            sl_price = entry_close + sl_points
+            tp_price = entry_close - tp_points
 
     if side not in ("Buy", "Sell") or sl_price is None or tp_price is None:
         out["reason"] = reason
         return out
 
-    forming_start = st_dict.get("forming_bar_start")
-    if forming_start is not None:
+    try:
+        bar_start = int(target_row["start"])
+    except (TypeError, ValueError, KeyError):
+        bar_start = None
+
+    def _fcol(row: pd.Series, key: str, default: float) -> float:
         try:
-            forming_start = int(forming_start)
-        except (TypeError, ValueError):
-            forming_start = None
-    if forming_start is None and "start" in target_row.index:
-        try:
-            forming_start = int(target_row["start"])
+            v = float(row[key])
+            return v if math.isfinite(v) else default
         except (TypeError, ValueError, KeyError):
-            forming_start = None
+            return default
 
     signal_row = {
-        "start": forming_start,
-        "open": live_price,
-        "high": live_price,
-        "low": live_price,
-        "close": live_price,
-        "closed": False,
+        "start": bar_start,
+        "open": _fcol(target_row, "open", entry_close),
+        "high": _fcol(target_row, "high", entry_close),
+        "low": _fcol(target_row, "low", entry_close),
+        "close": entry_close,
+        "closed": True,
     }
     meta = {
         "strategy_name": STRATEGY_NAME,
         "strategy_type": STRATEGY_NAME,
         "sl_price": float(sl_price),
         "tp_price": float(tp_price),
-        "entry_proxy": float(live_price),
-        "curr_upper": float(curr_upper),
-        "curr_lower": float(curr_lower),
+        "entry_proxy": float(entry_close),
+        "prev_dir": float(prev_dir),
         "curr_dir": float(curr_dir),
     }
+    if curr_upper is not None and curr_lower is not None:
+        meta["curr_upper"] = float(curr_upper)
+        meta["curr_lower"] = float(curr_lower)
     out["signal"] = side
     out["reason"] = reason
     out["signal_row"] = signal_row
@@ -347,10 +359,7 @@ def build_entry_checklists(
     tp_pts = _float_param(p, "tpPoints", 100.0)
     mode = _trade_mode(p)
     in_pos = bool(st.get("in_position"))
-    cols = supertrend_column_names(atr_len, mult)
-    dir_col = cols["dir"]
-    long_line_col = cols["lower"]
-    short_line_col = cols["upper"]
+    dir_col = supertrend_column_names(atr_len, mult)["dir"]
 
     d = prepare_dataframe(df, p)
     n_buf = 0 if df is None else len(df)
@@ -359,6 +368,13 @@ def build_entry_checklists(
             "rules_long": [{"text": "Need OHLC history", "met": False}],
             "rules_short": [{"text": "Need OHLC history", "met": False}],
             "note": f"ATR={atr_len} factor={mult} SL pts={sl_pts} TP pts={tp_pts}. Waiting for data.",
+            "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": n_buf},
+        }
+    if len(d) < 2:
+        return {
+            "rules_long": [{"text": "Need ≥2 closed bars to detect trend flip", "met": False}],
+            "rules_short": [{"text": "Need ≥2 closed bars to detect trend flip", "met": False}],
+            "note": f"ATR={atr_len} factor={mult}. Waiting for second closed bar…",
             "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": n_buf},
         }
     if dir_col not in d.columns:
@@ -370,9 +386,27 @@ def build_entry_checklists(
         }
 
     target_row = d.iloc[-1]
+    prev_row_ck = d.iloc[-2]
     curr_dir = _dir_value(target_row, dir_col)
+    prev_dir = _dir_value(prev_row_ck, dir_col)
     curr_txt = (
         "bullish (UP)" if (curr_dir is not None and curr_dir > 0) else "bearish (DOWN)" if (curr_dir is not None and curr_dir < 0) else "n/a"
+    )
+    prev_txt = (
+        "bullish (UP)" if (prev_dir is not None and prev_dir > 0) else "bearish (DOWN)" if (prev_dir is not None and prev_dir < 0) else "n/a"
+    )
+
+    flip_long = (
+        prev_dir is not None
+        and curr_dir is not None
+        and prev_dir < 0
+        and curr_dir > 0
+    )
+    flip_short = (
+        prev_dir is not None
+        and curr_dir is not None
+        and prev_dir > 0
+        and curr_dir < 0
     )
 
     long_ok = mode in ("Both", "Long")
@@ -382,24 +416,24 @@ def build_entry_checklists(
         {"text": "Instance flat (no open position)", "met": not in_pos},
         {"text": f"tradeMode allows LONG ({mode})", "met": long_ok},
         {
-            "text": "Latest closed bar: downtrend; live mid ≥ upper band (touch long)",
-            "met": False,
+            "text": "Trend flipped to UPTREND on candle close (prior bar bearish → latest bar bullish)",
+            "met": bool(flip_long and not in_pos),
         },
         {
-            "text": f"SL = entry − {sl_pts} pts, TP = entry + {tp_pts} pts (absolute)",
-            "met": long_ok and not in_pos,
+            "text": f"SL = signal close − {sl_pts} pts, TP = signal close + {tp_pts} pts (absolute)",
+            "met": bool(flip_long and long_ok and not in_pos),
         },
     ]
     rules_short = [
         {"text": "Instance flat (no open position)", "met": not in_pos},
         {"text": f"tradeMode allows SHORT ({mode})", "met": short_ok},
         {
-            "text": "Latest closed bar: uptrend; live mid ≤ lower band (touch short)",
-            "met": False,
+            "text": "Trend flipped to DOWNTREND on candle close (prior bar bullish → latest bar bearish)",
+            "met": bool(flip_short and not in_pos),
         },
         {
-            "text": f"SL = entry + {sl_pts} pts, TP = entry − {tp_pts} pts (absolute)",
-            "met": short_ok and not in_pos,
+            "text": f"SL = signal close + {sl_pts} pts, TP = signal close − {tp_pts} pts (absolute)",
+            "met": bool(flip_short and short_ok and not in_pos),
         },
     ]
 
@@ -407,41 +441,28 @@ def build_entry_checklists(
     bb, ba, _, _ = xst.orderbook_l1(sym, xst.SYMBOL)
     live = (float(bb) + float(ba)) / 2.0 if bb > 0 and ba > 0 else 0.0
 
-    try:
-        band_u = float(target_row[short_line_col])
-        band_l = float(target_row[long_line_col])
-    except (TypeError, ValueError, KeyError):
-        band_u = band_l = float("nan")
-
-    if not in_pos:
-        touch_long = (
-            curr_dir is not None
-            and curr_dir < 0
-            and live > 0
-            and math.isfinite(band_u)
-            and live >= band_u
-        )
-        touch_short = (
-            curr_dir is not None
-            and curr_dir > 0
-            and live > 0
-            and math.isfinite(band_l)
-            and live <= band_l
-        )
-        rules_long[2]["met"] = bool(touch_long)
-        rules_short[2]["met"] = bool(touch_short)
-
     note = (
         f"ATR period={atr_len} factor={mult} tradeMode={mode}. "
-        f"Latest closed Supertrend: {curr_txt}. "
-        "Entry: L1 mid vs latest closed bar bands (touch). "
-        "Exit: live opposite touch vs those bands, candle-close trend flip, SL/TP, or exchange stops."
+        f"Prior closed: {prev_txt}; latest closed: {curr_txt}. "
+        "Entry: Supertrend direction flip on candle close only (no touch entry). "
+        "Exit: live opposite-band touch, candle-close trend against you, SL/TP, or exchange stops."
     )
-    sync: dict[str, Any] = {"engine": STRATEGY_NAME, "rows_in_buffer": n_buf}
+    sync: dict[str, Any] = {
+        "engine": STRATEGY_NAME,
+        "rows_in_buffer": n_buf,
+        "prev_dir": prev_dir,
+        "curr_dir": curr_dir,
+        "flip_long_ok": flip_long,
+        "flip_short_ok": flip_short,
+    }
     try:
         sync["last_closed_start"] = int(target_row["start"])
     except (TypeError, ValueError, KeyError):
         sync["last_closed_start"] = None
+    try:
+        sync["prior_closed_start"] = int(prev_row_ck["start"])
+    except (TypeError, ValueError, KeyError):
+        sync["prior_closed_start"] = None
     sync["live_mid"] = round(live, 8) if live > 0 else None
 
     return {

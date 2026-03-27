@@ -3,16 +3,16 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 68588.0,
+      "price": 68557.5,
       "indicators": {
-        "RSI": 63.86,
-        "RSI_SMA": 56.63,
-        "volume_signal_vs_prev": true,
-        "body_size": 0.0,
-        "open": 68588.0,
-        "close": 68588.0,
-        "volume": 2947.0,
-        "Expected_Profit_Pct": 0.01
+        "RSI": 47.06,
+        "RSI_SMA": 47.41,
+        "volume_signal_vs_prev": false,
+        "body_size": 8.5,
+        "open": 68549.0,
+        "close": 68557.5,
+        "volume": 3620.0,
+        "Expected_Profit_Pct": 0.07
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -31,7 +31,7 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": true
+            "met": false
           },
           {
             "name": "RSI < 40.0",
@@ -39,13 +39,13 @@
           },
           {
             "name": "Expected Profit >= 0.02%",
-            "met": false
+            "met": true
           }
         ],
         "short": [
           {
             "name": "Signal Candle Bullish (close > open)",
-            "met": false
+            "met": true
           },
           {
             "name": "Previous Candle Bullish",
@@ -53,19 +53,19 @@
           },
           {
             "name": "Both Bullish",
-            "met": false
+            "met": true
           },
           {
             "name": "Volume: signal > previous",
-            "met": true
+            "met": false
           },
           {
             "name": "RSI > 60.0",
-            "met": true
+            "met": false
           },
           {
             "name": "Expected Profit >= 0.02%",
-            "met": false
+            "met": true
           }
         ]
       },
@@ -84,7 +84,7 @@
               "met": true
             },
             {
-              "text": "Prior closed bar: downtrend; live mid \u2265 prior upper band (touch long)",
+              "text": "Latest closed bar: downtrend; live mid \u2265 upper band (touch long)",
               "met": false
             },
             {
@@ -102,7 +102,7 @@
               "met": true
             },
             {
-              "text": "Prior closed bar: uptrend; live mid \u2264 prior lower band (touch short)",
+              "text": "Latest closed bar: uptrend; live mid \u2264 lower band (touch short)",
               "met": false
             },
             {
@@ -110,19 +110,19 @@
               "met": true
             }
           ],
-          "note": "ATR period=50 factor=1.0 tradeMode=Both. Last closed Supertrend: bearish (DOWN). Entry: L1 mid vs prior bar bands (touch). Exit: opposing trend on bar close, SL/TP in points, or exchange stops.",
+          "note": "ATR period=50 factor=1.0 tradeMode=Both. Latest closed Supertrend: bearish (DOWN). Entry: L1 mid vs latest closed bar bands (touch). Exit: live opposite touch vs those bands, candle-close trend flip, SL/TP, or exchange stops.",
           "monitor_sync": {
             "engine": "supertrend_scalping",
             "rows_in_buffer": 1000,
-            "last_closed_start": 1774587240000,
-            "live_mid": 68562.5,
+            "last_closed_start": 1774587720000,
+            "live_mid": 68558.0,
             "last_signal_start": 0,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
           }
         }
       },
-      "checks_updated_unix": 1774587289.6567686,
+      "checks_updated_unix": 1774587723.1433854,
       "status": "Waiting",
       "sl_price": null,
       "tp_price": null,

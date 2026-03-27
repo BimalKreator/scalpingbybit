@@ -678,13 +678,13 @@
       );
     }
 
-    /** Supertrend Scalping: ATR/factor, fixed point SL/TP, touch entry vs prior bar bands. */
+    /** Supertrend Scalping: candle-close trend flip entry; live touch + close for exits. */
     function supertrendScalpingExecutionBlock(p) {
       p = p || {};
       var tm = p.tradeMode != null && p.tradeMode !== '' ? String(p.tradeMode) : 'Both';
       return (
         '<p class="text-xs font-semibold text-slate-400 mt-3">Supertrend Scalping</p>' +
-        '<p class="text-[10px] text-slate-500 mb-2">Touch entry uses L1 mid vs the <strong class="text-slate-400">previous closed</strong> bar&apos;s Supertrend bands (TradingView-style). SL/TP are absolute prices: entry ± points. When a new candle closes and Supertrend is against your side, the bot flattens (paper: L1 mid).</p>' +
+        '<p class="text-[10px] text-slate-500 mb-2">Entries only when a candle <strong class="text-slate-400">closes</strong> and Supertrend flips vs the prior closed bar (bearish→bullish = long, bullish→bearish = short). SL/TP are from that bar&apos;s <strong class="text-slate-400">close</strong> ± points. Exits: live mid opposite-band touch, then candle-close trend against you (paper exit uses L1 mid).</p>' +
         '<div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">' +
         '<label class="block text-slate-400">Trade mode<select data-p="tradeMode" class="mt-1 w-full rounded-lg bg-slate-900 border border-slate-600 px-2 py-1.5 text-sm text-white">' +
         ['Both', 'Long', 'Short'].map(function (x) {
