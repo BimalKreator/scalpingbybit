@@ -3,39 +3,39 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 68772.5,
+      "price": 68643.5,
       "indicators": {
-        "RSI": 64.84,
-        "RSI_SMA": 55.64,
-        "volume_signal_vs_prev": false,
-        "body_size": 8.0,
-        "open": 68764.5,
-        "close": 68772.5,
-        "volume": 4104.0,
-        "Expected_Profit_Pct": 0.09
+        "RSI": 13.49,
+        "RSI_SMA": 41.28,
+        "volume_signal_vs_prev": true,
+        "body_size": 61.5,
+        "open": 68705.0,
+        "close": 68643.5,
+        "volume": 15529.0,
+        "Expected_Profit_Pct": 0.13
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
         "long": [
           {
             "name": "Signal Candle Bearish (open > close)",
-            "met": false
+            "met": true
           },
           {
             "name": "Previous Candle Bearish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bearish",
-            "met": false
+            "met": true
           },
           {
             "name": "Volume: signal > previous",
-            "met": false
+            "met": true
           },
           {
             "name": "RSI < 40.0",
-            "met": false
+            "met": true
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -45,23 +45,23 @@
         "short": [
           {
             "name": "Signal Candle Bullish (close > open)",
-            "met": true
-          },
-          {
-            "name": "Previous Candle Bullish",
-            "met": true
-          },
-          {
-            "name": "Both Bullish",
-            "met": true
-          },
-          {
-            "name": "Volume: signal > previous",
             "met": false
           },
           {
-            "name": "RSI > 60.0",
+            "name": "Previous Candle Bullish",
+            "met": false
+          },
+          {
+            "name": "Both Bullish",
+            "met": false
+          },
+          {
+            "name": "Volume: signal > previous",
             "met": true
+          },
+          {
+            "name": "RSI > 60.0",
+            "met": false
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -70,68 +70,71 @@
         ]
       },
       "checks": {
-        "inst_1774584416185_2fd782": {
+        "inst_1774593538838_948236": {
           "name": "Supertrend Scalping 1m",
           "interval": "1m",
           "strategy_type": "supertrend_scalping",
           "rules_long": [
             {
               "text": "Instance flat (no open position)",
-              "met": false
+              "met": true
             },
             {
               "text": "tradeMode allows LONG (Both)",
               "met": true
             },
             {
-              "text": "Trend flipped to UPTREND on candle close (prior bar downtrend \u2192 latest bar uptrend)",
+              "text": "Latest close above prior bar's SuperTrend upper band while prior trend was DOWN (bullish breakout close)",
               "met": false
             },
             {
-              "text": "SL = signal close \u2212 50.0 pts, TP = signal close + 1000.0 pts (absolute); RSI exit widens TP 10\u00d7",
+              "text": "SL = signal close \u2212 50.0 pts, TP = signal close + 100.0 pts (absolute)",
               "met": false
             }
           ],
           "rules_short": [
             {
               "text": "Instance flat (no open position)",
-              "met": false
+              "met": true
             },
             {
               "text": "tradeMode allows SHORT (Both)",
               "met": true
             },
             {
-              "text": "Trend flipped to DOWNTREND on candle close (prior bar uptrend \u2192 latest bar downtrend)",
+              "text": "Latest close below prior bar's SuperTrend lower band while prior trend was UP (bearish breakout close)",
               "met": false
             },
             {
-              "text": "SL = signal close + 50.0 pts, TP = signal close \u2212 1000.0 pts (absolute); RSI exit widens TP 10\u00d7",
+              "text": "SL = signal close + 50.0 pts, TP = signal close \u2212 100.0 pts (absolute)",
               "met": false
             }
           ],
-          "note": "ATR period=50 factor=1.0 tradeMode=Both. Prior closed: bullish (UP); latest closed: bullish (UP). Entry: Supertrend direction flip on candle close only (no touch entry). Exit: live opposite-band touch, RSI target exit ON: RSI(4) on last close \u2014 flatten long if \u226580.0, short if \u226420.0. Last RSI(4)=59.32.  candle-close trend against you, SL/TP, or exchange stops.",
+          "note": "ATR period=50 factor=1.0 tradeMode=Both. Prior closed: bearish (DOWN); latest closed: bearish (DOWN). Entry: candle close vs prior bar's SuperTrend bands (bullish: close > prior upper; bearish: close < prior lower), with prior-bar trend from SUPERTd (no touch entry). Exit: live opposite-band touch, candle-close trend against you, SL/TP, or exchange stops.",
           "monitor_sync": {
             "engine": "supertrend_scalping",
             "rows_in_buffer": 1000,
-            "prev_dir": -1.0,
-            "curr_dir": -1.0,
+            "prev_dir": 1.0,
+            "curr_dir": 1.0,
+            "prev_upper": 68696.27385199,
+            "prev_lower": 68652.22614801,
+            "last_close": 68683.5,
             "flip_long_ok": false,
             "flip_short_ok": false,
-            "use_rsi_target": true,
+            "use_rsi_target": false,
             "target_rsi_length": 4,
-            "last_rsi": 59.3174,
-            "last_closed_start": 1774593360000,
-            "prior_closed_start": 1774593300000,
-            "live_mid": 68766.0,
-            "last_signal_start": 1774590120000,
+            "last_rsi": null,
+            "last_closed_start": 1774593960000,
+            "prior_closed_start": 1774593900000,
+            "live_mid": 68684.0,
+            "last_signal_start": 0,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
           }
         }
       },
-      "checks_updated_unix": 1774593363.185487,
-      "status": "Waiting",
+      "checks_updated_unix": 1774594017.6379511,
+      "status": "Long Signal",
       "sl_price": null,
       "tp_price": null,
       "entry_price": null,

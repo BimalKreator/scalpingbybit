@@ -1,6 +1,6 @@
 [
   {
-    "id": "inst_1774584416185_2fd782",
+    "id": "inst_1774593538838_948236",
     "strategy_type": "supertrend_scalping",
     "name": "Supertrend Scalping 1m",
     "enabled": true,
@@ -15,25 +15,20 @@
       "tradeCapitalUsd": 100,
       "leverage": 10,
       "usePartialExit": false,
-      "feePct": 0.05,
-      "feeOnEntry": true,
-      "feeOnExit": false,
-      "useRsiTarget": true,
+      "useRsiTarget": false,
       "targetRsiLength": 4,
       "targetRsiLong": 80,
-      "targetRsiShort": 20
+      "targetRsiShort": 20,
+      "feePct": 0.05,
+      "feeOnEntry": true,
+      "feeOnExit": false
     },
     "state": {
-      "in_position": true,
+      "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 151,
-      "last_evaluated_start": 1774593360000,
-      "last_signal_start": 1774590120000,
-      "partial_steps_taken": 0,
-      "partial_qty_closed_total": 0.0,
-      "initial_entry_qty": null,
-      "realized_pnl_current_trade": 0.0,
-      "breakeven_sl_triggered": false
+      "bar_seq": 8,
+      "last_evaluated_start": 1774593960000,
+      "last_signal_start": null
     }
   }
 ]
