@@ -3,16 +3,16 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 66628.0,
+      "price": 66620.5,
       "indicators": {
-        "RSI": 29.29,
-        "RSI_SMA": 38.18,
+        "RSI": 41.21,
+        "RSI_SMA": 48.27,
         "volume_signal_vs_prev": false,
-        "body_size": 5.5,
-        "open": 66622.5,
-        "close": 66628.0,
-        "volume": 11705.0,
-        "Expected_Profit_Pct": 0.08
+        "body_size": 4.0,
+        "open": 66616.5,
+        "close": 66620.5,
+        "volume": 2947.0,
+        "Expected_Profit_Pct": 0.05
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -35,7 +35,7 @@
           },
           {
             "name": "RSI < 40.0",
-            "met": true
+            "met": false
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -110,27 +110,32 @@
               "met": false
             }
           ],
-          "note": "ATR period=50 factor=1.0 tradeMode=Both. Prior closed: bearish (DOWN); latest closed: bearish (DOWN). Entry: SUPERTd direction flip on candle close only (prior vs latest closed bar; no touch entry). Exit: live opposite-band touch, RSI target exit ON: RSI(4) on last close \u2014 flatten long if \u226580.0, short if \u226420.0. Last RSI(4)=38.12.  candle-close trend against you, SL/TP, or exchange stops.",
+          "note": "ATR period=50 factor=1.0 tradeMode=Both. Prior closed: bearish (DOWN); latest closed: bearish (DOWN). Entry: SUPERTd direction flip on candle close only (prior vs latest closed bar; no touch entry). Exit: live opposite-band touch, RSI target exit ON: RSI(4) on last close \u2014 flatten long if \u226580.0, short if \u226420.0. Last RSI(4)=54.19.  candle-close trend against you, SL/TP, or exchange stops.",
           "monitor_sync": {
             "engine": "supertrend_scalping",
             "rows_in_buffer": 1000,
+            "rows_after_confirm_trim": 1000,
+            "flip_eval_target_iloc": 999,
+            "flip_eval_prev_iloc": 998,
             "prev_dir": 1.0,
             "curr_dir": 1.0,
             "flip_long_ok": false,
             "flip_short_ok": false,
             "use_rsi_target": true,
             "target_rsi_length": 4,
-            "last_rsi": 38.1179,
-            "last_closed_start": 1774612980000,
-            "prior_closed_start": 1774612920000,
-            "live_mid": 66643.5,
+            "last_rsi": 54.1923,
+            "last_closed_start": 1774613940000,
+            "prior_closed_start": 1774613880000,
+            "flip_eval_target_start_ms": 1774613940000,
+            "flip_eval_prev_start_ms": 1774613880000,
+            "live_mid": 66646.5,
             "last_signal_start": 0,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
           }
         }
       },
-      "checks_updated_unix": 1774613000.6653209,
+      "checks_updated_unix": 1774613988.6439838,
       "status": "Waiting",
       "sl_price": null,
       "tp_price": null,
