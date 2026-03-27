@@ -1,8 +1,8 @@
 """
-Supertrend Scalping — entries on candle close when price breaks the *prior* bar's SuperTrend line
-(long: prior downtrend then close above prior upper band; short: prior uptrend then close below prior lower);
-fixed SL/TP in points from the signal bar close (TP widened when optional RSI target exit is on);
-exits: live opposite-band touch, optional candle-close RSI target, candle-close through current ST band.
+Supertrend Scalping — entries on candle close when ``SUPERTd`` flips vs the prior closed bar
+(long: downtrend → uptrend; short: uptrend → downtrend); the indicator embeds close/band logic internally.
+Fixed SL/TP in points from the signal bar close (TP widened when optional RSI target exit is on).
+Exits: live opposite-band touch, optional candle-close RSI target, candle-close through current ST band.
 
 SUPERTd convention (matches ``_tradingview_supertrend``): **< 0** (e.g. −1) = **uptrend** (green line below price);
 **> 0** (e.g. +1) = **downtrend** (red line above price).
@@ -496,22 +496,19 @@ def evaluate(
         )
         return out
 
-    # --- ENTRY: close of latest bar vs *prior* bar's SuperTrend bands (not SUPERTd flip on curr).
+    # --- ENTRY: strict SUPERTd flip on last two confirmed-closed bars (indicator is source of truth).
     prev_row = d.iloc[-2]
     prev_dir = _dir_value(prev_row, dir_col)
-    if prev_dir is None or (
-        isinstance(prev_dir, float) and math.isnan(prev_dir)
+    if (
+        curr_dir is None
+        or prev_dir is None
+        or (isinstance(curr_dir, float) and math.isnan(curr_dir))
+        or (isinstance(prev_dir, float) and math.isnan(prev_dir))
+        or float(curr_dir) == 0.0
+        or float(prev_dir) == 0.0
     ):
-        out["reason"] = "supertrend_prev_dir_invalid"
+        out["reason"] = "supertrend_dir_invalid"
         return out
-
-    try:
-        pu_raw = float(prev_row[short_line_col])
-        pl_raw = float(prev_row[long_line_col])
-    except (TypeError, ValueError, KeyError):
-        pu_raw = pl_raw = float("nan")
-    prev_upper_f = pu_raw if math.isfinite(pu_raw) and pu_raw > 0 else None
-    prev_lower_f = pl_raw if math.isfinite(pl_raw) and pl_raw > 0 else None
 
     try:
         entry_close = float(target_row["close"])
@@ -527,23 +524,15 @@ def evaluate(
     sl_price = tp_price = None
     actual_tp_points = tp_points * 10.0 if use_rsi_target else tp_points
 
-    # LONG: prior bar downtrend (line on upper band); close breaks above prior resistance (upper).
-    if (
-        prev_dir > 0
-        and prev_upper_f is not None
-        and entry_close > prev_upper_f
-    ):
+    # LONG: prior DOWNTREND (> 0) → current UPTREND (< 0).
+    if prev_dir > 0 and curr_dir < 0:
         if mode in ("Both", "Long"):
             side = "Buy"
             reason = "supertrend_flip_long"
             sl_price = entry_close - sl_points
             tp_price = entry_close + actual_tp_points
-    # SHORT: prior bar uptrend (line on lower band); close breaks below prior support (lower).
-    elif (
-        prev_dir < 0
-        and prev_lower_f is not None
-        and entry_close < prev_lower_f
-    ):
+    # SHORT: prior UPTREND (< 0) → current DOWNTREND (> 0).
+    elif prev_dir < 0 and curr_dir > 0:
         if mode in ("Both", "Short"):
             side = "Sell"
             reason = "supertrend_flip_short"
@@ -581,13 +570,8 @@ def evaluate(
         "tp_price": float(tp_price),
         "entry_proxy": float(entry_close),
         "prev_dir": float(prev_dir),
-        "curr_dir": float(curr_dir) if curr_dir is not None else None,
-        "entry_band_cross": True,
+        "curr_dir": float(curr_dir),
     }
-    if prev_upper_f is not None:
-        meta["prev_upper"] = float(prev_upper_f)
-    if prev_lower_f is not None:
-        meta["prev_lower"] = float(prev_lower_f)
     if curr_upper is not None and curr_lower is not None:
         meta["curr_upper"] = float(curr_upper)
         meta["curr_lower"] = float(curr_lower)
@@ -635,10 +619,7 @@ def build_entry_checklists(
     tp_widened = tp_pts * 10.0 if use_rsi else tp_pts
     mode = _trade_mode(p)
     in_pos = bool(st.get("in_position"))
-    cols_ck = supertrend_column_names(atr_len, mult)
-    dir_col = cols_ck["dir"]
-    long_line_ck = cols_ck["lower"]
-    short_line_ck = cols_ck["upper"]
+    dir_col = supertrend_column_names(atr_len, mult)["dir"]
 
     d = prepare_dataframe(df, p)
     n_buf = 0 if df is None else len(df)
@@ -681,13 +662,6 @@ def build_entry_checklists(
         close_ck = float(target_row["close"])
     except (TypeError, ValueError, KeyError):
         close_ck = float("nan")
-    try:
-        _pu = float(prev_row_ck[short_line_ck])
-        _pl = float(prev_row_ck[long_line_ck])
-    except (TypeError, ValueError, KeyError):
-        _pu = _pl = float("nan")
-    prev_upper_ck = _pu if math.isfinite(_pu) and _pu > 0 else None
-    prev_lower_ck = _pl if math.isfinite(_pl) and _pl > 0 else None
     # SUPERTd: <0 uptrend, >0 downtrend (same as _tradingview_supertrend).
     curr_txt = (
         "bullish (UP)"
@@ -706,17 +680,15 @@ def build_entry_checklists(
 
     flip_long_ok = (
         prev_dir is not None
+        and curr_dir is not None
         and prev_dir > 0
-        and prev_upper_ck is not None
-        and math.isfinite(close_ck)
-        and close_ck > prev_upper_ck
+        and curr_dir < 0
     )
     flip_short_ok = (
         prev_dir is not None
+        and curr_dir is not None
         and prev_dir < 0
-        and prev_lower_ck is not None
-        and math.isfinite(close_ck)
-        and close_ck < prev_lower_ck
+        and curr_dir > 0
     )
 
     long_ok = mode in ("Both", "Long")
@@ -727,8 +699,7 @@ def build_entry_checklists(
         {"text": f"tradeMode allows LONG ({mode})", "met": long_ok},
         {
             "text": (
-                "Latest close above prior bar's downtrend line (upper band): close > prev upper, "
-                "prior SUPERTd > 0"
+                "SUPERTd flipped DOWNTREND → UPTREND (prev > 0, curr < 0) on latest vs prior close"
             ),
             "met": bool(flip_long_ok and not in_pos),
         },
@@ -745,8 +716,7 @@ def build_entry_checklists(
         {"text": f"tradeMode allows SHORT ({mode})", "met": short_ok},
         {
             "text": (
-                "Latest close below prior bar's uptrend line (lower band): close < prev lower, "
-                "prior SUPERTd < 0"
+                "SUPERTd flipped UPTREND → DOWNTREND (prev < 0, curr > 0) on latest vs prior close"
             ),
             "met": bool(flip_short_ok and not in_pos),
         },
@@ -783,8 +753,7 @@ def build_entry_checklists(
     note = (
         f"ATR period={atr_len} factor={mult} tradeMode={mode}. "
         f"Prior closed: {prev_txt}; latest closed: {curr_txt}. "
-        "Entry: latest close vs prior bar's ST band (long: close > prior upper when prior downtrend; "
-        "short: close < prior lower when prior uptrend). "
+        "Entry: SUPERTd direction flip only (prev vs latest confirmed close; indicator owns price/band math). "
         "Exit: live opposite-band touch,"
         f"{rsi_note}"
         " candle-close through current support/resistance, SL/TP, or exchange stops."
@@ -800,8 +769,6 @@ def build_entry_checklists(
         "curr_dir": curr_dir,
         "flip_long_ok": flip_long_ok,
         "flip_short_ok": flip_short_ok,
-        "prev_upper": round(prev_upper_ck, 8) if prev_upper_ck is not None else None,
-        "prev_lower": round(prev_lower_ck, 8) if prev_lower_ck is not None else None,
         "last_close": round(close_ck, 8) if math.isfinite(close_ck) else None,
         "use_rsi_target": use_rsi,
         "target_rsi_length": trsi_len,

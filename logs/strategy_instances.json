@@ -8,8 +8,8 @@
     "timeframe": "1m",
     "params": {
       "tradeMode": "Both",
-      "atrPeriod": 50,
-      "factor": 1,
+      "atrPeriod": 10,
+      "factor": 0.2,
       "slPoints": 50,
       "tpPoints": 100,
       "tradeCapitalUsd": 100,
@@ -26,8 +26,8 @@
     "state": {
       "in_position": true,
       "cooldown_until_bar": 0,
-      "bar_seq": 341,
-      "last_evaluated_start": 1774613940000,
+      "bar_seq": 359,
+      "last_evaluated_start": 1774615020000,
       "last_signal_start": null,
       "forming_bar_start": null,
       "partial_steps_taken": 0,
