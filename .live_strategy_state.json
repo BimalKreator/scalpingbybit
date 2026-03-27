@@ -3,16 +3,16 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 66582.0,
+      "price": 66590.5,
       "indicators": {
-        "RSI": 67.3,
-        "RSI_SMA": 47.55,
+        "RSI": 66.79,
+        "RSI_SMA": 52.51,
         "volume_signal_vs_prev": true,
-        "body_size": 26.0,
-        "open": 66556.0,
-        "close": 66582.0,
-        "volume": 6039.0,
-        "Expected_Profit_Pct": 0.11
+        "body_size": 4.0,
+        "open": 66586.5,
+        "close": 66590.5,
+        "volume": 5744.0,
+        "Expected_Profit_Pct": 0.05
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -84,7 +84,7 @@
               "met": true
             },
             {
-              "text": "SUPERTd flipped DOWNTREND \u2192 UPTREND (prev > 0, curr < 0) on latest vs prior close",
+              "text": "Long: prev_dir>0 & close>prev_upper \u2192 66617 > 66601.027",
               "met": false
             },
             {
@@ -102,7 +102,7 @@
               "met": true
             },
             {
-              "text": "SUPERTd flipped UPTREND \u2192 DOWNTREND (prev < 0, curr > 0) on latest vs prior close",
+              "text": "Short: prev_dir<0 & close<prev_lower \u2192 66617 < 66589.545",
               "met": false
             },
             {
@@ -110,33 +110,35 @@
               "met": false
             }
           ],
-          "note": "ATR period=10 factor=0.2 tradeMode=Both. Prior closed: bullish (UP); latest closed: bullish (UP). Entry: SUPERTd direction flip only (prev vs latest confirmed close; indicator owns price/band math). Exit: live opposite-band touch, RSI target exit ON: RSI(4) on last close \u2014 flatten long if \u226580.0, short if \u226420.0. Last RSI(4)=67.51.  candle-close through current support/resistance, SL/TP, or exchange stops.",
+          "note": "ATR period=10 factor=0.2 tradeMode=Both. Prior closed: bearish (DOWN); latest closed: bullish (UP). Entry: latest close vs prior bar ST bands (long: close > prior upper when prior downtrend; short: close < prior lower when prior uptrend). Exit: live band touch, RSI target exit ON: RSI(4) on last close \u2014 flatten long if \u226580.0, short if \u226420.0. Last RSI(4)=79.40.  candle close vs current upper/lower, SL/TP, or exchange stops.",
           "monitor_sync": {
             "engine": "supertrend_scalping",
             "rows_in_buffer": 1000,
             "rows_after_confirm_trim": 1000,
             "flip_eval_target_iloc": 999,
             "flip_eval_prev_iloc": 998,
-            "prev_dir": -1.0,
+            "prev_dir": 1.0,
             "curr_dir": -1.0,
-            "flip_long_ok": false,
+            "flip_long_ok": true,
             "flip_short_ok": false,
-            "last_close": 66582.5,
+            "prev_upper": 66601.02724787,
+            "prev_lower": 66589.54547692,
+            "last_close": 66617.0,
             "use_rsi_target": true,
             "target_rsi_length": 4,
-            "last_rsi": 67.5139,
-            "last_closed_start": 1774615440000,
-            "prior_closed_start": 1774615380000,
-            "flip_eval_target_start_ms": 1774615440000,
-            "flip_eval_prev_start_ms": 1774615380000,
-            "live_mid": 66582.0,
+            "last_rsi": 79.4004,
+            "last_closed_start": 1774616460000,
+            "prior_closed_start": 1774616400000,
+            "flip_eval_target_start_ms": 1774616460000,
+            "flip_eval_prev_start_ms": 1774616400000,
+            "live_mid": 66599.0,
             "last_signal_start": 0,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
           }
         }
       },
-      "checks_updated_unix": 1774615443.151359,
+      "checks_updated_unix": 1774616469.1485305,
       "status": "Waiting",
       "sl_price": null,
       "tp_price": null,
