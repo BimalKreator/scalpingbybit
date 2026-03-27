@@ -1,17 +1,14 @@
 """
 Supertrend Scalping — SuperTrend from **pandas_ta** (``d.ta.supertrend``) on the bot’s OHLC slice.
-**SUPERTd (pandas_ta):** ``1`` = uptrend (green / support regime), ``-1`` = downtrend (red / resistance regime).
+**SUPERTd (pandas_ta):** ``1`` = uptrend (green / support), ``-1`` = downtrend (red / resistance).
 
-Entries (prior bar ``iloc[-2]`` + crossover vs prior bands): **long** when prior downtrend
-(``prev_dir == -1``), ``prev_upper > 0``, ``prev_close < prev_upper``, ``target_close > prev_upper``;
-**short** when prior uptrend (``prev_dir == 1``), ``prev_lower > 0``, ``prev_close > prev_lower``,
-``target_close < prev_lower``.
+**Entries** are **direction flips only** (no close-vs-band checks): long when prior bar ``SUPERTd < 0``
+and latest bar ``SUPERTd > 0``; short when prior ``> 0`` and latest ``< 0``. Invalid if either
+direction is NaN or 0.
 
-After ``prepare_dataframe``, column names are **sniffed** (``SUPERTd_*``, ``SUPERTl_*``, ``SUPERTs_*``)
-so reads match whatever suffix ``pandas_ta`` emitted. All ``SUPERT*`` columns are dropped before each run.
-
-``[ST DEBUG]`` logs after ``target_row``/``prev_row`` (before ``in_pos`` / entry). Exits: band touch,
-optional RSI, then **formal trend flip** on the latest close (long flat if ``SUPERTd < 0``, short flat
+After ``prepare_dataframe``, column names are **sniffed** (``SUPERTd_*``, ``SUPERTl_*``, ``SUPERTs_*``).
+``[ST DEBUG]`` logs ``TargetClose``, ``PrevDir``, ``CurrDir``, and the sniffed ``dir`` column.
+Exits: band touch, optional RSI, then formal flip on latest close (long flat if ``SUPERTd < 0``, short
 if ``SUPERTd > 0``).
 """
 
@@ -208,6 +205,14 @@ def _dir_flip_scalar(row: pd.Series, dir_col: str) -> float:
     return x
 
 
+def _pta_dir_optional(row: pd.Series, dir_col: str) -> float | None:
+    """Finite SUPERTd or ``None`` (missing/NaN); does not treat 0 as valid."""
+    x = _dir_flip_scalar(row, dir_col)
+    if math.isnan(x) or x == 0.0:
+        return None
+    return x
+
+
 def _ws_confirm_truthy(c: Any) -> bool:
     """Match ``main._is_ws_kline_fully_closed`` / Bybit-style kline confirm flags."""
     if c is True:
@@ -326,30 +331,15 @@ def evaluate(
         return x if math.isfinite(x) else float("nan")
 
     target_close = _cell_float(target_row, "close", None)
-    prev_close = _cell_float(prev_row, "close", None)
-    prev_dir_raw = prev_row.get(dir_col, 0)
-    prev_upper_raw = _cell_float(prev_row, short_line_col, 0.0)
-    prev_lower_raw = _cell_float(prev_row, long_line_col, 0.0)
+    prev_dir_f = _dir_flip_scalar(prev_row, dir_col)
+    curr_dir_f = _dir_flip_scalar(target_row, dir_col)
 
     _st_dbg = (
-        f"[ST DEBUG] TargetClose: {target_close} | PrevClose: {prev_close} | "
-        f"PrevDir: {prev_dir_raw} | PrevUpper: {prev_upper_raw} | PrevLower: {prev_lower_raw} | "
-        f"sniffed cols (params ATR={atr_len} mult={mult}) → dir={dir_col} upper={short_line_col} lower={long_line_col}"
+        f"[ST DEBUG] TargetClose: {target_close} | PrevDir: {prev_dir_f} | CurrDir: {curr_dir_f} | "
+        f"sniffed cols (ATR={atr_len} mult={mult}) -> dir={dir_col}"
     )
     logging.info("%s", _st_dbg)
     print(_st_dbg, flush=True)
-
-    if math.isnan(prev_upper_raw):
-        prev_upper = 0.0
-    else:
-        prev_upper = float(prev_upper_raw)
-    if math.isnan(prev_lower_raw):
-        prev_lower = 0.0
-    else:
-        prev_lower = float(prev_lower_raw)
-
-    prev_dir_f = _dir_flip_scalar(prev_row, dir_col)
-    curr_dir_f = _dir_flip_scalar(target_row, dir_col)
     curr_upper: float | None = None
     curr_lower: float | None = None
     try:
@@ -428,41 +418,31 @@ def evaluate(
         )
         return out
 
-    # --- ENTRY: prior SUPERTd + physical crossover (no early return; invalid floats → no match).
+    # --- ENTRY: strict pandas_ta SUPERTd flip (iloc[-2] vs iloc[-1]); no close-vs-band rules.
     entry_close = target_close
     side: str | None = None
     reason = "no_signal"
     sl_price = tp_price = None
     actual_tp_points = tp_points * 10.0 if use_rsi_target else tp_points
 
-    # pandas_ta SUPERTd: -1 = downtrend (resistance), 1 = uptrend (support).
-    long_dir_ok = not math.isnan(prev_dir_f) and prev_dir_f < 0.0
-    short_dir_ok = not math.isnan(prev_dir_f) and prev_dir_f > 0.0
-    closes_ok = (
-        math.isfinite(target_close)
-        and target_close > 0.0
-        and math.isfinite(prev_close)
-    )
-
     if (
-        closes_ok
-        and long_dir_ok
-        and prev_upper > 0.0
-        and prev_close < prev_upper
-        and target_close > prev_upper
+        math.isnan(prev_dir_f)
+        or math.isnan(curr_dir_f)
+        or prev_dir_f == 0.0
+        or curr_dir_f == 0.0
     ):
+        out["reason"] = "supertrend_dir_invalid"
+        return out
+
+    closes_ok = math.isfinite(target_close) and target_close > 0.0
+
+    if closes_ok and prev_dir_f < 0.0 and curr_dir_f > 0.0:
         if mode in ("Both", "Long"):
             side = "Buy"
             reason = "supertrend_flip_long"
             sl_price = entry_close - sl_points
             tp_price = entry_close + actual_tp_points
-    elif (
-        closes_ok
-        and short_dir_ok
-        and prev_lower > 0.0
-        and prev_close > prev_lower
-        and target_close < prev_lower
-    ):
+    elif closes_ok and prev_dir_f > 0.0 and curr_dir_f < 0.0:
         if mode in ("Both", "Short"):
             side = "Sell"
             reason = "supertrend_flip_short"
@@ -503,14 +483,10 @@ def evaluate(
         "sl_price": float(sl_price),
         "tp_price": float(tp_price),
         "entry_proxy": float(entry_close),
-        "prev_close": float(prev_close),
-        "prev_dir": float(prev_dir_f) if not math.isnan(prev_dir_f) else None,
-        "entry_band_cross": True,
+        "prev_dir": float(prev_dir_f),
+        "curr_dir": float(curr_dir_f),
+        "entry_supertrend_flip": True,
     }
-    if prev_upper > 0.0:
-        meta["prev_upper"] = float(prev_upper)
-    if prev_lower > 0.0:
-        meta["prev_lower"] = float(prev_lower)
     if curr_upper is not None and curr_lower is not None:
         meta["curr_upper"] = float(curr_upper)
         meta["curr_lower"] = float(curr_lower)
@@ -599,59 +575,38 @@ def build_entry_checklists(
 
     target_row = d.iloc[-1]
     prev_row_ck = d.iloc[-2]
-    _cd = _dir_flip_scalar(target_row, dir_col)
-    _pd = _dir_flip_scalar(prev_row_ck, dir_col)
-    curr_dir = None if math.isnan(_cd) else _cd
-    prev_dir = None if math.isnan(_pd) else _pd
+    prev_dir = _pta_dir_optional(prev_row_ck, dir_col)
+    curr_dir = _pta_dir_optional(target_row, dir_col)
     try:
         close_ck = float(target_row["close"])
     except (TypeError, ValueError, KeyError):
         close_ck = float("nan")
-    try:
-        prev_close_ck = float(prev_row_ck["close"])
-    except (TypeError, ValueError, KeyError):
-        prev_close_ck = float("nan")
-    try:
-        _pu = float(prev_row_ck[short_line_ck])
-        _pl = float(prev_row_ck[long_line_ck])
-    except (TypeError, ValueError, KeyError):
-        _pu = _pl = float("nan")
-    prev_upper_ck = _pu if math.isfinite(_pu) and _pu > 0 else None
-    prev_lower_ck = _pl if math.isfinite(_pl) and _pl > 0 else None
 
     long_ok = mode in ("Both", "Long")
     short_ok = mode in ("Both", "Short")
 
     long_cross_valid = (
         prev_dir is not None
+        and curr_dir is not None
         and prev_dir < 0
-        and prev_upper_ck is not None
-        and prev_upper_ck > 0
-        and math.isfinite(prev_close_ck)
-        and math.isfinite(close_ck)
-        and prev_close_ck < prev_upper_ck
-        and close_ck > prev_upper_ck
+        and curr_dir > 0
     )
     short_cross_valid = (
         prev_dir is not None
+        and curr_dir is not None
         and prev_dir > 0
-        and prev_lower_ck is not None
-        and prev_lower_ck > 0
-        and math.isfinite(prev_close_ck)
-        and math.isfinite(close_ck)
-        and prev_close_ck > prev_lower_ck
-        and close_ck < prev_lower_ck
+        and curr_dir < 0
     )
 
     rules_long = [
         {
-            "text": "Candle successfully closed ABOVE previous Downtrend Resistance Line",
+            "text": "Trend flipped from DOWNTREND (-1) to UPTREND (1)",
             "met": bool(long_cross_valid and not in_pos and long_ok),
         },
     ]
     rules_short = [
         {
-            "text": "Candle successfully closed BELOW previous Uptrend Support Line",
+            "text": "Trend flipped from UPTREND (1) to DOWNTREND (-1)",
             "met": bool(short_cross_valid and not in_pos and short_ok),
         },
     ]
@@ -679,8 +634,7 @@ def build_entry_checklists(
 
     note = (
         f"ATR={atr_len} factor={mult} tradeMode={mode}. pandas_ta SUPERTd: 1=uptrend, -1=downtrend. "
-        "Long: prior SUPERTd=-1 + close crosses above prior upper band. "
-        "Short: prior SUPERTd=1 + close crosses below prior lower band. "
+        "Entry: flip only — long: prior -1 → current +1; short: prior +1 → current -1. "
         f"SL/TP in points (TP×10 if RSI exit on).{rsi_note}"
     )
     n_trim = len(d)
@@ -699,9 +653,6 @@ def build_entry_checklists(
         "curr_dir": curr_dir,
         "long_cross_valid": long_cross_valid,
         "short_cross_valid": short_cross_valid,
-        "prev_upper": round(prev_upper_ck, 8) if prev_upper_ck is not None else None,
-        "prev_lower": round(prev_lower_ck, 8) if prev_lower_ck is not None else None,
-        "prev_close": round(prev_close_ck, 8) if math.isfinite(prev_close_ck) else None,
         "last_close": round(close_ck, 8) if math.isfinite(close_ck) else None,
         "use_rsi_target": use_rsi,
         "target_rsi_length": trsi_len,
