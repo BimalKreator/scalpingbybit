@@ -3,16 +3,16 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 68346.5,
+      "price": 68588.0,
       "indicators": {
-        "RSI": 43.59,
-        "RSI_SMA": 16.7,
+        "RSI": 63.86,
+        "RSI_SMA": 56.63,
         "volume_signal_vs_prev": true,
-        "body_size": 51.0,
-        "open": 68295.5,
-        "close": 68346.5,
-        "volume": 10431.0,
-        "Expected_Profit_Pct": 0.16
+        "body_size": 0.0,
+        "open": 68588.0,
+        "close": 68588.0,
+        "volume": 2947.0,
+        "Expected_Profit_Pct": 0.01
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -23,7 +23,7 @@
           },
           {
             "name": "Previous Candle Bearish",
-            "met": true
+            "met": false
           },
           {
             "name": "Both Bearish",
@@ -39,17 +39,17 @@
           },
           {
             "name": "Expected Profit >= 0.02%",
-            "met": true
+            "met": false
           }
         ],
         "short": [
           {
             "name": "Signal Candle Bullish (close > open)",
-            "met": true
+            "met": false
           },
           {
             "name": "Previous Candle Bullish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bullish",
@@ -61,11 +61,11 @@
           },
           {
             "name": "RSI > 60.0",
-            "met": false
+            "met": true
           },
           {
             "name": "Expected Profit >= 0.02%",
-            "met": true
+            "met": false
           }
         ]
       },
@@ -110,19 +110,19 @@
               "met": true
             }
           ],
-          "note": "ATR period=10 factor=3.0 tradeMode=Both. Last closed Supertrend: bearish (DOWN). Entry: L1 mid vs prior bar bands (touch). Exit: opposing trend on bar close, SL/TP in points, or exchange stops.",
+          "note": "ATR period=50 factor=1.0 tradeMode=Both. Last closed Supertrend: bearish (DOWN). Entry: L1 mid vs prior bar bands (touch). Exit: opposing trend on bar close, SL/TP in points, or exchange stops.",
           "monitor_sync": {
             "engine": "supertrend_scalping",
             "rows_in_buffer": 1000,
-            "last_closed_start": 1774584780000,
-            "live_mid": 68357.5,
+            "last_closed_start": 1774587240000,
+            "live_mid": 68562.5,
             "last_signal_start": 0,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
           }
         }
       },
-      "checks_updated_unix": 1774584826.1632314,
+      "checks_updated_unix": 1774587289.6567686,
       "status": "Waiting",
       "sl_price": null,
       "tp_price": null,

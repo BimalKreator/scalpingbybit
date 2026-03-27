@@ -8,19 +8,22 @@
     "timeframe": "1m",
     "params": {
       "tradeMode": "Both",
-      "atrPeriod": 10,
-      "factor": 3.0,
-      "slPoints": 50.0,
-      "tpPoints": 100.0,
-      "tradeCapitalUsd": 100.0,
-      "leverage": 10.0,
-      "usePartialExit": false
+      "atrPeriod": 50,
+      "factor": 1,
+      "slPoints": 50,
+      "tpPoints": 100,
+      "tradeCapitalUsd": 100,
+      "leverage": 10,
+      "usePartialExit": false,
+      "feePct": 0.05,
+      "feeOnEntry": true,
+      "feeOnExit": false
     },
     "state": {
       "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 8,
-      "last_evaluated_start": 1774584780000,
+      "bar_seq": 49,
+      "last_evaluated_start": 1774587240000,
       "last_signal_start": null
     }
   }
