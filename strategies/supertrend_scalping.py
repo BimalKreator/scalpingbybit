@@ -204,58 +204,80 @@ def evaluate(
         return out
 
     in_pos = bool(st_dict.get("in_position"))
+    sym = str(st_dict.get("symbol") or xst.SYMBOL).strip().upper()
+    bb, ba, _, _ = xst.orderbook_l1(sym, xst.SYMBOL)
+    live_price = (float(bb) + float(ba)) / 2.0 if bb > 0 and ba > 0 else 0.0
+
     last = d.iloc[-1]
     curr_dir = _dir_value(last, dir_col)
 
+    prev_dir: float | None = None
+    prev_upper: float | None = None
+    prev_lower: float | None = None
+    if len(d) >= 2:
+        prev_row = d.iloc[-2]
+        prev_dir = _dir_value(prev_row, dir_col)
+        try:
+            pu = float(prev_row[short_line_col])
+            pl = float(prev_row[long_line_col])
+        except (TypeError, ValueError, KeyError):
+            pu = pl = float("nan")
+        if math.isfinite(pu) and math.isfinite(pl):
+            prev_upper, prev_lower = pu, pl
+
     if in_pos:
-        sym = str(st_dict.get("symbol") or xst.SYMBOL).strip().upper()
         pos = xst.read_position_for_symbol(sym, xst.SYMBOL)
         sz = float(pos.get("size") or 0.0)
-        side_raw = str(pos.get("side") or "").strip().lower()
+        pos_side = str(pos.get("side") or "").strip().lower()
         if sz <= 1e-18:
             out["reason"] = "in_position_flag_but_flat"
             return out
-        if curr_dir is None:
-            out["reason"] = "supertrend_dir_nan_exit_hold"
-            return out
-        if side_raw == "buy" and curr_dir < 0:
-            out["signal"] = "Flat"
-            out["reason"] = "supertrend_changed_to_bearish"
-            return out
-        if side_raw == "sell" and curr_dir > 0:
-            out["signal"] = "Flat"
-            out["reason"] = "supertrend_changed_to_bullish"
-            return out
-        out["reason"] = "in_position_hold"
+
+        touch_ok = (
+            prev_dir is not None
+            and prev_upper is not None
+            and prev_lower is not None
+        )
+        if live_price > 0 and touch_ok:
+            if pos_side == "buy" and prev_dir > 0 and live_price <= prev_lower:
+                out["signal"] = "Flat"
+                out["reason"] = "sl_hit_opposite_signal_short_touch"
+                return out
+            if pos_side == "sell" and prev_dir < 0 and live_price >= prev_upper:
+                out["signal"] = "Flat"
+                out["reason"] = "sl_hit_opposite_signal_long_touch"
+                return out
+
+        if curr_dir is not None:
+            if pos_side == "buy" and curr_dir < 0:
+                out["signal"] = "Flat"
+                out["reason"] = "supertrend_changed_to_bearish_close"
+                return out
+            if pos_side == "sell" and curr_dir > 0:
+                out["signal"] = "Flat"
+                out["reason"] = "supertrend_changed_to_bullish_close"
+                return out
+
+        out["reason"] = (
+            "supertrend_dir_nan_exit_hold"
+            if curr_dir is None
+            else "in_position_hold"
+        )
+        return out
+
+    if live_price <= 0:
+        out["reason"] = "no_live_price"
         return out
 
     if len(d) < 2:
         out["reason"] = "not_enough_bars"
         return out
 
-    prev_row = d.iloc[-2]
-    prev_dir = _dir_value(prev_row, dir_col)
     if prev_dir is None:
         out["reason"] = "prev_supertrend_nan"
         return out
-
-    try:
-        prev_upper = float(prev_row[short_line_col])
-        prev_lower = float(prev_row[long_line_col])
-    except (TypeError, ValueError, KeyError):
+    if prev_upper is None or prev_lower is None:
         out["reason"] = "band_values_invalid"
-        return out
-    if not math.isfinite(prev_upper) or not math.isfinite(prev_lower):
-        out["reason"] = "band_non_finite"
-        return out
-
-    sym = str(st_dict.get("symbol") or xst.SYMBOL).strip().upper()
-    bb, ba, _, _ = xst.orderbook_l1(sym, xst.SYMBOL)
-    live_price = 0.0
-    if bb > 0 and ba > 0:
-        live_price = (float(bb) + float(ba)) / 2.0
-    if live_price <= 0:
-        out["reason"] = "no_live_price"
         return out
 
     side: str | None = None

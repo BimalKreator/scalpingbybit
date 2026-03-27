@@ -1,45 +1,27 @@
 [
   {
-    "id": "inst_1774370475025_224dd4",
-    "strategy_type": "single_candle",
-    "name": "Single Candle 15m",
+    "id": "inst_1774584416185_2fd782",
+    "strategy_type": "supertrend_scalping",
+    "name": "Supertrend Scalping 1m",
     "enabled": true,
     "symbol": "BTCUSDT",
     "timeframe": "1m",
     "params": {
       "tradeMode": "Both",
-      "slPoints": 40,
-      "tradeCapitalUsd": 155,
-      "leverage": 10,
-      "trailingSlEnabled": false,
-      "partialTpEnabled": false,
-      "breakevenBufferPct": 0.05,
-      "tpMultiplier": 5,
-      "useTarget": true,
-      "feePct": 0.05,
-      "feeOnEntry": true,
-      "feeOnExit": false,
-      "useConfirmationCandle": false,
-      "useOrderbookVolume": false,
-      "exitOnCandleClose": false,
-      "trailingCandleExit": false,
-      "usePartialExit": false,
-      "partialMovePct": 50,
-      "partialQtyPct": 50,
-      "useTouchEntry": true,
-      "moveSlToEntryAtHalfTarget": true
+      "atrPeriod": 10,
+      "factor": 3.0,
+      "slPoints": 50.0,
+      "tpPoints": 100.0,
+      "tradeCapitalUsd": 100.0,
+      "leverage": 10.0,
+      "usePartialExit": false
     },
     "state": {
       "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 3281,
-      "last_evaluated_start": 1774584360000,
-      "last_signal_start": 1774584180000,
-      "partial_steps_taken": 0,
-      "initial_entry_qty": null,
-      "realized_pnl_current_trade": 0.0,
-      "partial_qty_closed_total": 0.0,
-      "breakeven_sl_triggered": false
+      "bar_seq": 8,
+      "last_evaluated_start": 1774584780000,
+      "last_signal_start": null
     }
   }
 ]

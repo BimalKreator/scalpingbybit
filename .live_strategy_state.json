@@ -3,16 +3,16 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 68525.0,
+      "price": 68346.5,
       "indicators": {
-        "RSI": 30.45,
-        "RSI_SMA": 23.79,
+        "RSI": 43.59,
+        "RSI_SMA": 16.7,
         "volume_signal_vs_prev": true,
-        "body_size": 19.0,
-        "open": 68506.0,
-        "close": 68525.0,
-        "volume": 11963.0,
-        "Expected_Profit_Pct": 0.15
+        "body_size": 51.0,
+        "open": 68295.5,
+        "close": 68346.5,
+        "volume": 10431.0,
+        "Expected_Profit_Pct": 0.16
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -35,7 +35,7 @@
           },
           {
             "name": "RSI < 40.0",
-            "met": true
+            "met": false
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -70,13 +70,13 @@
         ]
       },
       "checks": {
-        "inst_1774370475025_224dd4": {
-          "name": "Single Candle 15m",
+        "inst_1774584416185_2fd782": {
+          "name": "Supertrend Scalping 1m",
           "interval": "1m",
-          "strategy_type": "single_candle",
+          "strategy_type": "supertrend_scalping",
           "rules_long": [
             {
-              "text": "Hub flat or next bar will flatten (stop & reverse on bar close)",
+              "text": "Instance flat (no open position)",
               "met": true
             },
             {
@@ -84,25 +84,17 @@
               "met": true
             },
             {
-              "text": "Last closed candle: bullish (O=68506.000000 C=68525.000000)",
+              "text": "Prior closed bar: downtrend; live mid \u2265 prior upper band (touch long)",
               "met": false
             },
             {
-              "text": "Pattern is Bearish -> Triggering LONG (Buy)",
-              "met": false
-            },
-            {
-              "text": "SL = min(open, close \u2212 40.0); entry proxy = close (long)",
-              "met": false
-            },
-            {
-              "text": "Live price \u2265 signal high (touch entry) \u2014 high=68543.5, mid=68525.5",
-              "met": false
+              "text": "SL = entry \u2212 50.0 pts, TP = entry + 100.0 pts (absolute)",
+              "met": true
             }
           ],
           "rules_short": [
             {
-              "text": "Hub flat or next bar will flatten (stop & reverse on bar close)",
+              "text": "Instance flat (no open position)",
               "met": true
             },
             {
@@ -110,35 +102,27 @@
               "met": true
             },
             {
-              "text": "Last closed candle: bullish (O=68506.000000 C=68525.000000)",
-              "met": true
-            },
-            {
-              "text": "Pattern is Bullish -> Triggering SHORT (Sell)",
-              "met": true
-            },
-            {
-              "text": "SL = max(open, close + 40.0); entry proxy = close (short)",
-              "met": true
-            },
-            {
-              "text": "Live price \u2264 signal low (touch entry) \u2014 low=68474.5, mid=68525.5",
+              "text": "Prior closed bar: uptrend; live mid \u2264 prior lower band (touch short)",
               "met": false
+            },
+            {
+              "text": "SL = entry + 50.0 pts, TP = entry \u2212 100.0 pts (absolute)",
+              "met": true
             }
           ],
-          "note": "tradeMode=Both slPoints=40.0. Contrarian: bearish bar -> Buy, bullish bar -> Sell. Confirmation OFF: one closed bar. Touch entry ON: Long after mid \u2265 signal high; Short after mid \u2264 signal low. Live: flatten on each closed candle (WS) unless flat from TP/SL; then same bar may re-enter. useTarget=ON \u2192 TP = entry \u00b1 (|entry\u2212SL| \u00d7 5.0). ",
+          "note": "ATR period=10 factor=3.0 tradeMode=Both. Last closed Supertrend: bearish (DOWN). Entry: L1 mid vs prior bar bands (touch). Exit: opposing trend on bar close, SL/TP in points, or exchange stops.",
           "monitor_sync": {
-            "engine": "single_candle",
+            "engine": "supertrend_scalping",
             "rows_in_buffer": 1000,
-            "conf_bar_start": 1774584300000,
-            "signal_bar_start": 1774584300000,
-            "last_signal_start": 1774584180000,
+            "last_closed_start": 1774584780000,
+            "live_mid": 68357.5,
+            "last_signal_start": 0,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
           }
         }
       },
-      "checks_updated_unix": 1774584370.6061819,
+      "checks_updated_unix": 1774584826.1632314,
       "status": "Waiting",
       "sl_price": null,
       "tp_price": null,

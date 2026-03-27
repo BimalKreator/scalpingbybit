@@ -122215,6 +122215,97 @@
       "turnover": 0.0,
       "confirm": true,
       "timestamp": 1774584360000
+    },
+    {
+      "start": 1774584420000,
+      "end": 1774584480000,
+      "interval": "1",
+      "open": 68445.5,
+      "high": 68446.5,
+      "low": 68445.5,
+      "close": 68446.5,
+      "volume": 65.0,
+      "turnover": 0.0,
+      "confirm": true,
+      "timestamp": 1774584420000
+    },
+    {
+      "start": 1774584480000,
+      "end": 1774584540000,
+      "interval": "1",
+      "open": 68397.5,
+      "high": 68397.5,
+      "low": 68396.5,
+      "close": 68396.5,
+      "volume": 89.0,
+      "turnover": 0.0,
+      "confirm": true,
+      "timestamp": 1774584480000
+    },
+    {
+      "start": 1774584540000,
+      "end": 1774584600000,
+      "interval": "1",
+      "open": 68281.5,
+      "high": 68281.5,
+      "low": 68281.5,
+      "close": 68281.5,
+      "volume": 20.0,
+      "turnover": 0.0,
+      "confirm": true,
+      "timestamp": 1774584540000
+    },
+    {
+      "start": 1774584600000,
+      "end": 1774584660000,
+      "interval": "1",
+      "open": 68303.0,
+      "high": 68303.0,
+      "low": 68302.0,
+      "close": 68302.0,
+      "volume": 6.0,
+      "turnover": 0.0,
+      "confirm": true,
+      "timestamp": 1774584600000
+    },
+    {
+      "start": 1774584660000,
+      "end": 1774584720000,
+      "interval": "1",
+      "open": 68306.5,
+      "high": 68306.5,
+      "low": 68306.5,
+      "close": 68306.5,
+      "volume": 1.0,
+      "turnover": 0.0,
+      "confirm": true,
+      "timestamp": 1774584660000
+    },
+    {
+      "start": 1774584720000,
+      "end": 1774584780000,
+      "interval": "1",
+      "open": 68295.5,
+      "high": 68295.5,
+      "low": 68295.5,
+      "close": 68295.5,
+      "volume": 10.0,
+      "turnover": 0.0,
+      "confirm": true,
+      "timestamp": 1774584720000
+    },
+    {
+      "start": 1774584780000,
+      "end": 1774584840000,
+      "interval": "1",
+      "open": 68345.5,
+      "high": 68345.5,
+      "low": 68344.5,
+      "close": 68345.5,
+      "volume": 25.0,
+      "turnover": 0.0,
+      "confirm": true,
+      "timestamp": 1774584780000
     }
   ]
 }
