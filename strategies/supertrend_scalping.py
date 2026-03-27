@@ -3,7 +3,7 @@ Supertrend Scalping — entries only on candle close when Supertrend direction f
 fixed SL/TP in points from the signal bar close (TP widened when optional RSI target exit is on);
 exits: live opposite-band touch, optional candle-close RSI target, then candle-close Supertrend flip.
 
-SUPERTd convention: direction < 0 = uptrend, > 0 = downtrend (aligned with strategy logic).
+SUPERTd convention (stored column): **> 0 = uptrend**, **< 0 = downtrend** (Pine / TradingView-style sign).
 Core SuperTrend is computed with Wilder ATR and Pine-style bands (TradingView-style), not pandas_ta.supertrend.
 """
 
@@ -88,9 +88,9 @@ def _tradingview_supertrend(
     TradingView-style SuperTrend (HL2 ± mult × Wilder ATR, trailing final bands,
     direction from prior supertrend line vs final bands).
 
-    Bot ``SUPERTd`` convention: value **< 0** = uptrend (line tracks lower band),
-    **> 0** = downtrend (line tracks upper band). This matches the strategy's
-    entry/exit logic (not Pine's raw ``ta.supertrend`` sign, which is often opposite).
+    Internal loop uses ±1 with the same line/band geometry; the stored ``SUPERTd`` column
+    is **negated** so **> 0 = uptrend** (line on lower band), **< 0 = downtrend** (line on
+    upper band), matching Pine ``ta.supertrend``-style direction for strategy rules.
     """
     high = d["high"].astype(float).to_numpy()
     low = d["low"].astype(float).to_numpy()
@@ -190,7 +190,8 @@ def _tradingview_supertrend(
             supertrend[i] = fui
 
     d[cols["line"]] = supertrend
-    d[cols["dir"]] = direction
+    # Expose direction with Pine-style sign: +1 uptrend, -1 downtrend (see module docstring).
+    d[cols["dir"]] = -direction
     d[cols["lower"]] = final_lb
     d[cols["upper"]] = final_ub
 
@@ -371,11 +372,11 @@ def evaluate(
             and curr_lower is not None
         )
         if live_price > 0 and touch_ok:
-            # SUPERTd: <0 = uptrend, >0 = downtrend (TradingView / pandas_ta convention used here).
+            # SUPERTd: >0 uptrend (line on lower band), <0 downtrend (line on upper band).
             if (
                 pos_side == "buy"
                 and curr_dir is not None
-                and curr_dir < 0
+                and curr_dir > 0
                 and (curr_lower or 0) > 0
                 and live_price <= curr_lower
             ):
@@ -385,7 +386,7 @@ def evaluate(
             if (
                 pos_side == "sell"
                 and curr_dir is not None
-                and curr_dir > 0
+                and curr_dir < 0
                 and (curr_upper or 0) > 0
                 and live_price >= curr_upper
             ):
@@ -414,11 +415,11 @@ def evaluate(
                     return out
 
         if curr_dir is not None:
-            if pos_side == "buy" and curr_dir > 0:
+            if pos_side == "buy" and curr_dir < 0:
                 out["signal"] = "Flat"
                 out["reason"] = "supertrend_changed_to_bearish_close"
                 return out
-            if pos_side == "sell" and curr_dir < 0:
+            if pos_side == "sell" and curr_dir > 0:
                 out["signal"] = "Flat"
                 out["reason"] = "supertrend_changed_to_bullish_close"
                 return out
@@ -462,15 +463,15 @@ def evaluate(
     sl_price = tp_price = None
     actual_tp_points = tp_points * 10.0 if use_rsi_target else tp_points
 
-    # LONG: prior bar DOWNTREND (>0), newly closed bar UPTREND (<0).
-    if prev_dir > 0 and curr_dir < 0:
+    # LONG: prior bar DOWNTREND (SUPERTd < 0), newly closed bar UPTREND (SUPERTd > 0).
+    if prev_dir < 0 and curr_dir > 0:
         if mode in ("Both", "Long"):
             side = "Buy"
             reason = "supertrend_flip_long"
             sl_price = entry_close - sl_points
             tp_price = entry_close + actual_tp_points
-    # SHORT: prior bar UPTREND (<0), newly closed bar DOWNTREND (>0).
-    elif prev_dir < 0 and curr_dir > 0:
+    # SHORT: prior bar UPTREND (SUPERTd > 0), newly closed bar DOWNTREND (SUPERTd < 0).
+    elif prev_dir > 0 and curr_dir < 0:
         if mode in ("Both", "Short"):
             side = "Sell"
             reason = "supertrend_flip_short"
@@ -587,24 +588,34 @@ def build_entry_checklists(
     prev_row_ck = d.iloc[-2]
     curr_dir = _dir_value(target_row, dir_col)
     prev_dir = _dir_value(prev_row_ck, dir_col)
-    # SUPERTd: <0 = uptrend, >0 = downtrend (TradingView / pandas_ta convention).
+    # SUPERTd: >0 uptrend, <0 downtrend (Pine-style stored sign).
     curr_txt = (
         "bullish (UP)"
-        if (curr_dir is not None and curr_dir < 0)
-        else "bearish (DOWN)"
         if (curr_dir is not None and curr_dir > 0)
+        else "bearish (DOWN)"
+        if (curr_dir is not None and curr_dir < 0)
         else "n/a"
     )
     prev_txt = (
         "bullish (UP)"
-        if (prev_dir is not None and prev_dir < 0)
-        else "bearish (DOWN)"
         if (prev_dir is not None and prev_dir > 0)
+        else "bearish (DOWN)"
+        if (prev_dir is not None and prev_dir < 0)
         else "n/a"
     )
 
-    flip_long_ok = prev_dir is not None and curr_dir is not None and prev_dir > 0 and curr_dir < 0
-    flip_short_ok = prev_dir is not None and curr_dir is not None and prev_dir < 0 and curr_dir > 0
+    flip_long_ok = (
+        prev_dir is not None
+        and curr_dir is not None
+        and prev_dir < 0
+        and curr_dir > 0
+    )
+    flip_short_ok = (
+        prev_dir is not None
+        and curr_dir is not None
+        and prev_dir > 0
+        and curr_dir < 0
+    )
 
     long_ok = mode in ("Both", "Long")
     short_ok = mode in ("Both", "Short")
@@ -615,7 +626,7 @@ def build_entry_checklists(
         {
             "text": (
                 "SUPERTd flipped DOWNTREND → UPTREND on latest close vs prior closed bar "
-                "(prev > 0, curr < 0)"
+                "(prev < 0, curr > 0)"
             ),
             "met": bool(flip_long_ok and not in_pos),
         },
@@ -633,7 +644,7 @@ def build_entry_checklists(
         {
             "text": (
                 "SUPERTd flipped UPTREND → DOWNTREND on latest close vs prior closed bar "
-                "(prev < 0, curr > 0)"
+                "(prev > 0, curr < 0)"
             ),
             "met": bool(flip_short_ok and not in_pos),
         },

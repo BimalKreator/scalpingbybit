@@ -1,1 +1,22 @@
-[]
+[
+  {
+    "exchange": "Virtual (Paper)",
+    "symbol": "BTCUSDT",
+    "side": "BUY",
+    "createdTime": "1774594054757",
+    "updatedTime": "1774594054757",
+    "qty": "14",
+    "size": "14",
+    "avgEntryPrice": "68684.5",
+    "avgExitPrice": "68660",
+    "leverage": "5",
+    "marginUsed": "",
+    "closedPnl": "-0.823792",
+    "netPnl": "-0.823792",
+    "grossPnl": "-0.343",
+    "fee": 0.4807915,
+    "fees": 0.4807915,
+    "exitReason": "TIME_EXIT (paper)",
+    "strategy_name": "Supertrend Scalping 1m"
+  }
+]
