@@ -840,8 +840,9 @@ def _virtual_paper_fee_params_from_instance_id(instance_id: str | None) -> tuple
     Paper fee percent and entry/exit flags from Strategy Hub (manual → 0.05, True, False).
 
     ``feePct`` is stored as a *percent* (e.g. 0.05 means 0.05% → fee multiplier 0.0005), never as a decimal rate.
+    Default applies both entry and exit fees on paper closes unless the instance turns one off.
     """
-    default = (0.05, True, False)
+    default = (0.05, True, True)
     iid = str(instance_id or "").strip()
     if not iid:
         return default
@@ -860,7 +861,7 @@ def _virtual_paper_fee_params_from_instance_id(instance_id: str | None) -> tuple
         fe = fe.strip().lower() in ("1", "true", "yes", "on")
     else:
         fe = bool(fe)
-    fx = p.get("feeOnExit", False)
+    fx = p.get("feeOnExit", True)
     if isinstance(fx, str):
         fx = fx.strip().lower() in ("1", "true", "yes", "on")
     else:
@@ -868,9 +869,26 @@ def _virtual_paper_fee_params_from_instance_id(instance_id: str | None) -> tuple
     return (fp, fe, fx)
 
 
+def _resolve_virtual_close_fee_params(sym: str) -> tuple[float, bool, bool]:
+    """
+    Fee % and entry/exit flags for paper close PnL.
+
+    Prefer the active Strategy Hub instance when its symbol matches the closing symbol
+    (so saved feePct / feeOnEntry / feeOnExit match the dashboard); otherwise use values
+    stored on the tracker at virtual entry.
+    """
+    u = _norm_sym(sym)
+    iid = str(_active_order_instance_id or "").strip()
+    if iid:
+        inst = instance_storage.get_instance_by_id(iid)
+        if inst and _norm_sym(str(inst.get("symbol") or "")) == u:
+            return _virtual_paper_fee_params_from_instance_id(iid)
+    return _read_virtual_paper_fee_tracker(sym)
+
+
 def _read_virtual_paper_fee_tracker(sym: str) -> tuple[float, bool, bool]:
     """Fee triple stored at virtual entry; if never set (legacy), use manual defaults."""
-    fallback = (0.05, True, False)
+    fallback = (0.05, True, True)
     tr = xst.tracker(sym, SYMBOL)
     if (
         tr.get("paper_fee_pct") is None
@@ -887,7 +905,7 @@ def _read_virtual_paper_fee_tracker(sym: str) -> tuple[float, bool, bool]:
     fe = tr.get("paper_fee_on_entry")
     fe = True if fe is None else bool(fe)
     fx = tr.get("paper_fee_on_exit")
-    fx = False if fx is None else bool(fx)
+    fx = True if fx is None else bool(fx)
     return (fp, fe, fx)
 
 
@@ -1178,7 +1196,13 @@ def _finalize_virtual_position_close(
     *,
     close_qty: float | None = None,
 ) -> None:
-    """Update wallet, log closed trade, clear trackers (paper mode). Optional ``close_qty`` scales out."""
+    """
+    Update wallet, log closed trade, clear trackers (paper mode). Optional ``close_qty`` scales out.
+
+    Gross PnL uses linear contract geometry; **net** PnL subtracts entry and exit fees on the
+    closed quantity's notional (``feePct`` as percent, ``feeOnEntry`` / ``feeOnExit``), preferring
+    the active Strategy Hub instance's fee settings when its symbol matches.
+    """
     global _monitor_had_position, _position_size, _position_entry_price, _local_close_reason, _is_closing_position
     sym = _norm_sym(symbol or SYMBOL)
     snap_sz, entry_raw, ps = _read_position_for_symbol(sym)
@@ -1199,27 +1223,18 @@ def _finalize_virtual_position_close(
         xst.tracker_update(sym, SYMBOL, local_close_reason="MANUAL")
 
     if not do_partial:
-        gross = _virtual_linear_pnl_usd(entry, ex, snap_sz, ps, contract_symbol=sym)
-        fee_pct, fee_on_entry, fee_on_exit = _read_virtual_paper_fee_tracker(sym)
-        tr = xst.tracker(sym, SYMBOL)
-        fee_multiplier = float(fee_pct) / 100.0
-        stored_n = tr.get("paper_entry_notional_usd")
-        try:
-            entry_notional_stored = float(stored_n) if stored_n is not None else 0.0
-        except (TypeError, ValueError):
-            entry_notional_stored = 0.0
-        if entry_notional_stored > 0 and math.isfinite(entry_notional_stored):
-            entry_notional = entry_notional_stored
-        else:
-            entry_notional = _virtual_paper_notional_usd(entry, snap_sz, sym)
-        entry_fee = (entry_notional * fee_multiplier) if fee_on_entry else 0.0
-        exit_fee = (
-            (_virtual_paper_notional_usd(ex, snap_sz, sym) * fee_multiplier)
-            if fee_on_exit
-            else 0.0
+        qty_closed = float(snap_sz)
+        gross_pnl = _virtual_linear_pnl_usd(
+            entry, ex, qty_closed, ps, contract_symbol=sym
         )
+        fee_pct, fee_on_entry, fee_on_exit = _resolve_virtual_close_fee_params(sym)
+        fee_rate = max(0.0, float(fee_pct)) / 100.0
+        entry_notional = _virtual_paper_notional_usd(entry, qty_closed, sym)
+        exit_notional = _virtual_paper_notional_usd(ex, qty_closed, sym)
+        entry_fee = (entry_notional * fee_rate) if fee_on_entry else 0.0
+        exit_fee = (exit_notional * fee_rate) if fee_on_exit else 0.0
         total_fee = entry_fee + exit_fee
-        net_pnl = gross - total_fee
+        net_pnl = gross_pnl - total_fee
         update_virtual_wallet(net_pnl)
         strat_snap = (_active_trade_strategy_name or "Manual").strip()
         _append_virtual_closed_trade_row(
@@ -1256,27 +1271,16 @@ def _finalize_virtual_position_close(
         return
 
     cq = float(cq_req)
-    gross = _virtual_linear_pnl_usd(entry, ex, cq, ps, contract_symbol=sym)
-    fee_pct, fee_on_entry, fee_on_exit = _read_virtual_paper_fee_tracker(sym)
-    tr = xst.tracker(sym, SYMBOL)
-    fee_multiplier = float(fee_pct) / 100.0
-    stored_n = tr.get("paper_entry_notional_usd")
-    try:
-        entry_notional_stored = float(stored_n) if stored_n is not None else 0.0
-    except (TypeError, ValueError):
-        entry_notional_stored = 0.0
-    if entry_notional_stored > 0 and math.isfinite(entry_notional_stored):
-        entry_notional = entry_notional_stored
-    else:
-        entry_notional = _virtual_paper_notional_usd(entry, snap_sz, sym)
-    ratio = cq / max(snap_sz, 1e-18)
-    entry_notional_slice = entry_notional * ratio
-    entry_fee = (entry_notional_slice * fee_multiplier) if fee_on_entry else 0.0
-    exit_fee = (
-        (_virtual_paper_notional_usd(ex, cq, sym) * fee_multiplier) if fee_on_exit else 0.0
-    )
+    qty_closed = cq
+    gross_pnl = _virtual_linear_pnl_usd(entry, ex, qty_closed, ps, contract_symbol=sym)
+    fee_pct, fee_on_entry, fee_on_exit = _resolve_virtual_close_fee_params(sym)
+    fee_rate = max(0.0, float(fee_pct)) / 100.0
+    entry_notional_closed = _virtual_paper_notional_usd(entry, qty_closed, sym)
+    exit_notional_closed = _virtual_paper_notional_usd(ex, qty_closed, sym)
+    entry_fee = (entry_notional_closed * fee_rate) if fee_on_entry else 0.0
+    exit_fee = (exit_notional_closed * fee_rate) if fee_on_exit else 0.0
     total_fee = entry_fee + exit_fee
-    net_pnl = gross - total_fee
+    net_pnl = gross_pnl - total_fee
     update_virtual_wallet(net_pnl)
     strat_snap = (_active_trade_strategy_name or "Manual").strip()
     er = str(exit_reason or "")
@@ -1293,7 +1297,17 @@ def _finalize_virtual_position_close(
         fee=total_fee,
     )
     new_sz = max(0.0, snap_sz - cq)
-    new_notional = max(0.0, entry_notional * (new_sz / max(snap_sz, 1e-18)))
+    tr_rem = xst.tracker(sym, SYMBOL)
+    stored_n_rem = tr_rem.get("paper_entry_notional_usd")
+    try:
+        entry_notional_full = (
+            float(stored_n_rem)
+            if stored_n_rem is not None and math.isfinite(float(stored_n_rem)) and float(stored_n_rem) > 0
+            else _virtual_paper_notional_usd(entry, snap_sz, sym)
+        )
+    except (TypeError, ValueError):
+        entry_notional_full = _virtual_paper_notional_usd(entry, snap_sz, sym)
+    new_notional = max(0.0, entry_notional_full * (new_sz / max(snap_sz, 1e-18)))
     xst.set_position_fields(sym, SYMBOL, size=new_sz, entry=entry, side=ps)
     xst.tracker_update(sym, SYMBOL, paper_entry_notional_usd=new_notional)
     if sym == _norm_sym(SYMBOL):

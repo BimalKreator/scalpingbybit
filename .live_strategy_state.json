@@ -3,15 +3,15 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 68557.5,
+      "price": 68681.0,
       "indicators": {
-        "RSI": 47.06,
-        "RSI_SMA": 47.41,
-        "volume_signal_vs_prev": false,
-        "body_size": 8.5,
-        "open": 68549.0,
-        "close": 68557.5,
-        "volume": 3620.0,
+        "RSI": 26.09,
+        "RSI_SMA": 62.58,
+        "volume_signal_vs_prev": true,
+        "body_size": 3.0,
+        "open": 68678.0,
+        "close": 68681.0,
+        "volume": 10625.0,
         "Expected_Profit_Pct": 0.07
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
@@ -23,7 +23,7 @@
           },
           {
             "name": "Previous Candle Bearish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bearish",
@@ -31,11 +31,11 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": false
+            "met": true
           },
           {
             "name": "RSI < 40.0",
-            "met": false
+            "met": true
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -49,15 +49,15 @@
           },
           {
             "name": "Previous Candle Bullish",
-            "met": true
+            "met": false
           },
           {
             "name": "Both Bullish",
-            "met": true
+            "met": false
           },
           {
             "name": "Volume: signal > previous",
-            "met": false
+            "met": true
           },
           {
             "name": "RSI > 60.0",
@@ -84,12 +84,12 @@
               "met": true
             },
             {
-              "text": "Latest closed bar: downtrend; live mid \u2265 upper band (touch long)",
+              "text": "Trend flipped to UPTREND on candle close (prior bar bearish \u2192 latest bar bullish)",
               "met": false
             },
             {
-              "text": "SL = entry \u2212 50.0 pts, TP = entry + 100.0 pts (absolute)",
-              "met": true
+              "text": "SL = signal close \u2212 50.0 pts, TP = signal close + 100.0 pts (absolute)",
+              "met": false
             }
           ],
           "rules_short": [
@@ -102,27 +102,32 @@
               "met": true
             },
             {
-              "text": "Latest closed bar: uptrend; live mid \u2264 lower band (touch short)",
+              "text": "Trend flipped to DOWNTREND on candle close (prior bar bullish \u2192 latest bar bearish)",
               "met": false
             },
             {
-              "text": "SL = entry + 50.0 pts, TP = entry \u2212 100.0 pts (absolute)",
-              "met": true
+              "text": "SL = signal close + 50.0 pts, TP = signal close \u2212 100.0 pts (absolute)",
+              "met": false
             }
           ],
-          "note": "ATR period=50 factor=1.0 tradeMode=Both. Latest closed Supertrend: bearish (DOWN). Entry: L1 mid vs latest closed bar bands (touch). Exit: live opposite touch vs those bands, candle-close trend flip, SL/TP, or exchange stops.",
+          "note": "ATR period=50 factor=1.0 tradeMode=Both. Prior closed: bearish (DOWN); latest closed: bearish (DOWN). Entry: Supertrend direction flip on candle close only (no touch entry). Exit: live opposite-band touch, candle-close trend against you, SL/TP, or exchange stops.",
           "monitor_sync": {
             "engine": "supertrend_scalping",
             "rows_in_buffer": 1000,
-            "last_closed_start": 1774587720000,
-            "live_mid": 68558.0,
-            "last_signal_start": 0,
+            "prev_dir": -1.0,
+            "curr_dir": -1.0,
+            "flip_long_ok": false,
+            "flip_short_ok": false,
+            "last_closed_start": 1774588980000,
+            "prior_closed_start": 1774588920000,
+            "live_mid": 68653.0,
+            "last_signal_start": 1774588620000,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
           }
         }
       },
-      "checks_updated_unix": 1774587723.1433854,
+      "checks_updated_unix": 1774589020.6440759,
       "status": "Waiting",
       "sl_price": null,
       "tp_price": null,

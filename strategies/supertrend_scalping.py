@@ -206,7 +206,7 @@ def evaluate(
     in_pos = bool(st_dict.get("in_position"))
     sym = str(st_dict.get("symbol") or xst.SYMBOL).strip().upper()
 
-    # Latest fully closed candle; bands used for live touch exits while in position
+    # Latest fully closed bar (iloc[-1]): ref for trend + bands; entry flips vs iloc[-2] only.
     target_row = d.iloc[-1]
     curr_dir = _dir_value(target_row, dir_col)
     curr_upper: float | None = None
@@ -262,7 +262,7 @@ def evaluate(
         )
         return out
 
-    # --- ENTRY: candle-close trend flip (prev_row vs target_row); no touch / no live mid required ---
+    # --- ENTRY: candle-close ONLY — SUPERTd must flip between prior closed (iloc[-2]) and latest closed (iloc[-1]). No L1 touch. ---
     if len(d) < 2:
         out["reason"] = "not_enough_bars_for_flip"
         return out
@@ -286,12 +286,14 @@ def evaluate(
     reason = "no_signal"
     sl_price = tp_price = None
 
+    # LONG: trend officially flipped down → up on the close of target_row (prev bearish, curr bullish).
     if prev_dir < 0 and curr_dir > 0:
         if mode in ("Both", "Long"):
             side = "Buy"
             reason = "supertrend_flip_long"
             sl_price = entry_close - sl_points
             tp_price = entry_close + tp_points
+    # SHORT: trend officially flipped up → down on the close of target_row (prev bullish, curr bearish).
     elif prev_dir > 0 and curr_dir < 0:
         if mode in ("Both", "Short"):
             side = "Sell"
