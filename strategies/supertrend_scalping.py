@@ -1,9 +1,10 @@
 """
-Supertrend Scalping — entries use **physical two-bar crossover** vs the **prior** candle’s ST bands
-(``iloc[-2]``): long when ``prev_close < prev_upper`` and ``target_close > prev_upper``; short when
-``prev_close > prev_lower`` and ``target_close < prev_lower``. **No ``SUPERTd`` / ``prev_dir`` /
-``curr_dir`` for entry** (tight factors like 0.2 can glitch direction; price vs lines does not).
-Logs ``[ST DEBUG]`` on flat evaluate with closes and prior bands.
+Supertrend Scalping — entries: **prior ``SUPERTd`` regime** plus **two-bar crossover** vs prior bar
+bands (``iloc[-2]``): long when ``prev_dir > 0``, ``prev_upper > 0``, ``prev_close < prev_upper``,
+``target_close > prev_upper``; short when ``prev_dir < 0``, ``prev_lower > 0``,
+``prev_close > prev_lower``, ``target_close < prev_lower``.
+``[ST DEBUG]`` logs immediately after ``target_row``/``prev_row`` (before ``in_pos`` or entry returns)
+so PM2/console can trace values; optional ``print`` mirrors the log line.
 Fixed SL/TP in points from the signal bar close (TP widened when optional RSI target exit is on).
 Exits: live touch of current bands when valid, optional RSI target, then candle close vs bands when
 usable; if bands are missing/zero or close is non-finite, **fallback** to ``curr_dir`` (long exits
@@ -403,11 +404,46 @@ def evaluate(
     in_pos = bool(st_dict.get("in_position"))
     sym = str(st_dict.get("symbol") or xst.SYMBOL).strip().upper()
 
-    # Latest vs prior closed bar: physical band crossover entries; bands + dir for exits only.
     target_row = d.iloc[-1]
     prev_row = d.iloc[-2]
-    curr_dir_f = _dir_flip_scalar(target_row, dir_col)
+
+    def _cell_float(row: pd.Series, col: str, default: Any = None) -> float:
+        try:
+            v = row.get(col, default) if col in row.index else default
+        except (AttributeError, KeyError):
+            v = default
+        if v is None or (isinstance(v, float) and math.isnan(v)) or pd.isna(v):
+            return float("nan")
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            return float("nan")
+        return x if math.isfinite(x) else float("nan")
+
+    target_close = _cell_float(target_row, "close", None)
+    prev_close = _cell_float(prev_row, "close", None)
+    prev_dir_raw = prev_row.get(dir_col, 0)
+    prev_upper_raw = _cell_float(prev_row, short_line_col, 0.0)
+    prev_lower_raw = _cell_float(prev_row, long_line_col, 0.0)
+
+    _st_dbg = (
+        f"[ST DEBUG] TargetClose: {target_close} | PrevClose: {prev_close} | "
+        f"PrevDir: {prev_dir_raw} | PrevUpper: {prev_upper_raw} | PrevLower: {prev_lower_raw}"
+    )
+    logging.info("%s", _st_dbg)
+    print(_st_dbg, flush=True)
+
+    if math.isnan(prev_upper_raw):
+        prev_upper = 0.0
+    else:
+        prev_upper = float(prev_upper_raw)
+    if math.isnan(prev_lower_raw):
+        prev_lower = 0.0
+    else:
+        prev_lower = float(prev_lower_raw)
+
     prev_dir_f = _dir_flip_scalar(prev_row, dir_col)
+    curr_dir_f = _dir_flip_scalar(target_row, dir_col)
     curr_upper: float | None = None
     curr_lower: float | None = None
     try:
@@ -417,15 +453,6 @@ def evaluate(
         cu = cl = float("nan")
     if math.isfinite(cu) and math.isfinite(cl):
         curr_upper, curr_lower = cu, cl
-
-    # Prior candle (iloc[-2]) bands — same rows as ``prev_row``; not overwritten by latest bar math.
-    try:
-        pu_raw = float(prev_row[short_line_col])
-        pl_raw = float(prev_row[long_line_col])
-    except (TypeError, ValueError, KeyError):
-        pu_raw = pl_raw = float("nan")
-    prev_upper = pu_raw if math.isfinite(pu_raw) else float("nan")
-    prev_lower = pl_raw if math.isfinite(pl_raw) else float("nan")
 
     if in_pos:
         bb, ba, _, _ = xst.orderbook_l1(sym, xst.SYMBOL)
@@ -514,52 +541,40 @@ def evaluate(
         )
         return out
 
-    try:
-        prev_close = float(prev_row["close"])
-    except (TypeError, ValueError, KeyError):
-        prev_close = float("nan")
-    try:
-        target_close = float(target_row["close"])
-    except (TypeError, ValueError, KeyError):
-        target_close = float("nan")
-
-    # Debug: physical crossover state (prior bar = iloc[-2] bands; no entry dir logic).
-    if len(d) >= 2:
-        logging.info(
-            "[ST DEBUG] target_close=%s prev_close=%s prev_upper=%s prev_lower=%s mode=%s",
-            None if not math.isfinite(target_close) else target_close,
-            None if not math.isfinite(prev_close) else prev_close,
-            None if not math.isfinite(prev_upper) else prev_upper,
-            None if not math.isfinite(prev_lower) else prev_lower,
-            mode,
-        )
-
-    # --- ENTRY: strict physical crossover vs prior bar’s upper/lower bands (no SUPERTd).
-    if not math.isfinite(target_close) or target_close <= 0:
-        out["reason"] = "signal_close_invalid"
-        return out
-    if not math.isfinite(prev_close):
-        out["reason"] = "signal_close_invalid"
-        return out
-
+    # --- ENTRY: prior SUPERTd + physical crossover (no early return; invalid floats → no match).
     entry_close = target_close
     side: str | None = None
     reason = "no_signal"
     sl_price = tp_price = None
     actual_tp_points = tp_points * 10.0 if use_rsi_target else tp_points
 
-    pu_ok = math.isfinite(prev_upper) and prev_upper > 0.0
-    pl_ok = math.isfinite(prev_lower) and prev_lower > 0.0
+    long_dir_ok = not math.isnan(prev_dir_f) and prev_dir_f > 0.0
+    short_dir_ok = not math.isnan(prev_dir_f) and prev_dir_f < 0.0
+    closes_ok = (
+        math.isfinite(target_close)
+        and target_close > 0.0
+        and math.isfinite(prev_close)
+    )
 
-    # LONG: prior close below prior resistance, current close above it.
-    if pu_ok and prev_close < prev_upper and target_close > prev_upper:
+    if (
+        closes_ok
+        and long_dir_ok
+        and prev_upper > 0.0
+        and prev_close < prev_upper
+        and target_close > prev_upper
+    ):
         if mode in ("Both", "Long"):
             side = "Buy"
             reason = "supertrend_flip_long"
             sl_price = entry_close - sl_points
             tp_price = entry_close + actual_tp_points
-    # SHORT: prior close above prior support, current close below it.
-    elif pl_ok and prev_close > prev_lower and target_close < prev_lower:
+    elif (
+        closes_ok
+        and short_dir_ok
+        and prev_lower > 0.0
+        and prev_close > prev_lower
+        and target_close < prev_lower
+    ):
         if mode in ("Both", "Short"):
             side = "Sell"
             reason = "supertrend_flip_short"
@@ -568,6 +583,10 @@ def evaluate(
 
     if side not in ("Buy", "Sell") or sl_price is None or tp_price is None:
         out["reason"] = reason
+        return out
+
+    if not math.isfinite(entry_close) or entry_close <= 0:
+        out["reason"] = "signal_close_invalid"
         return out
 
     try:
@@ -597,11 +616,12 @@ def evaluate(
         "tp_price": float(tp_price),
         "entry_proxy": float(entry_close),
         "prev_close": float(prev_close),
-        "entry_band_physical": True,
+        "prev_dir": float(prev_dir_f) if not math.isnan(prev_dir_f) else None,
+        "entry_band_cross": True,
     }
-    if pu_ok:
+    if prev_upper > 0.0:
         meta["prev_upper"] = float(prev_upper)
-    if pl_ok:
+    if prev_lower > 0.0:
         meta["prev_lower"] = float(prev_lower)
     if curr_upper is not None and curr_lower is not None:
         meta["curr_upper"] = float(curr_upper)
@@ -709,31 +729,24 @@ def build_entry_checklists(
         _pu = _pl = float("nan")
     prev_upper_ck = _pu if math.isfinite(_pu) and _pu > 0 else None
     prev_lower_ck = _pl if math.isfinite(_pl) and _pl > 0 else None
-    curr_txt = (
-        "bullish (UP)"
-        if (curr_dir is not None and curr_dir < 0)
-        else "bearish (DOWN)"
-        if (curr_dir is not None and curr_dir > 0)
-        else "n/a"
-    )
-    prev_txt = (
-        "bullish (UP)"
-        if (prev_dir is not None and prev_dir < 0)
-        else "bearish (DOWN)"
-        if (prev_dir is not None and prev_dir > 0)
-        else "n/a"
-    )
 
-    flip_long_ok = (
-        prev_upper_ck is not None
+    long_ok = mode in ("Both", "Long")
+    short_ok = mode in ("Both", "Short")
+
+    long_cross_valid = (
+        prev_dir is not None
+        and prev_dir > 0
+        and prev_upper_ck is not None
         and prev_upper_ck > 0
         and math.isfinite(prev_close_ck)
         and math.isfinite(close_ck)
         and prev_close_ck < prev_upper_ck
         and close_ck > prev_upper_ck
     )
-    flip_short_ok = (
-        prev_lower_ck is not None
+    short_cross_valid = (
+        prev_dir is not None
+        and prev_dir < 0
+        and prev_lower_ck is not None
         and prev_lower_ck > 0
         and math.isfinite(prev_close_ck)
         and math.isfinite(close_ck)
@@ -741,51 +754,16 @@ def build_entry_checklists(
         and close_ck < prev_lower_ck
     )
 
-    long_ok = mode in ("Both", "Long")
-    short_ok = mode in ("Both", "Short")
-
     rules_long = [
-        {"text": "Instance flat (no open position)", "met": not in_pos},
-        {"text": f"tradeMode allows LONG ({mode})", "met": long_ok},
         {
-            "text": (
-                f"LONG: prev_close < prev_upper < target_close → "
-                f"{prev_close_ck:.8g} < {prev_upper_ck:.8g} < {close_ck:.8g}"
-                if prev_upper_ck is not None
-                and math.isfinite(close_ck)
-                and math.isfinite(prev_close_ck)
-                else "LONG: prev_close < prev_upper and target_close > prev_upper"
-            ),
-            "met": bool(flip_long_ok and not in_pos),
-        },
-        {
-            "text": (
-                f"SL = signal close − {sl_pts} pts, TP = signal close + {tp_widened} pts (absolute)"
-                + ("; RSI exit widens TP 10×" if use_rsi else "")
-            ),
-            "met": bool(flip_long_ok and long_ok and not in_pos),
+            "text": "Candle successfully closed ABOVE previous Downtrend Resistance Line",
+            "met": bool(long_cross_valid and not in_pos and long_ok),
         },
     ]
     rules_short = [
-        {"text": "Instance flat (no open position)", "met": not in_pos},
-        {"text": f"tradeMode allows SHORT ({mode})", "met": short_ok},
         {
-            "text": (
-                f"SHORT: target_close < prev_lower < prev_close → "
-                f"{close_ck:.8g} < {prev_lower_ck:.8g} < {prev_close_ck:.8g}"
-                if prev_lower_ck is not None
-                and math.isfinite(close_ck)
-                and math.isfinite(prev_close_ck)
-                else "SHORT: prev_close > prev_lower and target_close < prev_lower"
-            ),
-            "met": bool(flip_short_ok and not in_pos),
-        },
-        {
-            "text": (
-                f"SL = signal close + {sl_pts} pts, TP = signal close − {tp_widened} pts (absolute)"
-                + ("; RSI exit widens TP 10×" if use_rsi else "")
-            ),
-            "met": bool(flip_short_ok and short_ok and not in_pos),
+            "text": "Candle successfully closed BELOW previous Uptrend Support Line",
+            "met": bool(short_cross_valid and not in_pos and short_ok),
         },
     ]
 
@@ -811,12 +789,10 @@ def build_entry_checklists(
             rsi_note += f"Last RSI({trsi_len})={crsi_sync:.2f}. "
 
     note = (
-        f"ATR period={atr_len} factor={mult} tradeMode={mode}. "
-        f"SUPERTd (display only): prior {prev_txt}; latest {curr_txt}. "
-        "Entry: physical crossover vs prior bar bands — long: prev_close < prev_upper < target_close; "
-        "short: target_close < prev_lower < prev_close. Exit: live band touch,"
-        f"{rsi_note}"
-        " candle close vs bands or SUPERTd fallback, SL/TP, or exchange stops."
+        f"ATR={atr_len} factor={mult} tradeMode={mode}. "
+        "Long: prior downtrend (SUPERTd>0) + close crosses above prior upper band. "
+        "Short: prior uptrend (SUPERTd<0) + close crosses below prior lower band. "
+        f"SL/TP in points (TP×10 if RSI exit on).{rsi_note}"
     )
     n_trim = len(d)
     sync: dict[str, Any] = {
@@ -827,8 +803,8 @@ def build_entry_checklists(
         "flip_eval_prev_iloc": n_trim - 2,
         "prev_dir": prev_dir,
         "curr_dir": curr_dir,
-        "flip_long_ok": flip_long_ok,
-        "flip_short_ok": flip_short_ok,
+        "long_cross_valid": long_cross_valid,
+        "short_cross_valid": short_cross_valid,
         "prev_upper": round(prev_upper_ck, 8) if prev_upper_ck is not None else None,
         "prev_lower": round(prev_lower_ck, 8) if prev_lower_ck is not None else None,
         "prev_close": round(prev_close_ck, 8) if math.isfinite(prev_close_ck) else None,

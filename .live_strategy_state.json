@@ -3,16 +3,16 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 66392.0,
+      "price": 66301.5,
       "indicators": {
-        "RSI": 29.63,
-        "RSI_SMA": 52.54,
+        "RSI": 59.09,
+        "RSI_SMA": 62.62,
         "volume_signal_vs_prev": true,
-        "body_size": 100.5,
-        "open": 66492.5,
-        "close": 66392.0,
-        "volume": 20163.0,
-        "Expected_Profit_Pct": 0.26
+        "body_size": 1.0,
+        "open": 66302.5,
+        "close": 66301.5,
+        "volume": 23619.0,
+        "Expected_Profit_Pct": 0.21
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -35,7 +35,7 @@
           },
           {
             "name": "RSI < 40.0",
-            "met": true
+            "met": false
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -84,7 +84,7 @@
               "met": true
             },
             {
-              "text": "LONG: prev downtrend & close \u2265 prior upper (slack 6.646e-05): 66369 \u2265 66455.918",
+              "text": "LONG: prev_close < prev_upper < target_close \u2192 66301.5 < 66352.36 < 66296.5",
               "met": false
             },
             {
@@ -102,7 +102,7 @@
               "met": true
             },
             {
-              "text": "SHORT: prev uptrend & close \u2264 prior lower (slack 6.646e-05): 66369 \u2264 66464.595",
+              "text": "SHORT: target_close < prev_lower < prev_close \u2192 66296.5 < 66321.14 < 66301.5",
               "met": false
             },
             {
@@ -110,7 +110,7 @@
               "met": false
             }
           ],
-          "note": "ATR period=10 factor=0.2 tradeMode=Both. Prior closed: bearish (DOWN); latest closed: bearish (DOWN). Entry: close vs prior bar upper/lower (long: prev_dir>0 & close\u2265upper; short: prev_dir<0 & close\u2264lower), inclusive + small slack. Exit: live band touch, RSI target exit ON: RSI(4) on last close \u2014 flatten long if \u226580.0, short if \u226420.0. Last RSI(4)=25.89.  candle close vs bands or SUPERTd fallback, SL/TP, or exchange stops.",
+          "note": "ATR period=10 factor=0.2 tradeMode=Both. SUPERTd (display only): prior bearish (DOWN); latest bearish (DOWN). Entry: physical crossover vs prior bar bands \u2014 long: prev_close < prev_upper < target_close; short: target_close < prev_lower < prev_close. Exit: live band touch, RSI target exit ON: RSI(4) on last close \u2014 flatten long if \u226580.0, short if \u226420.0. Last RSI(4)=54.21.  candle close vs bands or SUPERTd fallback, SL/TP, or exchange stops.",
           "monitor_sync": {
             "engine": "supertrend_scalping",
             "rows_in_buffer": 1000,
@@ -121,24 +121,25 @@
             "curr_dir": 1.0,
             "flip_long_ok": false,
             "flip_short_ok": false,
-            "prev_upper": 66455.91794957,
-            "prev_lower": 66464.5945067,
-            "last_close": 66369.0,
+            "prev_upper": 66352.36025399,
+            "prev_lower": 66321.13974601,
+            "prev_close": 66301.5,
+            "last_close": 66296.5,
             "use_rsi_target": true,
             "target_rsi_length": 4,
-            "last_rsi": 25.8923,
-            "last_closed_start": 1774619400000,
-            "prior_closed_start": 1774619340000,
-            "flip_eval_target_start_ms": 1774619400000,
-            "flip_eval_prev_start_ms": 1774619340000,
-            "live_mid": 66366.0,
+            "last_rsi": 54.2083,
+            "last_closed_start": 1774620780000,
+            "prior_closed_start": 1774620720000,
+            "flip_eval_target_start_ms": 1774620780000,
+            "flip_eval_prev_start_ms": 1774620720000,
+            "live_mid": 66302.0,
             "last_signal_start": 0,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
           }
         }
       },
-      "checks_updated_unix": 1774619414.1475463,
+      "checks_updated_unix": 1774620782.682409,
       "status": "Waiting",
       "sl_price": null,
       "tp_price": null,
