@@ -5477,6 +5477,7 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
     entry_queued_this_message = False
     single_candle_close_queued_this_message = False
     supertrend_flat_close_queued_this_message = False
+    supertrend_sar_instance_id: str | None = None
     for inst in get_strategy_instances():
         if not inst.get("enabled", True):
             continue
@@ -5542,12 +5543,24 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
                         ("close", close_meta_st),
                     )
                     supertrend_flat_close_queued_this_message = True
-                    # Same-bar SAR: entry dedup must not treat the prior entry bar as blocking the reverse.
+                    # Same-bar SAR: clear dedup + hub locks; do not skip entry eval this pass.
                     _clear_instance_bar_entry_dedup(iid_st, conf_start)
-                    continue
+                    sar_patch = {"in_position": False, "last_signal_start": None}
+                    instance_storage.merge_instance_state(iid_st, sar_patch)
+                    _patch_instance_state_cache(iid_st, sar_patch)
+                    st.update(sar_patch)
+                    supertrend_sar_instance_id = iid_st
+                    # Intentionally no continue: fall through so this instance can queue reverse entry.
 
         # Single Candle: optional exit on each new closed bar, and/or trailing candle exit when bar-close exit is off.
         allow_entry_despite_open_pos = False
+        if (
+            strat == "supertrend_scalping"
+            and symbol_has_open_position
+            and supertrend_sar_instance_id
+            and str(inst.get("id") or "").strip() == supertrend_sar_instance_id
+        ):
+            allow_entry_despite_open_pos = True
         if strat == "single_candle" and symbol_has_open_position:
             inst_params = dict(inst.get("params") or {})
             exit_on_close = str(inst_params.get("exitOnCandleClose", "True")).lower() == "true"

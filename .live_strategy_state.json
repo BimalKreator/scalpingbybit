@@ -3,16 +3,16 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 68660.5,
+      "price": 66628.0,
       "indicators": {
-        "RSI": 60.74,
-        "RSI_SMA": 42.07,
+        "RSI": 29.29,
+        "RSI_SMA": 38.18,
         "volume_signal_vs_prev": false,
-        "body_size": 29.5,
-        "open": 68631.0,
-        "close": 68660.5,
-        "volume": 3659.0,
-        "Expected_Profit_Pct": 0.07
+        "body_size": 5.5,
+        "open": 66622.5,
+        "close": 66628.0,
+        "volume": 11705.0,
+        "Expected_Profit_Pct": 0.08
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -23,7 +23,7 @@
           },
           {
             "name": "Previous Candle Bearish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bearish",
@@ -35,7 +35,7 @@
           },
           {
             "name": "RSI < 40.0",
-            "met": false
+            "met": true
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -49,11 +49,11 @@
           },
           {
             "name": "Previous Candle Bullish",
-            "met": true
+            "met": false
           },
           {
             "name": "Both Bullish",
-            "met": true
+            "met": false
           },
           {
             "name": "Volume: signal > previous",
@@ -61,7 +61,7 @@
           },
           {
             "name": "RSI > 60.0",
-            "met": true
+            "met": false
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -84,7 +84,7 @@
               "met": true
             },
             {
-              "text": "SUPERTd flipped DOWNTREND \u2192 UPTREND on latest close vs prior closed bar (prev < 0, curr > 0)",
+              "text": "SUPERTd flipped DOWNTREND \u2192 UPTREND on latest close vs prior closed bar (prev > 0, curr < 0)",
               "met": false
             },
             {
@@ -102,7 +102,7 @@
               "met": true
             },
             {
-              "text": "SUPERTd flipped UPTREND \u2192 DOWNTREND on latest close vs prior closed bar (prev > 0, curr < 0)",
+              "text": "SUPERTd flipped UPTREND \u2192 DOWNTREND on latest close vs prior closed bar (prev < 0, curr > 0)",
               "met": false
             },
             {
@@ -110,7 +110,7 @@
               "met": false
             }
           ],
-          "note": "ATR period=50 factor=1.0 tradeMode=Both. Prior closed: bullish (UP); latest closed: bullish (UP). Entry: SUPERTd direction flip on candle close only (prior vs latest closed bar; no touch entry). Exit: live opposite-band touch, RSI target exit ON: RSI(4) on last close \u2014 flatten long if \u226580.0, short if \u226420.0. Last RSI(4)=53.65.  candle-close trend against you, SL/TP, or exchange stops.",
+          "note": "ATR period=50 factor=1.0 tradeMode=Both. Prior closed: bearish (DOWN); latest closed: bearish (DOWN). Entry: SUPERTd direction flip on candle close only (prior vs latest closed bar; no touch entry). Exit: live opposite-band touch, RSI target exit ON: RSI(4) on last close \u2014 flatten long if \u226580.0, short if \u226420.0. Last RSI(4)=38.12.  candle-close trend against you, SL/TP, or exchange stops.",
           "monitor_sync": {
             "engine": "supertrend_scalping",
             "rows_in_buffer": 1000,
@@ -120,17 +120,17 @@
             "flip_short_ok": false,
             "use_rsi_target": true,
             "target_rsi_length": 4,
-            "last_rsi": 53.6483,
-            "last_closed_start": 1774594920000,
-            "prior_closed_start": 1774594860000,
-            "live_mid": 68653.0,
+            "last_rsi": 38.1179,
+            "last_closed_start": 1774612980000,
+            "prior_closed_start": 1774612920000,
+            "live_mid": 66643.5,
             "last_signal_start": 0,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
           }
         }
       },
-      "checks_updated_unix": 1774594935.6587348,
+      "checks_updated_unix": 1774613000.6653209,
       "status": "Waiting",
       "sl_price": null,
       "tp_price": null,

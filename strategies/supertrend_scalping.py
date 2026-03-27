@@ -286,6 +286,48 @@ def _dir_value(row: pd.Series, dir_col: str) -> float | None:
         return None
 
 
+def _ws_confirm_truthy(c: Any) -> bool:
+    """Match ``main._is_ws_kline_fully_closed`` / Bybit-style kline confirm flags."""
+    if c is True:
+        return True
+    if c is False:
+        return False
+    s = str(c).strip().lower()
+    return s in ("1", "true", "yes")
+
+
+def _closed_flag_truthy(c: Any) -> bool:
+    if c is True:
+        return True
+    if c is False:
+        return False
+    s = str(c).strip().lower()
+    return s in ("1", "true", "yes")
+
+
+def _trim_to_exchange_closed_bars(d: pd.DataFrame) -> pd.DataFrame:
+    """
+    Keep only finalized candles for flip logic (no in-progress bar in iloc[-1]).
+    Prefer ``confirm`` / ``closed`` columns when present; else drop the last row as forming.
+    """
+    if d is None or len(d) < 1:
+        return d
+    d2 = (
+        d.sort_values("start").reset_index(drop=True)
+        if "start" in d.columns
+        else d.reset_index(drop=True)
+    )
+    if "confirm" in d2.columns:
+        ok = d2["confirm"].map(_ws_confirm_truthy)
+        return d2.loc[ok].reset_index(drop=True)
+    if "closed" in d2.columns:
+        ok = d2["closed"].map(_closed_flag_truthy)
+        return d2.loc[ok].reset_index(drop=True)
+    if len(d2) >= 2:
+        return d2.iloc[:-1].reset_index(drop=True)
+    return d2.iloc[0:0].reset_index(drop=True)
+
+
 def evaluate(
     df: pd.DataFrame | None,
     params: dict[str, Any] | None,
@@ -336,6 +378,14 @@ def evaluate(
         return out
     if dir_col not in d.columns:
         out["reason"] = "indicators_missing"
+        return out
+
+    d = _trim_to_exchange_closed_bars(d)
+    if d is None or len(d) < 1:
+        out["reason"] = "no_confirmed_closed_bars"
+        return out
+    if len(d) < 2:
+        out["reason"] = "not_enough_bars_for_flip"
         return out
 
     in_pos = bool(st_dict.get("in_position"))
@@ -430,11 +480,7 @@ def evaluate(
         )
         return out
 
-    # --- ENTRY: candle-close only — strict SUPERTd flip iloc[-2] → iloc[-1] (indicator encodes crossover).
-    if len(d) < 2:
-        out["reason"] = "not_enough_bars_for_flip"
-        return out
-
+    # --- ENTRY: strict SUPERTd flip on last two exchange-closed bars (see _trim_to_exchange_closed_bars).
     prev_row = d.iloc[-2]
     prev_dir = _dir_value(prev_row, dir_col)
     if (
@@ -568,18 +614,27 @@ def build_entry_checklists(
             "note": f"ATR={atr_len} factor={mult} SL pts={sl_pts} TP pts={tp_pts}. Waiting for data.",
             "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": n_buf},
         }
-    if len(d) < 2:
-        return {
-            "rules_long": [{"text": "Need ≥2 closed bars to detect trend flip", "met": False}],
-            "rules_short": [{"text": "Need ≥2 closed bars to detect trend flip", "met": False}],
-            "note": f"ATR={atr_len} factor={mult}. Waiting for second closed bar…",
-            "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": n_buf},
-        }
     if dir_col not in d.columns:
         return {
             "rules_long": [{"text": "Supertrend columns missing", "met": False}],
             "rules_short": [{"text": "Supertrend columns missing", "met": False}],
             "note": "Indicator build failed.",
+            "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": n_buf},
+        }
+
+    d = _trim_to_exchange_closed_bars(d)
+    if d is None or len(d) < 1:
+        return {
+            "rules_long": [{"text": "No exchange-confirmed closed bars yet", "met": False}],
+            "rules_short": [{"text": "No exchange-confirmed closed bars yet", "met": False}],
+            "note": f"ATR={atr_len} factor={mult}. Waiting for confirmed klines…",
+            "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": n_buf},
+        }
+    if len(d) < 2:
+        return {
+            "rules_long": [{"text": "Need ≥2 confirmed closed bars for flip compare", "met": False}],
+            "rules_short": [{"text": "Need ≥2 confirmed closed bars for flip compare", "met": False}],
+            "note": f"ATR={atr_len} factor={mult}. Only one confirmed bar so far…",
             "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": n_buf},
         }
 
@@ -685,9 +740,13 @@ def build_entry_checklists(
         f"{rsi_note}"
         " candle-close trend against you, SL/TP, or exchange stops."
     )
+    n_trim = len(d)
     sync: dict[str, Any] = {
         "engine": STRATEGY_NAME,
         "rows_in_buffer": n_buf,
+        "rows_after_confirm_trim": n_trim,
+        "flip_eval_target_iloc": n_trim - 1,
+        "flip_eval_prev_iloc": n_trim - 2,
         "prev_dir": prev_dir,
         "curr_dir": curr_dir,
         "flip_long_ok": flip_long_ok,
@@ -706,6 +765,8 @@ def build_entry_checklists(
         sync["prior_closed_start"] = int(prev_row_ck["start"])
     except (TypeError, ValueError, KeyError):
         sync["prior_closed_start"] = None
+    sync["flip_eval_target_start_ms"] = sync.get("last_closed_start")
+    sync["flip_eval_prev_start_ms"] = sync.get("prior_closed_start")
     sync["live_mid"] = round(live, 8) if live > 0 else None
 
     return {
