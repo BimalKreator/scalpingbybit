@@ -20,6 +20,7 @@ from pathlib import Path
 import instance_storage
 from strategies import ema_trap
 from strategies import single_candle
+from strategies import supertrend_scalping
 from strategies import three_bearish_trend
 from strategies import STRATEGY_TYPE_LABELS
 
@@ -373,6 +374,18 @@ def _monitor_snapshot_from_params(p: dict, *, strategy_type: str | None = None) 
             "breakeven_buffer_pct": max(0.0, _num("breakevenBufferPct", "BREAKEVEN_BUFFER_PCT", 0.05)),
             "trade_capital_usd": max(1e-12, _num("tradeCapitalUsd", "TRADE_AMOUNT_USD", 100.0)),
             "leverage": max(1.0, _num("leverage", "LEVERAGE", 5.0)),
+        }
+
+    if st == "supertrend_scalping":
+        return {
+            "sl_mx": 1.0,
+            "sl_mn": 1.0,
+            "sl_decay_seconds": 0.0,
+            "partial_tp_enabled": False,
+            "trailing_sl_enabled": False,
+            "breakeven_buffer_pct": max(0.0, _num("breakevenBufferPct", "BREAKEVEN_BUFFER_PCT", 0.05)),
+            "trade_capital_usd": max(1e-12, _num("tradeCapitalUsd", "TRADE_AMOUNT_USD", 100.0)),
+            "leverage": max(1.0, _num("leverage", "LEVERAGE", 10.0)),
         }
 
     return {
@@ -2133,6 +2146,10 @@ def compute_indicators(
     df["momentum_decreasing"] = df["body_size"] < df["body_size"].shift(1)
     # Volume rule: strictly volume > volume_prev (no equality)
     df["volume_increasing"] = df["volume"] > df["volume"].shift(1)
+    try:
+        df.ta.supertrend(length=10, multiplier=3.0, append=True)
+    except Exception as e:
+        logging.debug("compute_indicators: default Supertrend(10,3) skipped: %s", e)
     return df
 
 
@@ -5246,6 +5263,37 @@ def _rebuild_instance_checks_live_state(symbol_normalized: str) -> None:
                     ),
                 }
             checks[iid] = entry
+        elif strat == "supertrend_scalping":
+            built = supertrend_scalping.build_entry_checklists(
+                df_closed if len(df_closed) else None,
+                dict(inst.get("params") or {}),
+                st,
+            )
+            entry = {
+                "name": name,
+                "interval": tf,
+                "strategy_type": strat,
+                "rules_long": built.get("rules_long") or [],
+                "rules_short": built.get("rules_short") or [],
+            }
+            if built.get("note"):
+                entry["note"] = built["note"]
+            sync = built.get("sync")
+            if isinstance(sync, dict):
+                try:
+                    cstart = int(df_closed.iloc[-1]["start"]) if len(df_closed) >= 1 else None
+                except (TypeError, ValueError, KeyError):
+                    cstart = None
+                lss = int(st.get("last_signal_start") or 0)
+                entry["monitor_sync"] = {
+                    **sync,
+                    "last_signal_start": lss,
+                    "autotrade_enabled": _is_autotrade_enabled(),
+                    "order_pending_for_this_conf_bar": bool(
+                        cstart is not None and lss == cstart
+                    ),
+                }
+            checks[iid] = entry
         elif strat == "single_candle":
             df_sc_live = _raw_kline_dataframe(sym_u, iv)
             st_sc = {**st, "symbol": sym_u}
@@ -5386,6 +5434,7 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
     symbol_has_open_position = sym_sz0 > 1e-12 or get_open_position(sym_u)
     entry_queued_this_message = False
     single_candle_close_queued_this_message = False
+    supertrend_flat_close_queued_this_message = False
     for inst in get_strategy_instances():
         if not inst.get("enabled", True):
             continue
@@ -5403,6 +5452,55 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             "strategy_type": strat,
             "symbol": sym_u,
         }
+
+        # Supertrend Scalping: close on candle close when Supertrend flips against the open position.
+        if strat == "supertrend_scalping" and symbol_has_open_position:
+            iid_st = str(inst.get("id") or "").strip()
+            aid_st = str(_active_order_instance_id or "").strip()
+            hub_in_st = bool(st.get("in_position"))
+            our_trade_st = (aid_st == iid_st) or (
+                hub_in_st and (not aid_st or aid_st == iid_st)
+            )
+            inst_params_st = dict(inst.get("params") or {})
+            if (
+                our_trade_st
+                and _is_autotrade_enabled()
+                and not supertrend_flat_close_queued_this_message
+            ):
+                st_st_fl = {**st, "symbol": sym_u}
+                ev_fl = supertrend_scalping.evaluate(
+                    df_closed, inst_params_st, st_st_fl
+                )
+                if isinstance(ev_fl, dict) and ev_fl.get("signal") == "Flat":
+                    bb_f, ba_f, _, _ = xst.get_orderbook_l1(sym_u, SYMBOL)
+                    mid_f = (
+                        (float(bb_f) + float(ba_f)) / 2.0
+                        if bb_f > 0 and ba_f > 0
+                        else 0.0
+                    )
+                    close_meta_st: dict[str, Any] = {
+                        **meta_base,
+                        "reason": str(ev_fl.get("reason") or "supertrend_trend_exit"),
+                    }
+                    if mid_f > 0:
+                        close_meta_st["paper_exit_price"] = float(mid_f)
+                    logging.info(
+                        "[instances] [%s] Supertrend Scalping trend exit (%s %dm) reason=%s",
+                        iid_st,
+                        sym_u,
+                        interval_minutes,
+                        close_meta_st.get("reason"),
+                    )
+                    print(
+                        f"[{datetime.now().isoformat()}] ⏹ CLOSE ({sym_u} {interval_minutes}m) "
+                        f"[Supertrend Scalping] [{inst.get('name')}] {close_meta_st.get('reason')}"
+                    )
+                    _loop.call_soon_threadsafe(
+                        _signal_queue.put_nowait,
+                        ("close", close_meta_st),
+                    )
+                    supertrend_flat_close_queued_this_message = True
+                    continue
 
         # Single Candle: optional exit on each new closed bar, and/or trailing candle exit when bar-close exit is off.
         allow_entry_despite_open_pos = False
@@ -5877,6 +5975,23 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             signal = ev.get("signal") if ev else None
             reason = str((ev or {}).get("reason") or "")
             row_dict = (ev or {}).get("signal_row")
+        elif strat == "supertrend_scalping":
+            inst_params_st = dict(inst.get("params") or {})
+            try:
+                forming_st = (
+                    int(df_sc_raw.iloc[-1]["start"]) if len(df_sc_raw) else conf_start
+                )
+            except (TypeError, ValueError, KeyError):
+                forming_st = conf_start
+            st_st = {
+                **st,
+                "symbol": sym_u,
+                "forming_bar_start": forming_st,
+            }
+            ev = supertrend_scalping.evaluate(df_closed, inst_params_st, st_st)
+            signal = ev.get("signal") if ev else None
+            reason = str((ev or {}).get("reason") or "")
+            row_dict = (ev or {}).get("signal_row")
         else:
             continue
 
@@ -5892,6 +6007,13 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
                     signal_bar_start_for_dedup = int(_sb)
             except (TypeError, ValueError):
                 signal_bar_start_for_dedup = conf_start
+        if strat == "supertrend_scalping" and isinstance(row_dict, dict):
+            try:
+                _sb2 = row_dict.get("start")
+                if _sb2 is not None:
+                    signal_bar_start_for_dedup = int(_sb2)
+            except (TypeError, ValueError):
+                pass
         if int(st.get("last_signal_start") or 0) == signal_bar_start_for_dedup:
             logging.info(
                 "[instances] Skip %s — already queued signal for bar_start=%s (wait for next candle)",
@@ -5937,6 +6059,16 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             if sn:
                 meta["strategy_name"] = str(sn)
         elif strat == "single_candle" and isinstance(ev, dict):
+            sub = ev.get("meta") if isinstance(ev.get("meta"), dict) else None
+            if sub:
+                meta.update(sub)
+            if ev.get("sl_price") is not None and ev.get("tp_price") is not None:
+                meta["sl_price"] = float(ev["sl_price"])
+                meta["tp_price"] = float(ev["tp_price"])
+            sn = ev.get("strategy_name")
+            if sn:
+                meta["strategy_name"] = str(sn)
+        elif strat == "supertrend_scalping" and isinstance(ev, dict):
             sub = ev.get("meta") if isinstance(ev.get("meta"), dict) else None
             if sub:
                 meta.update(sub)

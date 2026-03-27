@@ -18,6 +18,7 @@ from pathlib import Path
 
 from strategies.ema_trap import DEFAULT_PARAMS as EMA_TRAP_DEFAULTS
 from strategies.single_candle import DEFAULT_PARAMS as SINGLE_CANDLE_DEFAULTS
+from strategies.supertrend_scalping import DEFAULT_PARAMS as SUPERTREND_SCALPING_DEFAULTS
 from strategies.three_bearish_trend import DEFAULT_PARAMS as THREE_BEARISH_DEFAULTS
 
 ROOT = Path(__file__).resolve().parent
@@ -175,6 +176,8 @@ def default_params_for_type(strategy_type: str) -> dict:
         return dict(THREE_BEARISH_DEFAULTS)
     if st == "single_candle":
         return dict(SINGLE_CANDLE_DEFAULTS)
+    if st == "supertrend_scalping":
+        return dict(SUPERTREND_SCALPING_DEFAULTS)
     return dict(WEAK_MOMENTUM_DEFAULT_PARAMS)
 
 
@@ -205,6 +208,9 @@ def create_instance(strategy_type: str, symbol: str | None = None) -> dict:
     elif st == "single_candle":
         name = "Single Candle 15m"
         tf = "15m"
+    elif st == "supertrend_scalping":
+        name = "Supertrend Scalping 1m"
+        tf = "1m"
     else:
         st = "ema_trap"
         name = "EMA Trap 3m"
@@ -270,6 +276,31 @@ def _strip_params_unused_by_strategy(strategy_type: str, params: dict) -> dict:
             "nCandles",
             "mCandles",
             "slMaxPoints",
+        ):
+            p.pop(k, None)
+    if st == "supertrend_scalping":
+        for k in (
+            "slMultiplier",
+            "slMultiplierMax",
+            "slMultiplierMin",
+            "slDecaySeconds",
+            "rsiLength",
+            "rsiOversold",
+            "rsiOverbought",
+            "emaLength",
+            "rangeLength",
+            "rangeMultiplier",
+            "minProfitPerc",
+            "nCandles",
+            "mCandles",
+            "slMaxPoints",
+            "tpMultiplier",
+            "useConfirmationCandle",
+            "useTouchEntry",
+            "useOrderbookVolume",
+            "exitOnCandleClose",
+            "trailingCandleExit",
+            "useTarget",
         ):
             p.pop(k, None)
     return p

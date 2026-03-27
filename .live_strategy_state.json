@@ -3,16 +3,16 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 71033.0,
+      "price": 68525.0,
       "indicators": {
-        "RSI": 81.21,
-        "RSI_SMA": 56.23,
+        "RSI": 30.45,
+        "RSI_SMA": 23.79,
         "volume_signal_vs_prev": true,
-        "body_size": 39.5,
-        "open": 70993.5,
-        "close": 71033.0,
-        "volume": 42786.0,
-        "Expected_Profit_Pct": 0.14
+        "body_size": 19.0,
+        "open": 68506.0,
+        "close": 68525.0,
+        "volume": 11963.0,
+        "Expected_Profit_Pct": 0.15
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -23,7 +23,7 @@
           },
           {
             "name": "Previous Candle Bearish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bearish",
@@ -35,7 +35,7 @@
           },
           {
             "name": "RSI < 40.0",
-            "met": false
+            "met": true
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -49,11 +49,11 @@
           },
           {
             "name": "Previous Candle Bullish",
-            "met": true
+            "met": false
           },
           {
             "name": "Both Bullish",
-            "met": true
+            "met": false
           },
           {
             "name": "Volume: signal > previous",
@@ -61,7 +61,7 @@
           },
           {
             "name": "RSI > 60.0",
-            "met": true
+            "met": false
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -84,7 +84,7 @@
               "met": true
             },
             {
-              "text": "Last closed candle: bullish (O=70993.500000 C=71033.000000)",
+              "text": "Last closed candle: bullish (O=68506.000000 C=68525.000000)",
               "met": false
             },
             {
@@ -92,12 +92,12 @@
               "met": false
             },
             {
-              "text": "SL = min(open, close \u2212 50.0); entry proxy = close (long)",
+              "text": "SL = min(open, close \u2212 40.0); entry proxy = close (long)",
               "met": false
             },
             {
-              "text": "Live price \u2265 signal high (touch entry) \u2014 high=71034.5, mid=71047",
-              "met": true
+              "text": "Live price \u2265 signal high (touch entry) \u2014 high=68543.5, mid=68525.5",
+              "met": false
             }
           ],
           "rules_short": [
@@ -110,7 +110,7 @@
               "met": true
             },
             {
-              "text": "Last closed candle: bullish (O=70993.500000 C=71033.000000)",
+              "text": "Last closed candle: bullish (O=68506.000000 C=68525.000000)",
               "met": true
             },
             {
@@ -118,28 +118,28 @@
               "met": true
             },
             {
-              "text": "SL = max(open, close + 50.0); entry proxy = close (short)",
+              "text": "SL = max(open, close + 40.0); entry proxy = close (short)",
               "met": true
             },
             {
-              "text": "Live price \u2264 signal low (touch entry) \u2014 low=70967, mid=71047",
+              "text": "Live price \u2264 signal low (touch entry) \u2014 low=68474.5, mid=68525.5",
               "met": false
             }
           ],
-          "note": "tradeMode=Both slPoints=50.0. Contrarian: bearish bar -> Buy, bullish bar -> Sell. Confirmation OFF: one closed bar. Touch entry ON: Long after mid \u2265 signal high; Short after mid \u2264 signal low. Live: flatten on each closed candle (WS) unless flat from TP/SL; then same bar may re-enter. useTarget=ON \u2192 TP = entry \u00b1 (|entry\u2212SL| \u00d7 4.0). ",
+          "note": "tradeMode=Both slPoints=40.0. Contrarian: bearish bar -> Buy, bullish bar -> Sell. Confirmation OFF: one closed bar. Touch entry ON: Long after mid \u2265 signal high; Short after mid \u2264 signal low. Live: flatten on each closed candle (WS) unless flat from TP/SL; then same bar may re-enter. useTarget=ON \u2192 TP = entry \u00b1 (|entry\u2212SL| \u00d7 5.0). ",
           "monitor_sync": {
             "engine": "single_candle",
             "rows_in_buffer": 1000,
-            "conf_bar_start": 1774452600000,
-            "signal_bar_start": 1774452600000,
-            "last_signal_start": 1774452120000,
+            "conf_bar_start": 1774584300000,
+            "signal_bar_start": 1774584300000,
+            "last_signal_start": 1774584180000,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
           }
         }
       },
-      "checks_updated_unix": 1774452666.5766943,
-      "status": "Short Signal",
+      "checks_updated_unix": 1774584370.6061819,
+      "status": "Waiting",
       "sl_price": null,
       "tp_price": null,
       "entry_price": null,

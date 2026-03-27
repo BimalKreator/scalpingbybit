@@ -332,6 +332,7 @@
             <option value="weak_momentum_reversal">Weak Momentum Reversal</option>
             <option value="three_bearish_trend">3 Bearish Trend</option>
             <option value="single_candle">Single Candle</option>
+            <option value="supertrend_scalping">Supertrend Scalping</option>
           </select>
           <button type="button" id="btnAddInstance" class="rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium py-2 px-4 transition">
             Add Strategy Instance
@@ -477,7 +478,8 @@
       ema_trap: 'EMA Trap + RF',
       weak_momentum_reversal: 'Weak Momentum',
       three_bearish_trend: '3 Bearish Trend',
-      single_candle: 'Single Candle'
+      single_candle: 'Single Candle',
+      supertrend_scalping: 'Supertrend Scalping'
     };
 
     function hubBadgeClass(on) {
@@ -676,6 +678,30 @@
       );
     }
 
+    /** Supertrend Scalping: ATR/factor, fixed point SL/TP, touch entry vs prior bar bands. */
+    function supertrendScalpingExecutionBlock(p) {
+      p = p || {};
+      var tm = p.tradeMode != null && p.tradeMode !== '' ? String(p.tradeMode) : 'Both';
+      return (
+        '<p class="text-xs font-semibold text-slate-400 mt-3">Supertrend Scalping</p>' +
+        '<p class="text-[10px] text-slate-500 mb-2">Touch entry uses L1 mid vs the <strong class="text-slate-400">previous closed</strong> bar&apos;s Supertrend bands (TradingView-style). SL/TP are absolute prices: entry ± points. When a new candle closes and Supertrend is against your side, the bot flattens (paper: L1 mid).</p>' +
+        '<div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">' +
+        '<label class="block text-slate-400">Trade mode<select data-p="tradeMode" class="mt-1 w-full rounded-lg bg-slate-900 border border-slate-600 px-2 py-1.5 text-sm text-white">' +
+        ['Both', 'Long', 'Short'].map(function (x) {
+          return '<option value="' + x + '"' + (tm === x ? ' selected' : '') + '>' + x + '</option>';
+        }).join('') +
+        '</select></label>' +
+        numFieldL('ATR period', 'atrPeriod', p.atrPeriod, 10, '1') +
+        numFieldL('Factor (multiplier)', 'factor', p.factor, 3.0, '0.1') +
+        numFieldL('SL (points)', 'slPoints', p.slPoints, 50) +
+        numFieldL('TP (points)', 'tpPoints', p.tpPoints, 100) +
+        numFieldL('Trade capital (USD)', 'tradeCapitalUsd', p.tradeCapitalUsd, 100) +
+        numFieldL('Leverage (×)', 'leverage', p.leverage, 10) +
+        '</div>' +
+        paperFeeBlock(p)
+      );
+    }
+
     function buildInstanceFormHtml(inst) {
       var st = inst.strategy_type || '';
       var p = inst.params || {};
@@ -711,6 +737,10 @@
         adv =
           '<p class="text-xs font-semibold text-slate-400">Single Candle</p>' +
           singleCandleExecutionBlock(p);
+      } else if (st === 'supertrend_scalping') {
+        adv =
+          '<p class="text-xs font-semibold text-slate-400">Supertrend Scalping</p>' +
+          supertrendScalpingExecutionBlock(p);
       } else {
         adv =
           '<p class="text-xs font-semibold text-slate-400">Weak Momentum</p>' +
