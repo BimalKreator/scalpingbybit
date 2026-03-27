@@ -1,8 +1,10 @@
 """
 Supertrend Scalping — entries: **prior ``SUPERTd`` regime** plus **two-bar crossover** vs prior bar
-bands (``iloc[-2]``): long when ``prev_dir > 0``, ``prev_upper > 0``, ``prev_close < prev_upper``,
+bands (``iloc[-2]``): long when ``prev_dir > 0``, ``prev_upper > 0``, ``prev_close <= prev_upper``,
 ``target_close > prev_upper``; short when ``prev_dir < 0``, ``prev_lower > 0``,
-``prev_close > prev_lower``, ``target_close < prev_lower``.
+``prev_close >= prev_lower``, ``target_close < prev_lower``.
+Bands use columns ``SUPERTd/l/s_{atrPeriod}_{factor}`` from instance params; all ``SUPERT*`` columns
+are stripped before each recompute so stale multipliers (e.g. 3.0) cannot mix with the UI factor.
 ``[ST DEBUG]`` logs immediately after ``target_row``/``prev_row`` (before ``in_pos`` or entry returns)
 so PM2/console can trace values; optional ``print`` mirrors the log line.
 Fixed SL/TP in points from the signal bar close (TP widened when optional RSI target exit is on).
@@ -49,18 +51,69 @@ DEFAULT_PARAMS: dict[str, Any] = {
 }
 
 
-def _col_suffix(atr_len: int, mult: float) -> str:
+def _st_column_suffix(atr_len: int, mult: float) -> str:
+    """Suffix for ST columns; must match UI ``atrPeriod`` / ``factor`` (``float(mult)`` in the name)."""
     return f"{int(atr_len)}_{float(mult)}"
 
 
+def _atr_len_from_params(p: dict[str, Any]) -> int:
+    try:
+        v = p.get("atrPeriod", 10)
+        return max(1, int(v if v is not None else 10))
+    except (TypeError, ValueError):
+        return 10
+
+
+def _factor_mult_from_params(p: dict[str, Any]) -> float:
+    """``factor`` from instance/UI; aliases so we never silently fall back to 3.0 when the UI sent another key."""
+    raw: Any = None
+    for key in (
+        "factor",
+        "Factor",
+        "atrMultiplier",
+        "atr_multiplier",
+        "multiplier",
+    ):
+        if key in p and p[key] is not None and str(p[key]).strip() != "":
+            raw = p[key]
+            break
+    if raw is None:
+        raw = p.get("factor", 3.0)
+    try:
+        mult = float(raw)
+    except (TypeError, ValueError):
+        mult = 3.0
+    if not math.isfinite(mult) or mult <= 0:
+        mult = 3.0
+    return mult
+
+
+def dynamic_supertrend_line_columns(atr_len: int, mult: float) -> tuple[str, str, str]:
+    """
+    ``(dir_col, lower_col, upper_col)`` exactly as written by ``prepare_dataframe`` /
+    ``_tradingview_supertrend`` for this ``atr_len`` and ``mult``.
+    """
+    s = _st_column_suffix(atr_len, mult)
+    return (f"SUPERTd_{s}", f"SUPERTl_{s}", f"SUPERTs_{s}")
+
+
 def supertrend_column_names(atr_len: int, mult: float) -> dict[str, str]:
-    s = _col_suffix(atr_len, mult)
+    s = _st_column_suffix(atr_len, mult)
+    d_col, lo_col, up_col = dynamic_supertrend_line_columns(atr_len, mult)
     return {
         "line": f"SUPERT_{s}",
-        "dir": f"SUPERTd_{s}",
-        "lower": f"SUPERTl_{s}",
-        "upper": f"SUPERTs_{s}",
+        "dir": d_col,
+        "lower": lo_col,
+        "upper": up_col,
     }
+
+
+def _drop_all_supertrend_columns(d: pd.DataFrame) -> pd.DataFrame:
+    """Remove any prior ST columns (e.g. pandas_ta 10×3 or another instance factor) before recomputing."""
+    drop_cols = [c for c in d.columns if str(c).startswith("SUPERT")]
+    if drop_cols:
+        return d.drop(columns=drop_cols, errors="ignore")
+    return d
 
 
 def _wilder_tr_and_atr(
@@ -209,19 +262,15 @@ def prepare_dataframe(
     if df is None or len(df) < 1:
         return None
     p = {**DEFAULT_PARAMS, **(params or {})}
-    atr_len = max(1, int(p.get("atrPeriod", 10) or 10))
-    mult = float(p.get("factor", 3.0) or 3.0)
-    if not math.isfinite(mult) or mult <= 0:
-        mult = 3.0
+    atr_len = _atr_len_from_params(p)
+    mult = _factor_mult_from_params(p)
     cols = supertrend_column_names(atr_len, mult)
     d = (
         df.sort_values("start").reset_index(drop=True)
         if "start" in df.columns
         else df.reset_index(drop=True)
     )
-    for c in cols.values():
-        if c in d.columns:
-            d = d.drop(columns=[c], errors="ignore")
+    d = _drop_all_supertrend_columns(d)
 
     # TradingView-aligned SuperTrend (Wilder ATR + Pine-style bands); do not use pandas_ta.supertrend
     # here — its ATR / rules often diverge from TradingView's built-in indicator.
@@ -348,10 +397,8 @@ def evaluate(
 ) -> dict[str, Any]:
     p = {**DEFAULT_PARAMS, **(params or {})}
     st_dict = dict(state or {})
-    atr_len = max(1, int(p.get("atrPeriod", 10) or 10))
-    mult = float(p.get("factor", 3.0) or 3.0)
-    if not math.isfinite(mult) or mult <= 0:
-        mult = 3.0
+    atr_len = _atr_len_from_params(p)
+    mult = _factor_mult_from_params(p)
     sl_points = _float_param(p, "slPoints", 50.0)
     tp_points = _float_param(p, "tpPoints", 100.0)
     use_rsi_target = _bool_param(p, "useRsiTarget", False)
@@ -369,10 +416,9 @@ def evaluate(
         target_rsi_short = 20.0
     rsi_col = f"RSI_{target_rsi_len}"
     mode = _trade_mode(p)
-    cols = supertrend_column_names(atr_len, mult)
-    dir_col = cols["dir"]
-    long_line_col = cols["lower"]
-    short_line_col = cols["upper"]
+    dir_col, long_line_col, short_line_col = dynamic_supertrend_line_columns(
+        atr_len, mult
+    )
 
     out: dict[str, Any] = {
         "signal": "Hold",
@@ -428,7 +474,8 @@ def evaluate(
 
     _st_dbg = (
         f"[ST DEBUG] TargetClose: {target_close} | PrevClose: {prev_close} | "
-        f"PrevDir: {prev_dir_raw} | PrevUpper: {prev_upper_raw} | PrevLower: {prev_lower_raw}"
+        f"PrevDir: {prev_dir_raw} | PrevUpper: {prev_upper_raw} | PrevLower: {prev_lower_raw} | "
+        f"cols ATR={atr_len} mult={mult} → dir={dir_col} upper={short_line_col} lower={long_line_col}"
     )
     logging.info("%s", _st_dbg)
     print(_st_dbg, flush=True)
@@ -560,7 +607,7 @@ def evaluate(
         closes_ok
         and long_dir_ok
         and prev_upper > 0.0
-        and prev_close < prev_upper
+        and prev_close <= prev_upper
         and target_close > prev_upper
     ):
         if mode in ("Both", "Long"):
@@ -572,7 +619,7 @@ def evaluate(
         closes_ok
         and short_dir_ok
         and prev_lower > 0.0
-        and prev_close > prev_lower
+        and prev_close >= prev_lower
         and target_close < prev_lower
     ):
         if mode in ("Both", "Short"):
@@ -631,6 +678,11 @@ def evaluate(
         meta["target_rsi_length"] = int(target_rsi_len)
         meta["target_rsi_long"] = float(target_rsi_long)
         meta["target_rsi_short"] = float(target_rsi_short)
+    meta["atr_period"] = int(atr_len)
+    meta["factor"] = float(mult)
+    meta["dir_col"] = dir_col
+    meta["upper_col"] = short_line_col
+    meta["lower_col"] = long_line_col
     out["signal"] = side
     out["reason"] = reason
     out["signal_row"] = signal_row
@@ -647,10 +699,8 @@ def build_entry_checklists(
 ) -> dict[str, Any]:
     p = {**DEFAULT_PARAMS, **(params or {})}
     st = dict(state or {})
-    atr_len = max(1, int(p.get("atrPeriod", 10) or 10))
-    mult = float(p.get("factor", 3.0) or 3.0)
-    if not math.isfinite(mult) or mult <= 0:
-        mult = 3.0
+    atr_len = _atr_len_from_params(p)
+    mult = _factor_mult_from_params(p)
     sl_pts = _float_param(p, "slPoints", 50.0)
     tp_pts = _float_param(p, "tpPoints", 100.0)
     use_rsi = _bool_param(p, "useRsiTarget", False)
@@ -670,10 +720,9 @@ def build_entry_checklists(
     tp_widened = tp_pts * 10.0 if use_rsi else tp_pts
     mode = _trade_mode(p)
     in_pos = bool(st.get("in_position"))
-    cols_ck = supertrend_column_names(atr_len, mult)
-    dir_col = cols_ck["dir"]
-    long_line_ck = cols_ck["lower"]
-    short_line_ck = cols_ck["upper"]
+    dir_col, long_line_ck, short_line_ck = dynamic_supertrend_line_columns(
+        atr_len, mult
+    )
 
     d = prepare_dataframe(df, p)
     n_buf = 0 if df is None else len(df)
@@ -740,7 +789,7 @@ def build_entry_checklists(
         and prev_upper_ck > 0
         and math.isfinite(prev_close_ck)
         and math.isfinite(close_ck)
-        and prev_close_ck < prev_upper_ck
+        and prev_close_ck <= prev_upper_ck
         and close_ck > prev_upper_ck
     )
     short_cross_valid = (
@@ -750,7 +799,7 @@ def build_entry_checklists(
         and prev_lower_ck > 0
         and math.isfinite(prev_close_ck)
         and math.isfinite(close_ck)
-        and prev_close_ck > prev_lower_ck
+        and prev_close_ck >= prev_lower_ck
         and close_ck < prev_lower_ck
     )
 
@@ -801,6 +850,11 @@ def build_entry_checklists(
         "rows_after_confirm_trim": n_trim,
         "flip_eval_target_iloc": n_trim - 1,
         "flip_eval_prev_iloc": n_trim - 2,
+        "atr_period": atr_len,
+        "factor": mult,
+        "dir_col": dir_col,
+        "upper_col": short_line_ck,
+        "lower_col": long_line_ck,
         "prev_dir": prev_dir,
         "curr_dir": curr_dir,
         "long_cross_valid": long_cross_valid,

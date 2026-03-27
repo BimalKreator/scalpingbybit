@@ -3,16 +3,16 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 66301.5,
+      "price": 65992.0,
       "indicators": {
-        "RSI": 59.09,
-        "RSI_SMA": 62.62,
+        "RSI": 10.8,
+        "RSI_SMA": 44.02,
         "volume_signal_vs_prev": true,
-        "body_size": 1.0,
-        "open": 66302.5,
-        "close": 66301.5,
-        "volume": 23619.0,
-        "Expected_Profit_Pct": 0.21
+        "body_size": 37.5,
+        "open": 66029.5,
+        "close": 65992.0,
+        "volume": 109645.0,
+        "Expected_Profit_Pct": 0.35
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -23,11 +23,11 @@
           },
           {
             "name": "Previous Candle Bearish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bearish",
-            "met": false
+            "met": true
           },
           {
             "name": "Volume: signal > previous",
@@ -35,7 +35,7 @@
           },
           {
             "name": "RSI < 40.0",
-            "met": false
+            "met": true
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -49,7 +49,7 @@
           },
           {
             "name": "Previous Candle Bullish",
-            "met": true
+            "met": false
           },
           {
             "name": "Both Bullish",
@@ -76,71 +76,47 @@
           "strategy_type": "supertrend_scalping",
           "rules_long": [
             {
-              "text": "Instance flat (no open position)",
-              "met": false
-            },
-            {
-              "text": "tradeMode allows LONG (Both)",
-              "met": true
-            },
-            {
-              "text": "LONG: prev_close < prev_upper < target_close \u2192 66301.5 < 66352.36 < 66296.5",
-              "met": false
-            },
-            {
-              "text": "SL = signal close \u2212 50.0 pts, TP = signal close + 1000.0 pts (absolute); RSI exit widens TP 10\u00d7",
+              "text": "Candle successfully closed ABOVE previous Downtrend Resistance Line",
               "met": false
             }
           ],
           "rules_short": [
             {
-              "text": "Instance flat (no open position)",
-              "met": false
-            },
-            {
-              "text": "tradeMode allows SHORT (Both)",
-              "met": true
-            },
-            {
-              "text": "SHORT: target_close < prev_lower < prev_close \u2192 66296.5 < 66321.14 < 66301.5",
-              "met": false
-            },
-            {
-              "text": "SL = signal close + 50.0 pts, TP = signal close \u2212 1000.0 pts (absolute); RSI exit widens TP 10\u00d7",
+              "text": "Candle successfully closed BELOW previous Uptrend Support Line",
               "met": false
             }
           ],
-          "note": "ATR period=10 factor=0.2 tradeMode=Both. SUPERTd (display only): prior bearish (DOWN); latest bearish (DOWN). Entry: physical crossover vs prior bar bands \u2014 long: prev_close < prev_upper < target_close; short: target_close < prev_lower < prev_close. Exit: live band touch, RSI target exit ON: RSI(4) on last close \u2014 flatten long if \u226580.0, short if \u226420.0. Last RSI(4)=54.21.  candle close vs bands or SUPERTd fallback, SL/TP, or exchange stops.",
+          "note": "ATR=10 factor=0.2 tradeMode=Both. Long: prior downtrend (SUPERTd>0) + close crosses above prior upper band. Short: prior uptrend (SUPERTd<0) + close crosses below prior lower band. SL/TP in points (TP\u00d710 if RSI exit on). RSI target exit ON: RSI(4) on last close \u2014 flatten long if \u226580.0, short if \u226420.0. Last RSI(4)=6.60. ",
           "monitor_sync": {
             "engine": "supertrend_scalping",
             "rows_in_buffer": 1000,
             "rows_after_confirm_trim": 1000,
             "flip_eval_target_iloc": 999,
             "flip_eval_prev_iloc": 998,
-            "prev_dir": 1.0,
+            "prev_dir": -1.0,
             "curr_dir": 1.0,
-            "flip_long_ok": false,
-            "flip_short_ok": false,
-            "prev_upper": 66352.36025399,
-            "prev_lower": 66321.13974601,
-            "prev_close": 66301.5,
-            "last_close": 66296.5,
+            "long_cross_valid": false,
+            "short_cross_valid": false,
+            "prev_upper": 65987.88285706,
+            "prev_lower": 66030.89682549,
+            "prev_close": 65992.0,
+            "last_close": 65882.5,
             "use_rsi_target": true,
             "target_rsi_length": 4,
-            "last_rsi": 54.2083,
-            "last_closed_start": 1774620780000,
-            "prior_closed_start": 1774620720000,
-            "flip_eval_target_start_ms": 1774620780000,
-            "flip_eval_prev_start_ms": 1774620720000,
-            "live_mid": 66302.0,
+            "last_rsi": 6.5969,
+            "last_closed_start": 1774621320000,
+            "prior_closed_start": 1774621260000,
+            "flip_eval_target_start_ms": 1774621320000,
+            "flip_eval_prev_start_ms": 1774621260000,
+            "live_mid": 65879.0,
             "last_signal_start": 0,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
           }
         }
       },
-      "checks_updated_unix": 1774620782.682409,
-      "status": "Waiting",
+      "checks_updated_unix": 1774621346.1606297,
+      "status": "Long Signal",
       "sl_price": null,
       "tp_price": null,
       "entry_price": null,
