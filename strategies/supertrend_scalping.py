@@ -3,7 +3,8 @@ Supertrend Scalping — entries only on candle close when Supertrend direction f
 fixed SL/TP in points from the signal bar close (TP widened when optional RSI target exit is on);
 exits: live opposite-band touch, optional candle-close RSI target, then candle-close Supertrend flip.
 
-SUPERTd convention (pandas_ta / TradingView-style): direction < 0 = uptrend, > 0 = downtrend.
+SUPERTd convention: direction < 0 = uptrend, > 0 = downtrend (aligned with strategy logic).
+Core SuperTrend is computed with Wilder ATR and Pine-style bands (TradingView-style), not pandas_ta.supertrend.
 """
 
 from __future__ import annotations
@@ -54,58 +55,144 @@ def supertrend_column_names(atr_len: int, mult: float) -> dict[str, str]:
     }
 
 
-def _manual_supertrend(
+def _wilder_tr_and_atr(
+    high: np.ndarray, low: np.ndarray, close: np.ndarray, length: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    True range and Wilder / RMA ATR as used by TradingView ``ta.atr``:
+    first ATR = SMA(TR, length); then ATR = (ATR[1] * (length - 1) + TR) / length.
+    """
+    n = len(close)
+    tr = np.zeros(n, dtype=float)
+    tr[0] = float(high[0] - low[0])
+    for i in range(1, n):
+        tr[i] = max(
+            float(high[i] - low[i]),
+            abs(float(high[i] - close[i - 1])),
+            abs(float(low[i] - close[i - 1])),
+        )
+    atr = np.full(n, np.nan, dtype=float)
+    L = max(1, int(length))
+    if n < L:
+        return tr, atr
+    atr[L - 1] = float(np.sum(tr[:L]) / L)
+    for i in range(L, n):
+        atr[i] = (atr[i - 1] * (L - 1) + tr[i]) / L
+    return tr, atr
+
+
+def _tradingview_supertrend(
     d: pd.DataFrame, atr_len: int, mult: float, cols: dict[str, str]
 ) -> None:
-    """ATR-based Supertrend when pandas_ta.supertrend is unavailable (requires pandas_ta ATR)."""
-    if ta is None:
-        logging.error("[supertrend_scalping] manual path needs pandas_ta for ATR")
-        return
+    """
+    TradingView-style SuperTrend (HL2 ± mult × Wilder ATR, trailing final bands,
+    direction from prior supertrend line vs final bands).
+
+    Bot ``SUPERTd`` convention: value **< 0** = uptrend (line tracks lower band),
+    **> 0** = downtrend (line tracks upper band). This matches the strategy's
+    entry/exit logic (not Pine's raw ``ta.supertrend`` sign, which is often opposite).
+    """
     high = d["high"].astype(float).to_numpy()
     low = d["low"].astype(float).to_numpy()
     close = d["close"].astype(float).to_numpy()
     n = len(d)
-    atr_s = ta.atr(
-        pd.Series(high), pd.Series(low), pd.Series(close), length=int(atr_len)
-    )
-    atr = atr_s.to_numpy() if hasattr(atr_s, "to_numpy") else np.asarray(atr_s)
+    L = max(1, int(atr_len))
+    m = float(mult)
+    if not math.isfinite(m) or m <= 0:
+        m = 3.0
+
+    _, atr = _wilder_tr_and_atr(high, low, close, L)
     hl2 = (high + low) * 0.5
-    basic_u = hl2 + float(mult) * atr
-    basic_l = hl2 - float(mult) * atr
-    final_u = np.full(n, np.nan)
-    final_l = np.full(n, np.nan)
-    direction = np.zeros(n, dtype=float)
-    for i in range(n):
-        if np.isnan(atr[i]) or atr[i] <= 0:
+    basic_ub = hl2 + m * atr
+    basic_lb = hl2 - m * atr
+
+    final_ub = np.full(n, np.nan, dtype=float)
+    final_lb = np.full(n, np.nan, dtype=float)
+    supertrend = np.full(n, np.nan, dtype=float)
+    direction = np.full(n, np.nan, dtype=float)
+
+    i0 = L - 1
+    if i0 >= n or not math.isfinite(float(atr[i0])):
+        d[cols["line"]] = supertrend
+        d[cols["dir"]] = direction
+        d[cols["lower"]] = final_lb
+        d[cols["upper"]] = final_ub
+        return
+
+    bub0 = float(basic_ub[i0])
+    blb0 = float(basic_lb[i0])
+    if not math.isfinite(bub0) or not math.isfinite(blb0):
+        d[cols["line"]] = supertrend
+        d[cols["dir"]] = direction
+        d[cols["lower"]] = final_lb
+        d[cols["upper"]] = final_ub
+        return
+
+    final_ub[i0] = bub0
+    final_lb[i0] = blb0
+    c0 = float(close[i0])
+    # Initial bar: same idea as Pine after ATR is defined — default bearish line = upper band.
+    if c0 > final_ub[i0]:
+        direction[i0] = -1.0
+        supertrend[i0] = final_lb[i0]
+    elif c0 < final_lb[i0]:
+        direction[i0] = 1.0
+        supertrend[i0] = final_ub[i0]
+    else:
+        direction[i0] = 1.0
+        supertrend[i0] = final_ub[i0]
+
+    rtol = 1e-9
+    atol = 1e-12
+
+    for i in range(i0 + 1, n):
+        if not math.isfinite(float(atr[i])):
             continue
-        if i == 0:
-            final_u[i] = basic_u[i]
-            final_l[i] = basic_l[i]
-            direction[i] = 1.0 if close[i] >= basic_u[i] else -1.0
+        bub = float(basic_ub[i])
+        blb = float(basic_lb[i])
+        if not math.isfinite(bub) or not math.isfinite(blb):
             continue
-        fu_p, fl_p = final_u[i - 1], final_l[i - 1]
-        if np.isnan(fu_p):
-            final_u[i] = basic_u[i]
-            final_l[i] = basic_l[i]
-            direction[i] = 1.0 if close[i] >= basic_u[i] else -1.0
-            continue
-        final_u[i] = (
-            basic_u[i] if (basic_u[i] < fu_p or close[i - 1] > fu_p) else fu_p
-        )
-        final_l[i] = (
-            basic_l[i] if (basic_l[i] > fl_p or close[i - 1] < fl_p) else fl_p
-        )
-        if close[i] > final_u[i]:
-            direction[i] = 1.0
-        elif close[i] < final_l[i]:
-            direction[i] = -1.0
+
+        fup_prev = float(final_ub[i - 1])
+        flp_prev = float(final_lb[i - 1])
+        c_prev = float(close[i - 1])
+
+        if bub < fup_prev or c_prev > fup_prev:
+            final_ub[i] = bub
         else:
-            direction[i] = direction[i - 1]
-    supert = np.where(direction >= 0, final_l, final_u)
-    d[cols["line"]] = supert
+            final_ub[i] = fup_prev
+
+        if blb > flp_prev or c_prev < flp_prev:
+            final_lb[i] = blb
+        else:
+            final_lb[i] = flp_prev
+
+        st_prev = float(supertrend[i - 1])
+        fu_prev = float(final_ub[i - 1])
+        fl_prev = float(final_lb[i - 1])
+        ci = float(close[i])
+        fui = float(final_ub[i])
+        fli = float(final_lb[i])
+
+        on_upper = np.isclose(fu_prev, st_prev, rtol=rtol, atol=atol)
+        on_lower = np.isclose(fl_prev, st_prev, rtol=rtol, atol=atol)
+
+        if on_upper and ci > fui:
+            direction[i] = -1.0
+        elif on_lower and ci < fli:
+            direction[i] = 1.0
+        else:
+            direction[i] = float(direction[i - 1])
+
+        if direction[i] < 0:
+            supertrend[i] = fli
+        else:
+            supertrend[i] = fui
+
+    d[cols["line"]] = supertrend
     d[cols["dir"]] = direction
-    d[cols["lower"]] = final_l
-    d[cols["upper"]] = final_u
+    d[cols["lower"]] = final_lb
+    d[cols["upper"]] = final_ub
 
 
 def prepare_dataframe(
@@ -128,16 +215,15 @@ def prepare_dataframe(
     for c in cols.values():
         if c in d.columns:
             d = d.drop(columns=[c], errors="ignore")
-    if ta is None:
-        logging.error("[supertrend_scalping] pandas_ta is required")
-        return d
-    try:
-        d.ta.supertrend(length=atr_len, multiplier=float(mult), append=True)
-        if cols["dir"] not in d.columns:
-            raise RuntimeError("supertrend columns missing")
-    except Exception as e:
-        logging.warning("[supertrend_scalping] ta.supertrend failed (%s); using manual", e)
-        _manual_supertrend(d, atr_len, mult, cols)
+
+    # TradingView-aligned SuperTrend (Wilder ATR + Pine-style bands); do not use pandas_ta.supertrend
+    # here — its ATR / rules often diverge from TradingView's built-in indicator.
+    _tradingview_supertrend(d, atr_len, mult, cols)
+    if cols["dir"] not in d.columns or bool(d[cols["dir"]].isna().all()):
+        logging.warning(
+            "[supertrend_scalping] SuperTrend columns empty (need enough bars for ATR length=%s)",
+            atr_len,
+        )
 
     use_rsi = _bool_param(p, "useRsiTarget", False)
     if use_rsi and "close" in d.columns:

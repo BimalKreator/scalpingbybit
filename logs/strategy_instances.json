@@ -19,15 +19,15 @@
       "feeOnEntry": true,
       "feeOnExit": false,
       "useRsiTarget": true,
-      "targetRsiLength": 5,
+      "targetRsiLength": 4,
       "targetRsiLong": 80,
       "targetRsiShort": 20
     },
     "state": {
       "in_position": true,
       "cooldown_until_bar": 0,
-      "bar_seq": 113,
-      "last_evaluated_start": 1774591080000,
+      "bar_seq": 135,
+      "last_evaluated_start": 1774592400000,
       "last_signal_start": 1774590120000,
       "partial_steps_taken": 0,
       "partial_qty_closed_total": 0.0,
