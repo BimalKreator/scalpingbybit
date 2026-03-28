@@ -5417,6 +5417,45 @@ def _merge_instance_in_position_true_from_meta(
     _patch_instance_state_cache(iid, patch)
 
 
+def _maybe_autoreset_stale_in_position(
+    sym_u: str,
+    inst: dict[str, Any],
+    st: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    If persisted ``in_position`` is true but the symbol is flat on the exchange snapshot (and
+    ``get_open_position`` agrees), clear stale hub state so entries can resume.
+    """
+    if not bool(st.get("in_position")):
+        return st
+    pos_row = xst.read_position_for_symbol(sym_u, SYMBOL)
+    try:
+        sz = float(pos_row.get("size") or 0.0)
+    except (TypeError, ValueError):
+        sz = 0.0
+    if sz > 1e-12 or get_open_position(sym_u):
+        return st
+    iid = str(inst.get("id") or "").strip()
+    if not iid:
+        return st
+    instance_name = str(inst.get("name") or "").strip() or iid
+    logging.warning(
+        "[WARNING] in_position=True but exchange shows FLAT for %s. Auto-resetting state to allow fresh entries.",
+        instance_name,
+    )
+    patch: dict[str, Any] = {
+        "in_position": False,
+        "last_signal_start": None,
+        "partial_steps_taken": 0,
+        "partial_qty_closed_total": 0.0,
+        "breakeven_sl_triggered": False,
+        "initial_entry_qty": None,
+    }
+    instance_storage.merge_instance_state(iid, patch)
+    _patch_instance_state_cache(iid, patch)
+    return {**st, **patch}
+
+
 def _clear_active_instance_on_flat(*, sl_loss: bool, symbol: str | None = None) -> None:
     """When flat, release instance lock + optional cooldown after SL."""
     global _active_order_instance_id, _active_instance_monitor_params, _active_trade_strategy_name
@@ -5487,8 +5526,8 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             continue
         st0 = dict(inst.get("state") or {})
         st_new = _bump_instance_bar_state(inst["id"], conf_start, st0)
-        inst = {**inst, "state": st_new}
-        st = st_new
+        st = _maybe_autoreset_stale_in_position(sym_u, inst, st_new)
+        inst = {**inst, "state": st}
         strat = str(inst.get("strategy_type") or "").strip().lower()
         meta_base: dict[str, Any] = {
             "instance_id": inst["id"],
