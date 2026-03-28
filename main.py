@@ -5544,16 +5544,22 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
                 hub_in_st and (not aid_st or aid_st == iid_st)
             )
             inst_params_st = dict(inst.get("params") or {})
-            if (
-                our_trade_st
-                and _is_autotrade_enabled()
-                and not supertrend_flat_close_queued_this_message
-            ):
+            if our_trade_st and not supertrend_flat_close_queued_this_message:
                 st_st_fl = {**st, "symbol": sym_u}
                 ev_fl = supertrend_scalping.evaluate(
                     df_closed, inst_params_st, st_st_fl
                 )
-                if isinstance(ev_fl, dict) and ev_fl.get("signal") == "Flat":
+                if isinstance(ev_fl, dict):
+                    _st_up = ev_fl.get("state_updates") or {}
+                    if _st_up:
+                        instance_storage.merge_instance_state(iid_st, _st_up)
+                        _patch_instance_state_cache(iid_st, _st_up)
+                        st.update(_st_up)
+                if (
+                    _is_autotrade_enabled()
+                    and isinstance(ev_fl, dict)
+                    and ev_fl.get("signal") == "Flat"
+                ):
                     bb_f, ba_f, _, _ = xst.get_orderbook_l1(sym_u, SYMBOL)
                     mid_f = (
                         (float(bb_f) + float(ba_f)) / 2.0
@@ -6088,6 +6094,13 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             signal = ev.get("signal") if ev else None
             reason = str((ev or {}).get("reason") or "")
             row_dict = (ev or {}).get("signal_row")
+            if isinstance(ev, dict):
+                _st_pb = ev.get("state_updates") or {}
+                if _st_pb:
+                    instance_storage.merge_instance_state(inst["id"], _st_pb)
+                    _patch_instance_state_cache(inst["id"], _st_pb)
+                    st.update(_st_pb)
+                    inst = {**inst, "state": st}
         else:
             continue
 
@@ -6132,12 +6145,15 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             continue
         # Dedup: only after we are about to queue (avoids locking the bar when autotrade was off).
         # single_candle sets signal_bar_start_for_dedup from signal_row["start"]; others keep conf_start.
-        instance_storage.merge_instance_state(
-            inst["id"], {"last_signal_start": signal_bar_start_for_dedup}
-        )
-        _patch_instance_state_cache(
-            inst["id"], {"last_signal_start": signal_bar_start_for_dedup}
-        )
+        _entry_state_patch: dict[str, Any] = {
+            "last_signal_start": signal_bar_start_for_dedup,
+        }
+        if strat == "supertrend_scalping" and isinstance(ev, dict):
+            _esu = ev.get("state_updates") or {}
+            if _esu:
+                _entry_state_patch.update(_esu)
+        instance_storage.merge_instance_state(inst["id"], _entry_state_patch)
+        _patch_instance_state_cache(inst["id"], _entry_state_patch)
         meta = {**meta_base}
         if strat == "ema_trap":
             sub = ev.get("meta") if isinstance(ev.get("meta"), dict) else None

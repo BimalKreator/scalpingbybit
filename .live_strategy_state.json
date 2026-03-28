@@ -3,16 +3,16 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 66112.5,
+      "price": 66204.5,
       "indicators": {
-        "RSI": 77.02,
-        "RSI_SMA": 69.78,
-        "volume_signal_vs_prev": false,
-        "body_size": 1.5,
-        "open": 66111.0,
-        "close": 66112.5,
-        "volume": 2956.0,
-        "Expected_Profit_Pct": 0.02
+        "RSI": 57.28,
+        "RSI_SMA": 64.96,
+        "volume_signal_vs_prev": true,
+        "body_size": 24.0,
+        "open": 66180.5,
+        "close": 66204.5,
+        "volume": 5016.0,
+        "Expected_Profit_Pct": 0.14
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -31,7 +31,7 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": false
+            "met": true
           },
           {
             "name": "RSI < 40.0",
@@ -57,11 +57,11 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": false
+            "met": true
           },
           {
             "name": "RSI > 60.0",
-            "met": true
+            "met": false
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -86,61 +86,75 @@
               "met": false
             }
           ],
-          "note": "ATR=10 factor=0.2 tradeMode=Both. pandas_ta SUPERTd: 1=uptrend, -1=downtrend. Entry: flip only \u2014 long: prior -1 \u2192 current +1; short: prior +1 \u2192 current -1. SL/TP in points (TP\u00d710 if RSI exit on). RSI target exit ON: RSI(4) on last close \u2014 flatten long if \u226580.0, short if \u226420.0. Last RSI(4)=77.02. ",
+          "note": "ATR=50 factor=1.0 tradeMode=Both. pandas_ta SUPERTd: 1=uptrend, -1=downtrend. Entry: flip only \u2014 long: prior -1 \u2192 current +1; short: prior +1 \u2192 current -1. SL/TP in points (TP\u00d710 if RSI exit on). RSI target exit ON: RSI(4) on last close \u2014 flatten long if \u226580.0, short if \u226420.0. Last RSI(4)=57.28. ",
           "monitor_sync": {
             "engine": "supertrend_scalping",
             "rows_in_buffer": 1000,
             "rows_after_confirm_trim": 999,
             "flip_eval_target_iloc": 998,
             "flip_eval_prev_iloc": 997,
-            "atr_period": 10,
-            "factor": 0.2,
-            "dir_col": "SUPERTd_10_0.2",
-            "upper_col": "SUPERTs_10_0.2",
-            "lower_col": "SUPERTl_10_0.2",
-            "prev_dir": 1.0,
-            "curr_dir": 1.0,
+            "atr_period": 50,
+            "factor": 1.0,
+            "dir_col": "SUPERTd_50_1.0",
+            "upper_col": "SUPERTs_50_1.0",
+            "lower_col": "SUPERTl_50_1.0",
+            "prev_dir": -1.0,
+            "curr_dir": -1.0,
             "long_cross_valid": false,
             "short_cross_valid": false,
             "enterOnActiveTrend": false,
-            "last_close": 66112.5,
+            "last_close": 66204.5,
             "use_rsi_target": true,
             "target_rsi_length": 4,
-            "last_rsi": 77.0151,
-            "last_closed_start": 1774667220000,
-            "prior_closed_start": 1774667160000,
-            "flip_eval_target_start_ms": 1774667220000,
-            "flip_eval_prev_start_ms": 1774667160000,
-            "live_mid": 66096.0,
-            "last_signal_start": 0,
+            "last_rsi": 57.2842,
+            "last_closed_start": 1774669740000,
+            "prior_closed_start": 1774669680000,
+            "flip_eval_target_start_ms": 1774669740000,
+            "flip_eval_prev_start_ms": 1774669680000,
+            "live_mid": 66172.5,
+            "last_signal_start": 1774669680000,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
           }
         }
       },
-      "checks_updated_unix": 1774667323.6373236,
-      "status": "Waiting",
-      "sl_price": null,
-      "tp_price": null,
-      "entry_price": null,
-      "position_size": 0.0,
-      "sl_amount_usd": null,
-      "tp_amount_usd": null,
+      "checks_updated_unix": 1774669847.1774995,
+      "status": "Position Open",
+      "sl_price": 66232.0,
+      "tp_price": 65182.0,
+      "entry_price": 66180.5,
+      "position_size": 15.0,
+      "sl_amount_usd": -0.7725,
+      "tp_amount_usd": 14.9775,
       "position_risk": {
-        "open": false
+        "open": true,
+        "has_levels": true,
+        "side": "Sell",
+        "strategy_name": "Supertrend Scalping 1m",
+        "entry_price": 66180.5,
+        "size": 15.0,
+        "sl_price": 66232.0,
+        "tp_price": 65182.0,
+        "sl_amount_usd": -0.7725,
+        "tp_amount_usd": 14.9775,
+        "position_value_usd": 198.54,
+        "live_mid": 66172.5,
+        "entry_pct": 4.9,
+        "live_mid_pct": 5.67,
+        "breakeven_buffer_active": false
       },
       "last_signal_candle_start": null,
-      "strategy_name": null,
-      "last_sl_price": 0.0,
-      "last_tp_price": 0.0,
-      "last_position_side": "",
-      "tracker_sl_max": 0.0,
-      "tracker_sl_min": 0.0,
-      "sl_entry_time_unix": 0.0,
+      "strategy_name": "Supertrend Scalping 1m",
+      "last_sl_price": 66232.0,
+      "last_tp_price": 65182.0,
+      "last_position_side": "Sell",
+      "tracker_sl_max": 66232.0,
+      "tracker_sl_min": 66232.0,
+      "sl_entry_time_unix": 1774669741.8956158,
       "sl_breakeven_triggered": false,
       "sl_half_target_exited": false,
       "sl_half_target_reached": false,
-      "base_risk_dist": 0.0
+      "base_risk_dist": 51.5
     },
     "ETHUSDT": {
       "symbol": "ETHUSDT",

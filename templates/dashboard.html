@@ -699,8 +699,15 @@
         numFieldL('Leverage (×)', 'leverage', p.leverage, 10) +
         '</div>' +
         '<div class="flex flex-wrap gap-4 text-xs text-slate-300 mt-2">' +
+        chkFieldL('Use Pullback Confirmation Entry', 'usePullbackEntry', p.usePullbackEntry, false) +
+        '</div>' +
+        '<div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs mt-1">' +
+        numFieldL('Pullback Candle Count', 'pullbackBars', p.pullbackBars, 5, '1') +
+        '</div>' +
+        '<div class="flex flex-wrap gap-4 text-xs text-slate-300 mt-2">' +
         chkFieldL('Enter on Active Trend (Ignore Flip)', 'enterOnActiveTrend', p.enterOnActiveTrend, false) +
         chkFieldL('RSI target exit (candle close; widens TP 10×)', 'useRsiTarget', p.useRsiTarget, false) +
+        chkFieldL('Require BOTH TP Points and RSI Target', 'requireBothTargets', p.requireBothTargets, false) +
         '</div>' +
         '<div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs mt-2">' +
         numFieldL('RSI length', 'targetRsiLength', p.targetRsiLength, 5, '1') +

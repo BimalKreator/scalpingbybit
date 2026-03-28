@@ -4,13 +4,14 @@ Supertrend Scalping — SuperTrend from **pandas_ta** (``d.ta.supertrend``) on t
 
 **Entries** default to **direction flips only** (no close-vs-band checks): long when prior bar ``SUPERTd < 0``
 and latest bar ``SUPERTd > 0``; short when prior ``> 0`` and latest ``< 0``. With ``enterOnActiveTrend``,
-long/short may also open on the latest bar’s trend alone (``SUPERTd`` sign) without a flip. Invalid if
-required directions are NaN or 0.
+long/short may also open on the latest bar’s trend alone (``SUPERTd`` sign) without a flip. With
+``usePullbackEntry``, flip signals arm a **pullback + breakout** state machine instead of entering
+immediately. Invalid if required directions are NaN or 0.
 
 After ``prepare_dataframe``, column names are **sniffed** (``SUPERTd_*``, ``SUPERTl_*``, ``SUPERTs_*``).
 ``[ST DEBUG]`` logs ``TargetClose``, ``PrevDir``, ``CurrDir``, and the sniffed ``dir`` column.
-Exits: band touch, optional RSI, then formal flip on latest close (long flat if ``SUPERTd < 0``, short
-if ``SUPERTd > 0``).
+Exits: band touch, optional RSI (standalone or combined with TP excursion when ``requireBothTargets``),
+then formal flip on latest close (long flat if ``SUPERTd < 0``, short if ``SUPERTd > 0``).
 """
 
 from __future__ import annotations
@@ -41,6 +42,9 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "leverage": 10.0,
     "usePartialExit": False,
     "enterOnActiveTrend": False,
+    "usePullbackEntry": False,
+    "pullbackBars": 5,
+    "requireBothTargets": False,
     "useRsiTarget": False,
     "targetRsiLength": 5,
     "targetRsiLong": 80.0,
@@ -142,7 +146,8 @@ def prepare_dataframe(
         )
 
     use_rsi = _bool_param(p, "useRsiTarget", False)
-    if use_rsi and "close" in d.columns:
+    need_rsi = use_rsi or _bool_param(p, "requireBothTargets", False)
+    if need_rsi and "close" in d.columns:
         try:
             rsi_len = max(1, int(p.get("targetRsiLength", 5) or 5))
         except (TypeError, ValueError):
@@ -168,6 +173,57 @@ def _trade_mode(params: dict) -> str:
     if raw in ("Long", "Short", "Both"):
         return raw
     return "Both"
+
+
+def _pb_state_clear() -> dict[str, Any]:
+    return {
+        "pb_active": False,
+        "pb_dir": 0.0,
+        "pb_sig_close": 0.0,
+        "pb_high": 0.0,
+        "pb_low": 0.0,
+        "pb_elapsed": 0,
+        "pb_seen": False,
+    }
+
+
+def _row_high_low_fallback_close(
+    row: pd.Series,
+    close_fallback: float,
+) -> tuple[float, float]:
+    """OHLC high/low with fallback to ``close`` when missing or non-finite."""
+
+    def _pull(v: Any) -> float:
+        if v is None or (isinstance(v, float) and math.isnan(v)) or pd.isna(v):
+            return float("nan")
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            return float("nan")
+        return x if math.isfinite(x) else float("nan")
+
+    try:
+        hc = _pull(row.get("high") if "high" in row.index else None)
+    except (AttributeError, KeyError):
+        hc = float("nan")
+    try:
+        lc = _pull(row.get("low") if "low" in row.index else None)
+    except (AttributeError, KeyError):
+        lc = float("nan")
+    cf = (
+        close_fallback
+        if math.isfinite(close_fallback) and close_fallback > 0
+        else float("nan")
+    )
+    if not math.isfinite(hc):
+        hc = cf
+    if not math.isfinite(lc):
+        lc = cf
+    if not math.isfinite(hc):
+        hc = lc if math.isfinite(lc) else 0.0
+    if not math.isfinite(lc):
+        lc = hc if math.isfinite(hc) else 0.0
+    return float(hc), float(lc)
 
 
 def _bool_param(p: dict, key: str, default: bool) -> bool:
@@ -311,7 +367,13 @@ def evaluate(
     sl_points = _float_param(p, "slPoints", 50.0)
     tp_points = _float_param(p, "tpPoints", 100.0)
     use_rsi_target = _bool_param(p, "useRsiTarget", False)
+    require_both = _bool_param(p, "requireBothTargets", False)
     enter_on_active = _bool_param(p, "enterOnActiveTrend", False)
+    use_pb = _bool_param(p, "usePullbackEntry", False)
+    try:
+        pb_bars = max(1, int(p.get("pullbackBars", 5) or 5))
+    except (TypeError, ValueError):
+        pb_bars = 5
     try:
         target_rsi_len = max(1, int(p.get("targetRsiLength", 5) or 5))
     except (TypeError, ValueError):
@@ -428,7 +490,7 @@ def evaluate(
                 out["reason"] = "sl_hit_opposite_signal_long_touch"
                 return out
 
-        if use_rsi_target and rsi_col in d.columns:
+        if (use_rsi_target or require_both) and rsi_col in d.columns:
             raw_rsi = target_row.get(rsi_col)
             curr_rsi: float | None = None
             if raw_rsi is not None and not pd.isna(raw_rsi):
@@ -438,15 +500,75 @@ def evaluate(
                         curr_rsi = rv
                 except (TypeError, ValueError):
                     curr_rsi = None
-            if curr_rsi is not None:
-                if pos_side == "buy" and curr_rsi >= target_rsi_long:
+            if require_both:
+                try:
+                    entry_price = float(
+                        pos.get("entry_price")
+                        or pos.get("entryPrice")
+                        or pos.get("entry")
+                        or st_dict.get("entry_proxy")
+                        or 0.0
+                    )
+                except (TypeError, ValueError):
+                    entry_price = 0.0
+                tp_met = bool(st_dict.get("target_tp_met", False))
+                rsi_met = bool(st_dict.get("target_rsi_met", False))
+                row_high = _cell_float(target_row, "high", None)
+                row_low = _cell_float(target_row, "low", None)
+                if (
+                    entry_price > 0
+                    and math.isfinite(tp_points)
+                    and tp_points > 0
+                ):
+                    if pos_side == "buy":
+                        peaks: list[float] = []
+                        for x in (live_price, row_high):
+                            try:
+                                xf = float(x)
+                                if math.isfinite(xf) and xf > 0:
+                                    peaks.append(xf)
+                            except (TypeError, ValueError):
+                                pass
+                        if peaks and max(peaks) - entry_price >= tp_points:
+                            tp_met = True
+                    elif pos_side == "sell":
+                        lows_l: list[float] = []
+                        for x in (live_price, row_low):
+                            try:
+                                xf = float(x)
+                                if math.isfinite(xf) and xf > 0:
+                                    lows_l.append(xf)
+                            except (TypeError, ValueError):
+                                pass
+                        if lows_l and entry_price - min(lows_l) >= tp_points:
+                            tp_met = True
+                if curr_rsi is not None:
+                    if pos_side == "buy" and curr_rsi >= target_rsi_long:
+                        rsi_met = True
+                    elif pos_side == "sell" and curr_rsi <= target_rsi_short:
+                        rsi_met = True
+                out["state_updates"]["target_tp_met"] = tp_met
+                out["state_updates"]["target_rsi_met"] = rsi_met
+                if tp_met and rsi_met:
                     out["signal"] = "Flat"
-                    out["reason"] = f"target_hit_rsi_{target_rsi_len}_overbought"
+                    out["reason"] = "combined_target_tp_and_rsi_met"
+                    out["state_updates"]["target_tp_met"] = False
+                    out["state_updates"]["target_rsi_met"] = False
                     return out
-                if pos_side == "sell" and curr_rsi <= target_rsi_short:
-                    out["signal"] = "Flat"
-                    out["reason"] = f"target_hit_rsi_{target_rsi_len}_oversold"
-                    return out
+            elif use_rsi_target:
+                if curr_rsi is not None:
+                    if pos_side == "buy" and curr_rsi >= target_rsi_long:
+                        out["signal"] = "Flat"
+                        out["reason"] = (
+                            f"target_hit_rsi_{target_rsi_len}_overbought"
+                        )
+                        return out
+                    if pos_side == "sell" and curr_rsi <= target_rsi_short:
+                        out["signal"] = "Flat"
+                        out["reason"] = (
+                            f"target_hit_rsi_{target_rsi_len}_oversold"
+                        )
+                        return out
 
         # Formal trend flip (pandas_ta SUPERTd: -1 = downtrend, 1 = uptrend).
         if pos_side == "buy" and not math.isnan(curr_dir_f) and curr_dir_f < 0:
@@ -470,33 +592,193 @@ def evaluate(
     side: str | None = None
     reason = "no_signal"
     sl_price = tp_price = None
-    actual_tp_points = tp_points * 10.0 if use_rsi_target else tp_points
+    actual_tp_points = (
+        tp_points * 10.0 if (use_rsi_target or require_both) else tp_points
+    )
 
     curr_invalid = math.isnan(curr_dir_f) or curr_dir_f == 0.0
     prev_invalid = math.isnan(prev_dir_f) or prev_dir_f == 0.0
 
     if curr_invalid:
+        if use_pb and bool(st_dict.get("pb_active")):
+            out["state_updates"].update(_pb_state_clear())
         out["reason"] = "supertrend_dir_invalid"
         return out
     if not enter_on_active and prev_invalid:
+        if use_pb and bool(st_dict.get("pb_active")):
+            out["state_updates"].update(_pb_state_clear())
         out["reason"] = "supertrend_dir_invalid"
         return out
 
     closes_ok = math.isfinite(target_close) and target_close > 0.0
 
-    if not prev_invalid:
-        if closes_ok and prev_dir_f < 0.0 and curr_dir_f > 0.0:
-            if mode in ("Both", "Long"):
+    flip_long_ok = (
+        not prev_invalid
+        and closes_ok
+        and prev_dir_f < 0.0
+        and curr_dir_f > 0.0
+        and mode in ("Both", "Long")
+    )
+    flip_short_ok = (
+        not prev_invalid
+        and closes_ok
+        and prev_dir_f > 0.0
+        and curr_dir_f < 0.0
+        and mode in ("Both", "Short")
+    )
+
+    pb_handled = False
+    if use_pb and bool(st_dict.get("pb_active")):
+        pb_handled = True
+        try:
+            pb_dir = float(st_dict.get("pb_dir", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            pb_dir = 0.0
+        if not math.isfinite(pb_dir):
+            pb_dir = 0.0
+
+        invalidated = False
+        if pb_dir > 0.5 and not math.isnan(curr_dir_f) and curr_dir_f < 0.0:
+            invalidated = True
+        elif pb_dir < -0.5 and not math.isnan(curr_dir_f) and curr_dir_f > 0.0:
+            invalidated = True
+
+        if invalidated:
+            out["state_updates"].update(_pb_state_clear())
+            pb_handled = False
+        else:
+            row_h, row_l = _row_high_low_fallback_close(target_row, target_close)
+            try:
+                pb_elapsed = int(st_dict.get("pb_elapsed", 0) or 0) + 1
+            except (TypeError, ValueError):
+                pb_elapsed = 1
+            pb_seen = bool(st_dict.get("pb_seen", False))
+            try:
+                pb_sig_close = float(st_dict.get("pb_sig_close", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                pb_sig_close = 0.0
+            if not math.isfinite(pb_sig_close):
+                pb_sig_close = 0.0
+            try:
+                pb_high = float(st_dict.get("pb_high", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                pb_high = 0.0
+            if not math.isfinite(pb_high):
+                pb_high = row_h
+            raw_pl = st_dict.get("pb_low")
+            if raw_pl is None:
+                pb_low = float("inf")
+            else:
+                try:
+                    pb_low = float(raw_pl)
+                    if not math.isfinite(pb_low):
+                        pb_low = float("inf")
+                except (TypeError, ValueError):
+                    pb_low = float("inf")
+            if pb_low == float("inf"):
+                pb_low = row_l
+
+            if not pb_seen:
+                if pb_dir > 0.5 and target_close < pb_sig_close:
+                    pb_seen = True
+                elif pb_dir < -0.5 and target_close > pb_sig_close:
+                    pb_seen = True
+
+            entry_long_pb = (
+                pb_seen
+                and pb_dir > 0.5
+                and math.isfinite(target_close)
+                and target_close > pb_high
+            )
+            entry_short_pb = (
+                pb_seen
+                and pb_dir < -0.5
+                and math.isfinite(target_close)
+                and target_close < pb_low
+            )
+
+            if entry_long_pb:
                 side = "Buy"
-                reason = "supertrend_flip_long"
+                reason = "supertrend_pullback_breakout_long"
                 sl_price = entry_close - sl_points
                 tp_price = entry_close + actual_tp_points
-        elif closes_ok and prev_dir_f > 0.0 and curr_dir_f < 0.0:
-            if mode in ("Both", "Short"):
+                out["state_updates"].update(_pb_state_clear())
+            elif entry_short_pb:
                 side = "Sell"
-                reason = "supertrend_flip_short"
+                reason = "supertrend_pullback_breakout_short"
                 sl_price = entry_close + sl_points
                 tp_price = entry_close - actual_tp_points
+                out["state_updates"].update(_pb_state_clear())
+            else:
+                pb_high = max(pb_high, row_h)
+                pb_low = min(pb_low, row_l)
+                if (
+                    pb_elapsed >= pb_bars
+                    and not pb_seen
+                    and (pb_dir > 0.5 or pb_dir < -0.5)
+                ):
+                    out["state_updates"].update(_pb_state_clear())
+                    out["reason"] = "pullback_window_expired"
+                    return out
+                out["state_updates"].update(
+                    {
+                        "pb_active": True,
+                        "pb_dir": float(pb_dir),
+                        "pb_sig_close": float(pb_sig_close),
+                        "pb_high": float(pb_high),
+                        "pb_low": float(pb_low),
+                        "pb_elapsed": int(pb_elapsed),
+                        "pb_seen": bool(pb_seen),
+                    }
+                )
+                out["reason"] = "waiting_pullback_continuation"
+                return out
+
+    if not pb_handled:
+        if flip_long_ok:
+            if use_pb:
+                row_hi, row_lo = _row_high_low_fallback_close(
+                    target_row, target_close
+                )
+                out["state_updates"].update(
+                    {
+                        "pb_active": True,
+                        "pb_dir": 1.0,
+                        "pb_sig_close": float(target_close),
+                        "pb_high": float(row_hi),
+                        "pb_low": float(row_lo),
+                        "pb_elapsed": 0,
+                        "pb_seen": False,
+                    }
+                )
+                out["reason"] = "waiting_for_pullback"
+                return out
+            side = "Buy"
+            reason = "supertrend_flip_long"
+            sl_price = entry_close - sl_points
+            tp_price = entry_close + actual_tp_points
+        elif flip_short_ok:
+            if use_pb:
+                row_hi, row_lo = _row_high_low_fallback_close(
+                    target_row, target_close
+                )
+                out["state_updates"].update(
+                    {
+                        "pb_active": True,
+                        "pb_dir": -1.0,
+                        "pb_sig_close": float(target_close),
+                        "pb_high": float(row_hi),
+                        "pb_low": float(row_lo),
+                        "pb_elapsed": 0,
+                        "pb_seen": False,
+                    }
+                )
+                out["reason"] = "waiting_for_pullback"
+                return out
+            side = "Sell"
+            reason = "supertrend_flip_short"
+            sl_price = entry_close + sl_points
+            tp_price = entry_close - actual_tp_points
 
     if (
         side is None
@@ -557,7 +839,11 @@ def evaluate(
         "entry_proxy": float(entry_close),
         "prev_dir": float(prev_dir_f),
         "curr_dir": float(curr_dir_f),
-        "entry_supertrend_flip": reason.startswith("supertrend_flip"),
+        "entry_supertrend_flip": reason.startswith("supertrend_flip")
+        or reason.startswith("supertrend_pullback_breakout"),
+        "entry_pullback_confirmed": reason.startswith(
+            "supertrend_pullback_breakout"
+        ),
         "entry_supertrend_active": reason.startswith("supertrend_active"),
         "enter_on_active_trend": enter_on_active,
     }
@@ -569,11 +855,21 @@ def evaluate(
         meta["target_rsi_length"] = int(target_rsi_len)
         meta["target_rsi_long"] = float(target_rsi_long)
         meta["target_rsi_short"] = float(target_rsi_short)
+    if require_both:
+        meta["require_both_targets"] = True
+        meta.setdefault("target_rsi_length", int(target_rsi_len))
+        meta.setdefault("target_rsi_long", float(target_rsi_long))
+        meta.setdefault("target_rsi_short", float(target_rsi_short))
+    if use_pb:
+        meta["use_pullback_entry"] = True
     meta["atr_period"] = int(atr_len)
     meta["factor"] = float(mult)
     meta["dir_col"] = dir_col
     meta["upper_col"] = short_line_col
     meta["lower_col"] = long_line_col
+    out["state_updates"]["target_tp_met"] = False
+    out["state_updates"]["target_rsi_met"] = False
+    out["state_updates"]["entry_proxy"] = float(entry_close)
     out["signal"] = side
     out["reason"] = reason
     out["signal_row"] = signal_row
@@ -595,7 +891,13 @@ def build_entry_checklists(
     sl_pts = _float_param(p, "slPoints", 50.0)
     tp_pts = _float_param(p, "tpPoints", 100.0)
     use_rsi = _bool_param(p, "useRsiTarget", False)
+    require_both_ck = _bool_param(p, "requireBothTargets", False)
     enter_on_active = _bool_param(p, "enterOnActiveTrend", False)
+    use_pb_ck = _bool_param(p, "usePullbackEntry", False)
+    try:
+        pb_bars_ck = max(1, int(p.get("pullbackBars", 5) or 5))
+    except (TypeError, ValueError):
+        pb_bars_ck = 5
     try:
         trsi_len = max(1, int(p.get("targetRsiLength", 5) or 5))
     except (TypeError, ValueError):
@@ -609,7 +911,6 @@ def build_entry_checklists(
     except (TypeError, ValueError):
         trsi_short = 20.0
     rsi_col_ck = f"RSI_{trsi_len}"
-    tp_widened = tp_pts * 10.0 if use_rsi else tp_pts
     mode = _trade_mode(p)
     in_pos = bool(st.get("in_position"))
 
@@ -719,11 +1020,21 @@ def build_entry_checklists(
 
     rsi_note = ""
     crsi_sync: float | None = None
-    if use_rsi:
-        rsi_note = (
-            f" RSI target exit ON: RSI({trsi_len}) on last close — flatten long if ≥{trsi_long}, "
-            f"short if ≤{trsi_short}. "
-        )
+    if use_rsi or require_both_ck:
+        if require_both_ck and not use_rsi:
+            rsi_note = (
+                f" Require BOTH: +{tp_pts} pt favorable excursion vs entry (L1 mid vs bar high/low) "
+                f"and RSI({trsi_len}) (long ≥{trsi_long}, short ≤{trsi_short}) before exit. "
+            )
+        else:
+            rsi_note = (
+                f" RSI target exit ON: RSI({trsi_len}) on last close — flatten long if ≥{trsi_long}, "
+                f"short if ≤{trsi_short}. "
+            )
+            if require_both_ck:
+                rsi_note += (
+                    f"Also require +{tp_pts} pt excursion vs entry (combined with RSI, any order). "
+                )
         if rsi_col_ck in d.columns:
             rv = target_row.get(rsi_col_ck)
             if rv is not None and not pd.isna(rv):
@@ -740,10 +1051,22 @@ def build_entry_checklists(
         if enter_on_active
         else "Entry: flip only — long: prior -1 → current +1; short: prior +1 → current -1."
     )
+    pb_note = ""
+    if use_pb_ck:
+        pb_note = (
+            f" Pullback entry ON ({pb_bars_ck}-bar window after arming): on flip, wait for close "
+            f"vs signal close (pullback), then close beyond rolling high (long) / low (short); "
+            f"Supertrend flip against setup cancels. "
+        )
+        if bool(st.get("pb_active")):
+            pb_note += (
+                f"Watch active: dir={st.get('pb_dir')} elapsed={st.get('pb_elapsed', 0)}/"
+                f"{pb_bars_ck} pullback_seen={st.get('pb_seen', False)}. "
+            )
     note = (
         f"ATR={atr_len} factor={mult} tradeMode={mode}. pandas_ta SUPERTd: 1=uptrend, -1=downtrend. "
         f"{entry_desc} "
-        f"SL/TP in points (TP×10 if RSI exit on).{rsi_note}"
+        f"SL/TP in points (TP×10 if RSI exit on or require-both mode).{rsi_note}{pb_note}"
     )
     n_trim = len(d)
     sync: dict[str, Any] = {
@@ -762,6 +1085,13 @@ def build_entry_checklists(
         "long_cross_valid": long_cross_valid,
         "short_cross_valid": short_cross_valid,
         "enterOnActiveTrend": enter_on_active,
+        "requireBothTargets": require_both_ck,
+        "usePullbackEntry": use_pb_ck,
+        "pullbackBars": pb_bars_ck,
+        "pb_active": bool(st.get("pb_active", False)),
+        "pb_dir": st.get("pb_dir"),
+        "pb_elapsed": st.get("pb_elapsed"),
+        "pb_seen": st.get("pb_seen"),
         "last_close": round(close_ck, 8) if math.isfinite(close_ck) else None,
         "use_rsi_target": use_rsi,
         "target_rsi_length": trsi_len,

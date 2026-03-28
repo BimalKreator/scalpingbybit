@@ -8,8 +8,8 @@
     "timeframe": "1m",
     "params": {
       "tradeMode": "Both",
-      "atrPeriod": 10,
-      "factor": 0.2,
+      "atrPeriod": 50,
+      "factor": 1,
       "slPoints": 50,
       "tpPoints": 100,
       "tradeCapitalUsd": 100,
@@ -21,14 +21,15 @@
       "targetRsiShort": 20,
       "feePct": 0.05,
       "feeOnEntry": true,
-      "feeOnExit": false
+      "feeOnExit": false,
+      "enterOnActiveTrend": false
     },
     "state": {
       "in_position": true,
       "cooldown_until_bar": 0,
-      "bar_seq": 1230,
-      "last_evaluated_start": 1774667280000,
-      "last_signal_start": null,
+      "bar_seq": 1267,
+      "last_evaluated_start": 1774669800000,
+      "last_signal_start": 1774669680000,
       "forming_bar_start": null,
       "partial_steps_taken": 0,
       "partial_qty_closed_total": 0.0,
