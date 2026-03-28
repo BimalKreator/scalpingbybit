@@ -637,14 +637,79 @@ def evaluate(
         if not math.isfinite(pb_dir):
             pb_dir = 0.0
 
+        # Opposite trend vs armed pullback: long wait (pb_dir ≈ +1) + bearish SUPERTd, or short + bullish.
+        _eps = 1e-6  # tolerate JSON float drift from ±1.0
+        _pb_wait_long = (pb_dir == 1.0 or abs(pb_dir - 1.0) <= _eps) and math.isfinite(
+            pb_dir
+        )
+        _pb_wait_short = (pb_dir == -1.0 or abs(pb_dir + 1.0) <= _eps) and math.isfinite(
+            pb_dir
+        )
         invalidated = False
-        if pb_dir > 0.5 and not math.isnan(curr_dir_f) and curr_dir_f < 0.0:
-            invalidated = True
-        elif pb_dir < -0.5 and not math.isnan(curr_dir_f) and curr_dir_f > 0.0:
-            invalidated = True
+        if not math.isnan(curr_dir_f):
+            if _pb_wait_long and curr_dir_f < 0.0:
+                invalidated = True
+            elif _pb_wait_short and curr_dir_f > 0.0:
+                invalidated = True
 
         if invalidated:
             out["state_updates"].update(_pb_state_clear())
+            row_hi_sw, row_lo_sw = _row_high_low_fallback_close(
+                target_row, target_close
+            )
+            # Same-bar opposing flip: abort wait and immediately arm pullback for the new direction.
+            if use_pb and _pb_wait_long and flip_short_ok:
+                logging.info(
+                    "[supertrend_scalping] Pullback wait intercepted by opposite trend flip. "
+                    "Re-arming for new direction (short)."
+                )
+                print(
+                    "[supertrend_scalping] Pullback wait intercepted by opposite trend flip. "
+                    "Re-arming for new direction (short).",
+                    flush=True,
+                )
+                out["state_updates"].update(
+                    {
+                        "pb_active": True,
+                        "pb_dir": -1.0,
+                        "pb_sig_close": float(target_close),
+                        "pb_high": float(row_hi_sw),
+                        "pb_low": float(row_lo_sw),
+                        "pb_elapsed": 0,
+                        "pb_seen": False,
+                    }
+                )
+                out["reason"] = "waiting_for_pullback"
+                return out
+            if use_pb and _pb_wait_short and flip_long_ok:
+                logging.info(
+                    "[supertrend_scalping] Pullback wait intercepted by opposite trend flip. "
+                    "Re-arming for new direction (long)."
+                )
+                print(
+                    "[supertrend_scalping] Pullback wait intercepted by opposite trend flip. "
+                    "Re-arming for new direction (long).",
+                    flush=True,
+                )
+                out["state_updates"].update(
+                    {
+                        "pb_active": True,
+                        "pb_dir": 1.0,
+                        "pb_sig_close": float(target_close),
+                        "pb_high": float(row_hi_sw),
+                        "pb_low": float(row_lo_sw),
+                        "pb_elapsed": 0,
+                        "pb_seen": False,
+                    }
+                )
+                out["reason"] = "waiting_for_pullback"
+                return out
+            logging.info(
+                "[supertrend_scalping] Pullback wait cleared (opposite trend vs pb_dir=%s, curr_dir=%s); "
+                "no opposing flip on this bar — fall through.",
+                pb_dir,
+                curr_dir_f,
+            )
             pb_handled = False
         else:
             row_h, row_l = _row_high_low_fallback_close(target_row, target_close)
@@ -710,29 +775,60 @@ def evaluate(
                 tp_price = entry_close - actual_tp_points
                 out["state_updates"].update(_pb_state_clear())
             else:
-                pb_high = max(pb_high, row_h)
-                pb_low = min(pb_low, row_l)
+                # No pullback+breakout yet: optional momentum entry on the last window bar,
+                # using extremes from prior bars only (before folding this bar's high/low).
+                momentum_entry = False
                 if (
-                    pb_elapsed >= pb_bars
-                    and not pb_seen
-                    and (pb_dir > 0.5 or pb_dir < -0.5)
+                    not pb_seen
+                    and pb_elapsed >= pb_bars
+                    and pb_dir > 0.5
+                    and math.isfinite(target_close)
+                    and target_close > pb_high
                 ):
+                    side = "Buy"
+                    reason = "supertrend_momentum_long"
+                    sl_price = entry_close - sl_points
+                    tp_price = entry_close + actual_tp_points
                     out["state_updates"].update(_pb_state_clear())
-                    out["reason"] = "pullback_window_expired"
+                    momentum_entry = True
+                elif (
+                    not pb_seen
+                    and pb_elapsed >= pb_bars
+                    and pb_dir < -0.5
+                    and math.isfinite(target_close)
+                    and target_close < pb_low
+                ):
+                    side = "Sell"
+                    reason = "supertrend_momentum_short"
+                    sl_price = entry_close + sl_points
+                    tp_price = entry_close - actual_tp_points
+                    out["state_updates"].update(_pb_state_clear())
+                    momentum_entry = True
+
+                if not momentum_entry:
+                    pb_high = max(pb_high, row_h)
+                    pb_low = min(pb_low, row_l)
+                    if (
+                        pb_elapsed >= pb_bars
+                        and not pb_seen
+                        and (pb_dir > 0.5 or pb_dir < -0.5)
+                    ):
+                        out["state_updates"].update(_pb_state_clear())
+                        out["reason"] = "pullback_window_expired"
+                        return out
+                    out["state_updates"].update(
+                        {
+                            "pb_active": True,
+                            "pb_dir": float(pb_dir),
+                            "pb_sig_close": float(pb_sig_close),
+                            "pb_high": float(pb_high),
+                            "pb_low": float(pb_low),
+                            "pb_elapsed": int(pb_elapsed),
+                            "pb_seen": bool(pb_seen),
+                        }
+                    )
+                    out["reason"] = "waiting_pullback_continuation"
                     return out
-                out["state_updates"].update(
-                    {
-                        "pb_active": True,
-                        "pb_dir": float(pb_dir),
-                        "pb_sig_close": float(pb_sig_close),
-                        "pb_high": float(pb_high),
-                        "pb_low": float(pb_low),
-                        "pb_elapsed": int(pb_elapsed),
-                        "pb_seen": bool(pb_seen),
-                    }
-                )
-                out["reason"] = "waiting_pullback_continuation"
-                return out
 
     if not pb_handled:
         if flip_long_ok:
@@ -840,7 +936,8 @@ def evaluate(
         "prev_dir": float(prev_dir_f),
         "curr_dir": float(curr_dir_f),
         "entry_supertrend_flip": reason.startswith("supertrend_flip")
-        or reason.startswith("supertrend_pullback_breakout"),
+        or reason.startswith("supertrend_pullback_breakout")
+        or reason.startswith("supertrend_momentum"),
         "entry_pullback_confirmed": reason.startswith(
             "supertrend_pullback_breakout"
         ),
@@ -1056,7 +1153,8 @@ def build_entry_checklists(
         pb_note = (
             f" Pullback entry ON ({pb_bars_ck}-bar window after arming): on flip, wait for close "
             f"vs signal close (pullback), then close beyond rolling high (long) / low (short); "
-            f"Supertrend flip against setup cancels. "
+            f"if no pullback by the last candle, enters when close breaks past the window's "
+            f"prior high (long) or prior low (short) (momentum). Supertrend flip against setup cancels. "
         )
         if bool(st.get("pb_active")):
             pb_note += (

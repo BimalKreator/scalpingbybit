@@ -15,27 +15,40 @@
       "tradeCapitalUsd": 100,
       "leverage": 10,
       "usePartialExit": false,
-      "useRsiTarget": true,
+      "useRsiTarget": false,
       "targetRsiLength": 4,
       "targetRsiLong": 80,
       "targetRsiShort": 20,
       "feePct": 0.05,
       "feeOnEntry": true,
       "feeOnExit": false,
-      "enterOnActiveTrend": false
+      "enterOnActiveTrend": false,
+      "usePullbackEntry": true,
+      "pullbackBars": 5,
+      "requireBothTargets": true
     },
     "state": {
-      "in_position": true,
+      "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 1267,
-      "last_evaluated_start": 1774669800000,
-      "last_signal_start": 1774669680000,
+      "bar_seq": 1293,
+      "last_evaluated_start": 1774671360000,
+      "last_signal_start": null,
       "forming_bar_start": null,
       "partial_steps_taken": 0,
       "partial_qty_closed_total": 0.0,
       "initial_entry_qty": null,
       "realized_pnl_current_trade": 0.0,
-      "breakeven_sl_triggered": false
+      "breakeven_sl_triggered": false,
+      "target_tp_met": false,
+      "target_rsi_met": false,
+      "pb_active": false,
+      "pb_dir": 0.0,
+      "pb_sig_close": 0.0,
+      "pb_high": 0.0,
+      "pb_low": 0.0,
+      "pb_elapsed": 0,
+      "pb_seen": false,
+      "entry_proxy": 66197.5
     }
   }
 ]
