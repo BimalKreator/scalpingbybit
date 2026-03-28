@@ -2,9 +2,10 @@
 Supertrend Scalping — SuperTrend from **pandas_ta** (``d.ta.supertrend``) on the bot’s OHLC slice.
 **SUPERTd (pandas_ta):** ``1`` = uptrend (green / support), ``-1`` = downtrend (red / resistance).
 
-**Entries** are **direction flips only** (no close-vs-band checks): long when prior bar ``SUPERTd < 0``
-and latest bar ``SUPERTd > 0``; short when prior ``> 0`` and latest ``< 0``. Invalid if either
-direction is NaN or 0.
+**Entries** default to **direction flips only** (no close-vs-band checks): long when prior bar ``SUPERTd < 0``
+and latest bar ``SUPERTd > 0``; short when prior ``> 0`` and latest ``< 0``. With ``enterOnActiveTrend``,
+long/short may also open on the latest bar’s trend alone (``SUPERTd`` sign) without a flip. Invalid if
+required directions are NaN or 0.
 
 After ``prepare_dataframe``, column names are **sniffed** (``SUPERTd_*``, ``SUPERTl_*``, ``SUPERTs_*``).
 ``[ST DEBUG]`` logs ``TargetClose``, ``PrevDir``, ``CurrDir``, and the sniffed ``dir`` column.
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from typing import Any
 
 import pandas as pd
@@ -38,6 +40,7 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "tradeCapitalUsd": 100.0,
     "leverage": 10.0,
     "usePartialExit": False,
+    "enterOnActiveTrend": False,
     "useRsiTarget": False,
     "targetRsiLength": 5,
     "targetRsiLong": 80.0,
@@ -232,10 +235,47 @@ def _closed_flag_truthy(c: Any) -> bool:
     return s in ("1", "true", "yes")
 
 
+def _infer_bar_duration_ms(d: pd.DataFrame) -> int | None:
+    """Infer candle length from the last two ``start`` values (exchange ms)."""
+    if "start" not in d.columns or len(d) < 2:
+        return None
+    try:
+        s0 = int(d.iloc[-2]["start"])
+        s1 = int(d.iloc[-1]["start"])
+        delta = s1 - s0
+        if delta > 0:
+            return delta
+    except (TypeError, ValueError, KeyError):
+        pass
+    return None
+
+
+def _drop_last_row_if_still_forming_by_wall_clock(d: pd.DataFrame) -> pd.DataFrame:
+    """
+    Always treat the last row as in-progress if wall-clock time is still inside its candle window.
+    Upstream sometimes sets ``closed``/``confirm`` on the live bar; this prevents repainting
+    ``TargetClose`` / flip logic on every tick.
+    """
+    if d is None or len(d) < 1 or "start" not in d.columns:
+        return d
+    try:
+        last_start = int(d.iloc[-1]["start"])
+    except (TypeError, ValueError, KeyError):
+        return d
+    bar_ms = _infer_bar_duration_ms(d)
+    if bar_ms is None:
+        bar_ms = 60_000
+    now_ms = int(time.time() * 1000)
+    if now_ms < last_start + bar_ms:
+        return d.iloc[:-1].reset_index(drop=True)
+    return d
+
+
 def _trim_to_exchange_closed_bars(d: pd.DataFrame) -> pd.DataFrame:
     """
     Keep only finalized candles for flip logic (no in-progress bar in iloc[-1]).
     Prefer ``confirm`` / ``closed`` columns when present; else drop the last row as forming.
+    Always apply a wall-clock check on the last ``start`` so a mis-flagged forming bar is dropped.
     """
     if d is None or len(d) < 1:
         return d
@@ -246,13 +286,17 @@ def _trim_to_exchange_closed_bars(d: pd.DataFrame) -> pd.DataFrame:
     )
     if "confirm" in d2.columns:
         ok = d2["confirm"].map(_ws_confirm_truthy)
-        return d2.loc[ok].reset_index(drop=True)
-    if "closed" in d2.columns:
+        d2 = d2.loc[ok].reset_index(drop=True)
+    elif "closed" in d2.columns:
         ok = d2["closed"].map(_closed_flag_truthy)
-        return d2.loc[ok].reset_index(drop=True)
-    if len(d2) >= 2:
-        return d2.iloc[:-1].reset_index(drop=True)
-    return d2.iloc[0:0].reset_index(drop=True)
+        d2 = d2.loc[ok].reset_index(drop=True)
+    elif len(d2) >= 2:
+        d2 = d2.iloc[:-1].reset_index(drop=True)
+    else:
+        d2 = d2.iloc[0:0].reset_index(drop=True)
+
+    d2 = _drop_last_row_if_still_forming_by_wall_clock(d2)
+    return d2
 
 
 def evaluate(
@@ -267,6 +311,7 @@ def evaluate(
     sl_points = _float_param(p, "slPoints", 50.0)
     tp_points = _float_param(p, "tpPoints", 100.0)
     use_rsi_target = _bool_param(p, "useRsiTarget", False)
+    enter_on_active = _bool_param(p, "enterOnActiveTrend", False)
     try:
         target_rsi_len = max(1, int(p.get("targetRsiLength", 5) or 5))
     except (TypeError, ValueError):
@@ -307,7 +352,7 @@ def evaluate(
     if d is None or len(d) < 1:
         out["reason"] = "no_confirmed_closed_bars"
         return out
-    if len(d) < 2:
+    if len(d) < 2 and not enter_on_active:
         out["reason"] = "not_enough_bars_for_flip"
         return out
 
@@ -315,7 +360,7 @@ def evaluate(
     sym = str(st_dict.get("symbol") or xst.SYMBOL).strip().upper()
 
     target_row = d.iloc[-1]
-    prev_row = d.iloc[-2]
+    prev_row = d.iloc[-2] if len(d) >= 2 else None
 
     def _cell_float(row: pd.Series, col: str, default: Any = None) -> float:
         try:
@@ -331,7 +376,9 @@ def evaluate(
         return x if math.isfinite(x) else float("nan")
 
     target_close = _cell_float(target_row, "close", None)
-    prev_dir_f = _dir_flip_scalar(prev_row, dir_col)
+    prev_dir_f = (
+        _dir_flip_scalar(prev_row, dir_col) if prev_row is not None else float("nan")
+    )
     curr_dir_f = _dir_flip_scalar(target_row, dir_col)
 
     _st_dbg = (
@@ -418,36 +465,61 @@ def evaluate(
         )
         return out
 
-    # --- ENTRY: strict pandas_ta SUPERTd flip (iloc[-2] vs iloc[-1]); no close-vs-band rules.
+    # --- ENTRY: pandas_ta SUPERTd flip (iloc[-2] vs iloc[-1]), or active trend if enterOnActiveTrend.
     entry_close = target_close
     side: str | None = None
     reason = "no_signal"
     sl_price = tp_price = None
     actual_tp_points = tp_points * 10.0 if use_rsi_target else tp_points
 
-    if (
-        math.isnan(prev_dir_f)
-        or math.isnan(curr_dir_f)
-        or prev_dir_f == 0.0
-        or curr_dir_f == 0.0
-    ):
+    curr_invalid = math.isnan(curr_dir_f) or curr_dir_f == 0.0
+    prev_invalid = math.isnan(prev_dir_f) or prev_dir_f == 0.0
+
+    if curr_invalid:
+        out["reason"] = "supertrend_dir_invalid"
+        return out
+    if not enter_on_active and prev_invalid:
         out["reason"] = "supertrend_dir_invalid"
         return out
 
     closes_ok = math.isfinite(target_close) and target_close > 0.0
 
-    if closes_ok and prev_dir_f < 0.0 and curr_dir_f > 0.0:
-        if mode in ("Both", "Long"):
-            side = "Buy"
-            reason = "supertrend_flip_long"
-            sl_price = entry_close - sl_points
-            tp_price = entry_close + actual_tp_points
-    elif closes_ok and prev_dir_f > 0.0 and curr_dir_f < 0.0:
-        if mode in ("Both", "Short"):
-            side = "Sell"
-            reason = "supertrend_flip_short"
-            sl_price = entry_close + sl_points
-            tp_price = entry_close - actual_tp_points
+    if not prev_invalid:
+        if closes_ok and prev_dir_f < 0.0 and curr_dir_f > 0.0:
+            if mode in ("Both", "Long"):
+                side = "Buy"
+                reason = "supertrend_flip_long"
+                sl_price = entry_close - sl_points
+                tp_price = entry_close + actual_tp_points
+        elif closes_ok and prev_dir_f > 0.0 and curr_dir_f < 0.0:
+            if mode in ("Both", "Short"):
+                side = "Sell"
+                reason = "supertrend_flip_short"
+                sl_price = entry_close + sl_points
+                tp_price = entry_close - actual_tp_points
+
+    if (
+        side is None
+        and enter_on_active
+        and closes_ok
+        and curr_dir_f > 0.0
+        and mode in ("Both", "Long")
+    ):
+        side = "Buy"
+        reason = "supertrend_active_long"
+        sl_price = entry_close - sl_points
+        tp_price = entry_close + actual_tp_points
+    elif (
+        side is None
+        and enter_on_active
+        and closes_ok
+        and curr_dir_f < 0.0
+        and mode in ("Both", "Short")
+    ):
+        side = "Sell"
+        reason = "supertrend_active_short"
+        sl_price = entry_close + sl_points
+        tp_price = entry_close - actual_tp_points
 
     if side not in ("Buy", "Sell") or sl_price is None or tp_price is None:
         out["reason"] = reason
@@ -485,7 +557,9 @@ def evaluate(
         "entry_proxy": float(entry_close),
         "prev_dir": float(prev_dir_f),
         "curr_dir": float(curr_dir_f),
-        "entry_supertrend_flip": True,
+        "entry_supertrend_flip": reason.startswith("supertrend_flip"),
+        "entry_supertrend_active": reason.startswith("supertrend_active"),
+        "enter_on_active_trend": enter_on_active,
     }
     if curr_upper is not None and curr_lower is not None:
         meta["curr_upper"] = float(curr_upper)
@@ -521,6 +595,7 @@ def build_entry_checklists(
     sl_pts = _float_param(p, "slPoints", 50.0)
     tp_pts = _float_param(p, "tpPoints", 100.0)
     use_rsi = _bool_param(p, "useRsiTarget", False)
+    enter_on_active = _bool_param(p, "enterOnActiveTrend", False)
     try:
         trsi_len = max(1, int(p.get("targetRsiLength", 5) or 5))
     except (TypeError, ValueError):
@@ -565,7 +640,7 @@ def build_entry_checklists(
             "note": f"ATR={atr_len} factor={mult}. Waiting for confirmed klines…",
             "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": n_buf},
         }
-    if len(d) < 2:
+    if len(d) < 2 and not enter_on_active:
         return {
             "rules_long": [{"text": "Need ≥2 confirmed closed bars for flip compare", "met": False}],
             "rules_short": [{"text": "Need ≥2 confirmed closed bars for flip compare", "met": False}],
@@ -574,8 +649,10 @@ def build_entry_checklists(
         }
 
     target_row = d.iloc[-1]
-    prev_row_ck = d.iloc[-2]
-    prev_dir = _pta_dir_optional(prev_row_ck, dir_col)
+    prev_row_ck = d.iloc[-2] if len(d) >= 2 else None
+    prev_dir = (
+        _pta_dir_optional(prev_row_ck, dir_col) if prev_row_ck is not None else None
+    )
     curr_dir = _pta_dir_optional(target_row, dir_col)
     try:
         close_ck = float(target_row["close"])
@@ -610,6 +687,31 @@ def build_entry_checklists(
             "met": bool(short_cross_valid and not in_pos and short_ok),
         },
     ]
+    if enter_on_active:
+        rules_long.append(
+            {
+                "text": "OR: UPTREND active on last close (SUPERTd = +1), no flip required",
+                "met": bool(
+                    not in_pos
+                    and long_ok
+                    and curr_dir is not None
+                    and curr_dir > 0
+                    and not long_cross_valid
+                ),
+            }
+        )
+        rules_short.append(
+            {
+                "text": "OR: DOWNTREND active on last close (SUPERTd = -1), no flip required",
+                "met": bool(
+                    not in_pos
+                    and short_ok
+                    and curr_dir is not None
+                    and curr_dir < 0
+                    and not short_cross_valid
+                ),
+            }
+        )
 
     sym = str(st.get("symbol") or xst.SYMBOL).strip().upper()
     bb, ba, _, _ = xst.orderbook_l1(sym, xst.SYMBOL)
@@ -632,9 +734,15 @@ def build_entry_checklists(
         if crsi_sync is not None and math.isfinite(crsi_sync):
             rsi_note += f"Last RSI({trsi_len})={crsi_sync:.2f}. "
 
+    entry_desc = (
+        "Entry: flip (long: prior -1 → +1; short: prior +1 → -1) "
+        "or active trend if enterOnActiveTrend — long on +1, short on -1 on last close."
+        if enter_on_active
+        else "Entry: flip only — long: prior -1 → current +1; short: prior +1 → current -1."
+    )
     note = (
         f"ATR={atr_len} factor={mult} tradeMode={mode}. pandas_ta SUPERTd: 1=uptrend, -1=downtrend. "
-        "Entry: flip only — long: prior -1 → current +1; short: prior +1 → current -1. "
+        f"{entry_desc} "
         f"SL/TP in points (TP×10 if RSI exit on).{rsi_note}"
     )
     n_trim = len(d)
@@ -643,7 +751,7 @@ def build_entry_checklists(
         "rows_in_buffer": n_buf,
         "rows_after_confirm_trim": n_trim,
         "flip_eval_target_iloc": n_trim - 1,
-        "flip_eval_prev_iloc": n_trim - 2,
+        "flip_eval_prev_iloc": (n_trim - 2) if n_trim >= 2 else None,
         "atr_period": atr_len,
         "factor": mult,
         "dir_col": dir_col,
@@ -653,6 +761,7 @@ def build_entry_checklists(
         "curr_dir": curr_dir,
         "long_cross_valid": long_cross_valid,
         "short_cross_valid": short_cross_valid,
+        "enterOnActiveTrend": enter_on_active,
         "last_close": round(close_ck, 8) if math.isfinite(close_ck) else None,
         "use_rsi_target": use_rsi,
         "target_rsi_length": trsi_len,
