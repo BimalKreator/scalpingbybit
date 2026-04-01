@@ -1,19 +1,19 @@
 [
   {
-    "id": "inst_1775074877190_acf8e9",
+    "id": "inst_1775081977549_4b53ba",
     "strategy_type": "long_push_scalping",
     "name": "Long Push Scalping 5m",
     "enabled": true,
     "symbol": "BTCUSDT",
-    "timeframe": "5m",
+    "timeframe": "60m",
     "params": {
-      "minRange": 100,
-      "maxRange": 600,
+      "minRange": 300,
+      "maxRange": 700,
       "tpMultiplier": 2,
-      "maxTargetPts": 50,
-      "tradeMode": "Long",
+      "maxTargetPts": 150,
+      "tradeMode": "Both",
       "tradeCapitalUsd": 100,
-      "leverage": 5,
+      "leverage": 10,
       "trailingSlEnabled": false,
       "partialTpEnabled": false,
       "breakevenBufferPct": 0.05,
@@ -24,8 +24,38 @@
     "state": {
       "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 0,
-      "last_evaluated_start": null,
+      "bar_seq": 2,
+      "last_evaluated_start": 1775082000000,
+      "last_signal_start": null
+    }
+  },
+  {
+    "id": "inst_1775082024142_9a6e15",
+    "strategy_type": "long_push_scalping",
+    "name": "Long Push Scalping 5m",
+    "enabled": true,
+    "symbol": "BTCUSDT",
+    "timeframe": "15m",
+    "params": {
+      "minRange": 300,
+      "maxRange": 700,
+      "tpMultiplier": 2,
+      "maxTargetPts": 150,
+      "tradeMode": "Both",
+      "tradeCapitalUsd": 100,
+      "leverage": 10,
+      "trailingSlEnabled": false,
+      "partialTpEnabled": false,
+      "breakevenBufferPct": 0.05,
+      "feePct": 0.05,
+      "feeOnEntry": true,
+      "feeOnExit": false
+    },
+    "state": {
+      "in_position": false,
+      "cooldown_until_bar": 0,
+      "bar_seq": 1,
+      "last_evaluated_start": 1775082000000,
       "last_signal_start": null
     }
   }

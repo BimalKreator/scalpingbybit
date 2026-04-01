@@ -204,48 +204,40 @@ def build_entry_checklists(
     state: dict[str, Any],
 ) -> dict[str, Any]:
     """
-    Live Monitor: three core PA checks as separate rows, plus range / mid-level / gates.
+    Live Monitor entry rules.
 
-    Return shape matches the hub: ``rules_long`` / ``rules_short`` are lists of
-    ``{"text": str, "met": bool}``.
+    **Contract (required by ``main.py``):** return a **dict** with keys
+    ``rules_long``, ``rules_short``, ``note``, ``sync``. Each of ``rules_*`` must be a
+    list of ``{"text": str, "met": bool}``. Do **not** return a tuple; ``main.py`` uses
+    ``built.get("rules_long")`` and would fail otherwise.
     """
     p = {**DEFAULT_PARAMS, **(params or {})}
-    st = dict(state or {})
-    mode = _trade_mode(p)
+    _ = dict(state or {})
+
     min_range = _float_param(p, "minRange", 300.0)
     max_range = _float_param(p, "maxRange", 600.0)
-    tp_mult = _float_param(p, "tpMultiplier", 1.5)
-    max_tp_pts = _float_param(p, "maxTargetPts", 500.0)
-    tm_label = str(p.get("tradeMode", "Both"))
+    tm_disp = str(p.get("tradeMode", "Both"))
 
     rules_short = [
-        {
-            "text": "This strategy only takes LONG trades",
-            "met": False,
-        },
+        {"text": "This strategy only takes LONG trades", "met": False},
     ]
 
     d = _ensure_ohlc(df if df is not None else pd.DataFrame())
     n_buf = 0 if df is None else len(df)
+
     if d is None or len(d) < 2:
         return {
             "rules_long": [
-                {
-                    "text": "Need ≥2 closed bars (OHLC) for price action",
-                    "met": False,
-                },
+                {"text": "Not enough bars to evaluate Price Action", "met": False},
             ],
-            "rules_short": rules_short,
-            "note": "Not enough bars to evaluate price action.",
-            "sync": {
-                "engine": STRATEGY_NAME,
-                "rows_in_buffer": n_buf,
-            },
+            "rules_short": list(rules_short),
+            "note": "Not enough bars to evaluate Price Action",
+            "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": n_buf},
         }
 
-    flat_ok = not bool(st.get("in_position"))
     target_row = d.iloc[-1]
     prev_row = d.iloc[-2]
+
     try:
         prev_open = float(prev_row["open"])
         prev_close = float(prev_row["close"])
@@ -256,89 +248,59 @@ def build_entry_checklists(
     except (TypeError, ValueError, KeyError):
         return {
             "rules_long": [{"text": "Invalid OHLC on last bars", "met": False}],
-            "rules_short": rules_short,
+            "rules_short": list(rules_short),
             "note": "Could not read open/high/low/close.",
             "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": n_buf},
         }
 
-    # --- Core price action (three explicit rules for the UI) ---
     prev_is_bearish = prev_close < prev_open
     prev_body_range = (prev_open - prev_close) if prev_is_bearish else 0.0
     range_ok = min_range <= prev_body_range <= max_range
+
     lower_low_ok = curr_low < prev_low
     curr_is_bullish = curr_close > curr_open
-    mid_level = prev_close + (prev_body_range / 2.0) if prev_is_bearish else float("nan")
-    mid_level_ok = (
-        math.isfinite(mid_level) and curr_close < mid_level if prev_is_bearish else False
-    )
-    mode_ok = mode in ("Both", "Long")
-    risk_ok = (curr_close - curr_low) > 0 if curr_is_bullish else False
+
+    mid_level = prev_close + (prev_body_range / 2.0)
+    mid_level_ok = curr_close < mid_level
+
+    trade_mode = str(p.get("tradeMode", "Both")).strip().lower()
+    long_ok = trade_mode in ("both", "long")
 
     rules_long = [
-        {"text": "Instance flat (not in_position)", "met": flat_ok},
         {
-            "text": f"tradeMode allows LONG (current: {tm_label})",
-            "met": mode_ok,
+            "text": f"tradeMode allows LONG ({tm_disp})",
+            "met": bool(long_ok),
         },
         {
-            "text": "1. Previous candle is bearish (close < open)",
-            "met": prev_is_bearish,
+            "text": f"1. Previous candle is bearish (Range {min_range:g}-{max_range:g})",
+            "met": bool(prev_is_bearish and range_ok),
         },
         {
-            "text": f"Prior bearish body range in [{min_range}, {max_range}] (points)",
-            "met": range_ok,
+            "text": "2. Current candle made a Lower Low (low < prev_low)",
+            "met": bool(lower_low_ok),
         },
         {
-            "text": "2. Lower low — current low below previous low",
-            "met": lower_low_ok,
+            "text": "3. Current candle is bullish AND closed below previous mid-level",
+            "met": bool(curr_is_bullish and mid_level_ok),
         },
-        {
-            "text": "3. Current candle is bullish (close > open)",
-            "met": curr_is_bullish,
-        },
-        {
-            "text": "Close below mid-level of prior bearish body",
-            "met": mid_level_ok,
-        },
-        {"text": "Positive risk (close > current low)", "met": risk_ok},
     ]
 
-    all_met = (
-        flat_ok
-        and mode_ok
-        and prev_is_bearish
-        and range_ok
-        and lower_low_ok
-        and curr_is_bullish
-        and mid_level_ok
-        and risk_ok
-    )
-
     note = (
-        f"Long Push Scalping (longs only): prior bearish bar body in [{min_range}, {max_range}] pts, "
-        f"then lower low + bullish close below prior body mid. "
-        f"TP = min(close+risk×{tp_mult}, close+{max_tp_pts}). SL = current low."
+        f"Long Push Scalping (Longs Only): Requires previous bearish candle (Range {min_range:g}-{max_range:g}), "
+        f"followed by a bullish candle making a lower low but closing below the previous candle's mid-level."
     )
-
-    mid_sync: float | None
-    if prev_is_bearish and math.isfinite(mid_level):
-        mid_sync = float(mid_level)
-    else:
-        mid_sync = None
 
     sync: dict[str, Any] = {
         "engine": STRATEGY_NAME,
         "rows_in_buffer": n_buf,
         "rows_trimmed": len(d),
-        "trade_mode": mode,
         "prev_open": prev_open,
         "prev_close": prev_close,
         "prev_low": prev_low,
         "curr_open": curr_open,
         "curr_close": curr_close,
         "curr_low": curr_low,
-        "mid_level": mid_sync,
-        "all_conditions_met": all_met,
+        "mid_level": float(mid_level) if math.isfinite(mid_level) else None,
     }
     try:
         sync["last_bar_start"] = int(target_row["start"])

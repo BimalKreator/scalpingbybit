@@ -1,1 +1,42 @@
-[]
+[
+  {
+    "exchange": "Virtual (Paper)",
+    "symbol": "BTCUSDT",
+    "side": "BUY",
+    "createdTime": "1775081140314",
+    "updatedTime": "1775081140314",
+    "qty": "7",
+    "size": "7",
+    "avgEntryPrice": "68241",
+    "avgExitPrice": "68220.5",
+    "leverage": "5",
+    "marginUsed": "",
+    "closedPnl": "-0.382344",
+    "netPnl": "-0.382344",
+    "grossPnl": "-0.1435",
+    "fee": 0.2388435,
+    "fees": 0.2388435,
+    "exitReason": "Stop Loss (paper)",
+    "strategy_name": "Long Push Scalping 5m"
+  },
+  {
+    "exchange": "Virtual (Paper)",
+    "symbol": "BTCUSDT",
+    "side": "BUY",
+    "createdTime": "1775081731718",
+    "updatedTime": "1775081731718",
+    "qty": "7",
+    "size": "7",
+    "avgEntryPrice": "68175",
+    "avgExitPrice": "68149.5",
+    "leverage": "5",
+    "marginUsed": "",
+    "closedPnl": "-0.417112",
+    "netPnl": "-0.417112",
+    "grossPnl": "-0.1785",
+    "fee": 0.2386125,
+    "fees": 0.2386125,
+    "exitReason": "Stop Loss (paper)",
+    "strategy_name": "Long Push Scalping 5m"
+  }
+]
