@@ -3,16 +3,16 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 66106.0,
+      "price": 68149.0,
       "indicators": {
-        "RSI": 52.1,
-        "RSI_SMA": 34.27,
+        "RSI": 58.13,
+        "RSI_SMA": 50.63,
         "volume_signal_vs_prev": true,
-        "body_size": 15.5,
-        "open": 66090.5,
-        "close": 66106.0,
-        "volume": 2204.0,
-        "Expected_Profit_Pct": 0.04
+        "body_size": 14.0,
+        "open": 68135.0,
+        "close": 68149.0,
+        "volume": 3991.0,
+        "Expected_Profit_Pct": 0.06
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -23,7 +23,7 @@
           },
           {
             "name": "Previous Candle Bearish",
-            "met": true
+            "met": false
           },
           {
             "name": "Both Bearish",
@@ -49,11 +49,11 @@
           },
           {
             "name": "Previous Candle Bullish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bullish",
-            "met": false
+            "met": true
           },
           {
             "name": "Volume: signal > previous",
@@ -69,63 +69,8 @@
           }
         ]
       },
-      "checks": {
-        "inst_1774593538838_948236": {
-          "name": "Supertrend Scalping 1m",
-          "interval": "1m",
-          "strategy_type": "supertrend_scalping",
-          "rules_long": [
-            {
-              "text": "Trend flipped from DOWNTREND (-1) to UPTREND (1)",
-              "met": false
-            }
-          ],
-          "rules_short": [
-            {
-              "text": "Trend flipped from UPTREND (1) to DOWNTREND (-1)",
-              "met": false
-            }
-          ],
-          "note": "ATR=50 factor=1.0 tradeMode=Both. pandas_ta SUPERTd: 1=uptrend, -1=downtrend. Entry: flip only \u2014 long: prior -1 \u2192 current +1; short: prior +1 \u2192 current -1. SL/TP in points (TP\u00d710 if RSI exit on or require-both mode). Require BOTH: +100.0 pt favorable excursion vs entry (L1 mid vs bar high/low) and RSI(4) (long \u226580.0, short \u226420.0) before exit. Last RSI(4)=52.10.  Pullback entry ON (5-bar window after arming): on flip, wait for close vs signal close (pullback), then close beyond rolling high (long) / low (short); Supertrend flip against setup cancels. ",
-          "monitor_sync": {
-            "engine": "supertrend_scalping",
-            "rows_in_buffer": 1000,
-            "rows_after_confirm_trim": 999,
-            "flip_eval_target_iloc": 998,
-            "flip_eval_prev_iloc": 997,
-            "atr_period": 50,
-            "factor": 1.0,
-            "dir_col": "SUPERTd_50_1.0",
-            "upper_col": "SUPERTs_50_1.0",
-            "lower_col": "SUPERTl_50_1.0",
-            "prev_dir": -1.0,
-            "curr_dir": -1.0,
-            "long_cross_valid": false,
-            "short_cross_valid": false,
-            "enterOnActiveTrend": false,
-            "requireBothTargets": true,
-            "usePullbackEntry": true,
-            "pullbackBars": 5,
-            "pb_active": false,
-            "pb_dir": 0.0,
-            "pb_elapsed": 0,
-            "pb_seen": false,
-            "last_close": 66106.0,
-            "use_rsi_target": false,
-            "target_rsi_length": 4,
-            "last_rsi": 52.1016,
-            "last_closed_start": 1774671300000,
-            "prior_closed_start": 1774671240000,
-            "flip_eval_target_start_ms": 1774671300000,
-            "flip_eval_prev_start_ms": 1774671240000,
-            "live_mid": 66106.5,
-            "last_signal_start": 0,
-            "autotrade_enabled": true,
-            "order_pending_for_this_conf_bar": false
-          }
-        }
-      },
-      "checks_updated_unix": 1774671373.24846,
+      "checks": {},
+      "checks_updated_unix": 1775073580.1172442,
       "status": "Waiting",
       "sl_price": null,
       "tp_price": null,

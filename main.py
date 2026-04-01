@@ -19,6 +19,7 @@ from pathlib import Path
 
 import instance_storage
 from strategies import ema_trap
+from strategies import long_push_scalping
 from strategies import single_candle
 from strategies import supertrend_scalping
 from strategies import three_bearish_trend
@@ -371,6 +372,18 @@ def _monitor_snapshot_from_params(p: dict, *, strategy_type: str | None = None) 
 
     # 3 Bearish Trend: absolute SL/TP from strategy; no decay, trailing, or partial TP.
     if st == "three_bearish_trend":
+        return {
+            "sl_mx": 1.0,
+            "sl_mn": 1.0,
+            "sl_decay_seconds": 0.0,
+            "partial_tp_enabled": False,
+            "trailing_sl_enabled": False,
+            "breakeven_buffer_pct": max(0.0, _num("breakevenBufferPct", "BREAKEVEN_BUFFER_PCT", 0.05)),
+            "trade_capital_usd": max(1e-12, _num("tradeCapitalUsd", "TRADE_AMOUNT_USD", 100.0)),
+            "leverage": max(1.0, _num("leverage", "LEVERAGE", 5.0)),
+        }
+
+    if st == "long_push_scalping":
         return {
             "sl_mx": 1.0,
             "sl_mn": 1.0,
@@ -2384,6 +2397,9 @@ def build_strict_risk_meta_from_instance_id(instance_id: str | None) -> dict | N
     elif st == "three_bearish_trend":
         out["instance_sl_mult"] = 0.5
         out["instance_tp_mult"] = _pf("tpMultiplier", 2.0)
+    elif st == "long_push_scalping":
+        out["instance_sl_mult"] = 0.5
+        out["instance_tp_mult"] = _pf("tpMultiplier", 1.5)
     elif st == "single_candle":
         out["instance_sl_mult"] = 0.5
         out["instance_tp_mult"] = 2.0
@@ -5304,6 +5320,37 @@ def _rebuild_instance_checks_live_state(symbol_normalized: str) -> None:
                     ),
                 }
             checks[iid] = entry
+        elif strat == "long_push_scalping":
+            built = long_push_scalping.build_entry_checklists(
+                df_closed if len(df_closed) else None,
+                dict(inst.get("params") or {}),
+                st,
+            )
+            entry = {
+                "name": name,
+                "interval": tf,
+                "strategy_type": strat,
+                "rules_long": built.get("rules_long") or [],
+                "rules_short": built.get("rules_short") or [],
+            }
+            if built.get("note"):
+                entry["note"] = built["note"]
+            sync = built.get("sync")
+            if isinstance(sync, dict):
+                try:
+                    cstart = int(df_closed.iloc[-1]["start"]) if len(df_closed) >= 1 else None
+                except (TypeError, ValueError, KeyError):
+                    cstart = None
+                lss = int(st.get("last_signal_start") or 0)
+                entry["monitor_sync"] = {
+                    **sync,
+                    "last_signal_start": lss,
+                    "autotrade_enabled": _is_autotrade_enabled(),
+                    "order_pending_for_this_conf_bar": bool(
+                        cstart is not None and lss == cstart
+                    ),
+                }
+            checks[iid] = entry
         elif strat == "supertrend_scalping":
             built = supertrend_scalping.build_entry_checklists(
                 df_closed if len(df_closed) else None,
@@ -6068,6 +6115,13 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             signal = ev.get("signal")
             reason = str(ev.get("reason") or "")
             row_dict = ev.get("signal_row")
+        elif strat == "long_push_scalping":
+            ev = long_push_scalping.evaluate(
+                df_closed, dict(inst.get("params") or {}), st
+            )
+            signal = ev.get("signal")
+            reason = str(ev.get("reason") or "")
+            row_dict = ev.get("signal_row")
         elif strat == "single_candle":
             # Live buffer so iloc[-1] can be forming; strategy picks last closed == True or iloc[-2].
             st_sc = {**st, "symbol": sym_u}
@@ -6164,6 +6218,16 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             if isinstance(sub, dict):
                 meta.update(sub)
         elif strat == "three_bearish_trend" and isinstance(ev, dict):
+            if ev.get("sl_price") is not None and ev.get("tp_price") is not None:
+                meta["sl_price"] = float(ev["sl_price"])
+                meta["tp_price"] = float(ev["tp_price"])
+            sn = ev.get("strategy_name")
+            if sn:
+                meta["strategy_name"] = str(sn)
+        elif strat == "long_push_scalping" and isinstance(ev, dict):
+            sub = ev.get("meta") if isinstance(ev.get("meta"), dict) else None
+            if sub:
+                meta.update(sub)
             if ev.get("sl_price") is not None and ev.get("tp_price") is not None:
                 meta["sl_price"] = float(ev["sl_price"])
                 meta["tp_price"] = float(ev["tp_price"])

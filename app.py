@@ -123,6 +123,9 @@ def _sl_tp_triple_from_instance_params(
     if st == "three_bearish_trend":
         tpm = max(_f("tpMultiplier", 2.0), 1e-12)
         return 0.5, 0.5, tpm
+    if st == "long_push_scalping":
+        tpm = max(_f("tpMultiplier", 1.5), 1e-12)
+        return 0.5, 0.5, tpm
     if st == "single_candle":
         return 0.5, 0.5, 2.0
     if st == "supertrend_scalping":
@@ -1684,7 +1687,7 @@ def _merge_backtest_params(req: BacktestRequest) -> dict:
     """Merge `req.params` with legacy top-level fields (weak momentum only)."""
     m = dict(req.params or {})
     st = (req.strategy_type or "weak_momentum_reversal").strip().lower()
-    if st in ("ema_trap", "single_candle", "supertrend_scalping"):
+    if st in ("ema_trap", "single_candle", "supertrend_scalping", "long_push_scalping"):
         return m
 
     def put(camel: str, snake: str, val):

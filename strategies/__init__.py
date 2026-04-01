@@ -8,6 +8,7 @@ appropriate to that strategy (see ema_trap.evaluate).
 from . import ema_trap
 from . import single_candle
 from . import supertrend_scalping
+from . import long_push_scalping
 from . import three_bearish_trend
 
 STRATEGY_TYPE_LABELS: dict[str, str] = {
@@ -16,10 +17,12 @@ STRATEGY_TYPE_LABELS: dict[str, str] = {
     "three_bearish_trend": "3 Bearish Trend",
     "single_candle": "Single Candle",
     "supertrend_scalping": "Supertrend Scalping",
+    "long_push_scalping": "Long Push Scalping",
 }
 
 __all__ = [
     "ema_trap",
+    "long_push_scalping",
     "single_candle",
     "supertrend_scalping",
     "three_bearish_trend",

@@ -19,6 +19,7 @@ from pathlib import Path
 from strategies.ema_trap import DEFAULT_PARAMS as EMA_TRAP_DEFAULTS
 from strategies.single_candle import DEFAULT_PARAMS as SINGLE_CANDLE_DEFAULTS
 from strategies.supertrend_scalping import DEFAULT_PARAMS as SUPERTREND_SCALPING_DEFAULTS
+from strategies.long_push_scalping import DEFAULT_PARAMS as LONG_PUSH_SCALPING_DEFAULTS
 from strategies.three_bearish_trend import DEFAULT_PARAMS as THREE_BEARISH_DEFAULTS
 
 ROOT = Path(__file__).resolve().parent
@@ -178,6 +179,8 @@ def default_params_for_type(strategy_type: str) -> dict:
         return dict(SINGLE_CANDLE_DEFAULTS)
     if st == "supertrend_scalping":
         return dict(SUPERTREND_SCALPING_DEFAULTS)
+    if st == "long_push_scalping":
+        return dict(LONG_PUSH_SCALPING_DEFAULTS)
     return dict(WEAK_MOMENTUM_DEFAULT_PARAMS)
 
 
@@ -211,6 +214,9 @@ def create_instance(strategy_type: str, symbol: str | None = None) -> dict:
     elif st == "supertrend_scalping":
         name = "Supertrend Scalping 1m"
         tf = "1m"
+    elif st == "long_push_scalping":
+        name = "Long Push Scalping 5m"
+        tf = "5m"
     else:
         st = "ema_trap"
         name = "EMA Trap 3m"
@@ -301,6 +307,43 @@ def _strip_params_unused_by_strategy(strategy_type: str, params: dict) -> dict:
             "exitOnCandleClose",
             "trailingCandleExit",
             "useTarget",
+        ):
+            p.pop(k, None)
+    if st == "long_push_scalping":
+        for k in (
+            "slMultiplier",
+            "slMultiplierMax",
+            "slMultiplierMin",
+            "slDecaySeconds",
+            "rsiLength",
+            "rsiOversold",
+            "rsiOverbought",
+            "emaLength",
+            "rangeLength",
+            "rangeMultiplier",
+            "minProfitPerc",
+            "nCandles",
+            "mCandles",
+            "slMaxPoints",
+            "useConfirmationCandle",
+            "useTouchEntry",
+            "useOrderbookVolume",
+            "exitOnCandleClose",
+            "trailingCandleExit",
+            "useTarget",
+            "slPoints",
+            "tpPoints",
+            "pullbackBars",
+            "atrPeriod",
+            "factor",
+            "usePartialExit",
+            "enterOnActiveTrend",
+            "usePullbackEntry",
+            "requireBothTargets",
+            "useRsiTarget",
+            "targetRsiLength",
+            "targetRsiLong",
+            "targetRsiShort",
         ):
             p.pop(k, None)
     return p
