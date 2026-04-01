@@ -26,6 +26,7 @@ from bybit_client import (
     _map_exit_reason,
     execute_chunk_order_rest,
 )
+from exchange_kline_intervals import normalize_bybit_kline_interval_token
 import instance_storage
 from strategies import STRATEGY_TYPE_LABELS
 
@@ -151,13 +152,13 @@ def _delta_resolution_for_minutes(minutes: int) -> str:
 
 def _bybit_kline_last_closed_high_low(symbol: str, interval_minutes: int = 1) -> tuple[float, float]:
     c = _get_http_client()
-    iv = str(max(1, min(240, int(interval_minutes))))
+    iv = normalize_bybit_kline_interval_token(interval_minutes)
     r = c.get_kline(category="linear", symbol=symbol, interval=iv, limit=5)
     if r.get("retCode") != 0:
         raise RuntimeError(r.get("retMsg") or "get_kline failed")
     lst = (r.get("result") or {}).get("list") or []
     if len(lst) < 2:
-        raise RuntimeError(f"Not enough {iv}m klines (need last closed candle)")
+        raise RuntimeError(f"Not enough {iv} klines (need last closed candle)")
 
     def _one(raw):
         if isinstance(raw, dict):

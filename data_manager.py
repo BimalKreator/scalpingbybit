@@ -8,6 +8,7 @@ Multi-timeframe REST seeds (e.g. 60m, 120m) use ``exchange_kline_intervals`` ins
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,6 +18,7 @@ import pandas as pd
 DATA_DIR = Path(__file__).resolve().parent / "data"
 _BAR_MS = 60_000
 _CACHE_COLS = ["timestamp", "open", "high", "low", "close", "volume"]
+_log = logging.getLogger(__name__)
 
 
 def _parse_range_to_ts(start_date: str, end_date: str) -> tuple[int, int]:
@@ -215,6 +217,20 @@ def load_klines_with_cache(
         else:
             ss, es = _ms_to_bybit_iso_range(gs, ge)
         chunk = fetch_fn(symbol, ss, es)
+        if chunk is None:
+            msg = (
+                f"[klines cache] fetch_fn returned None for {exchange_key} {symbol} "
+                f"gap {ss}–{es}; check exchange client logs for full API error payload."
+            )
+            _log.warning(msg)
+            print(msg)
+        elif chunk.empty:
+            msg = (
+                f"[klines cache] fetch_fn returned 0 rows for {exchange_key} {symbol} "
+                f"gap {ss}–{es}; if the exchange rejected the request, see logs above."
+            )
+            _log.warning(msg)
+            print(msg)
         if chunk is not None and not chunk.empty:
             new_parts.append(chunk)
             total_new += len(chunk)

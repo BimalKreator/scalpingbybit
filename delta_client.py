@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import math
 import os
 import threading
@@ -19,8 +20,11 @@ import websockets
 
 from exchange_kline_intervals import (
     bybit_linear_kline_interval_minutes,
-    delta_candle_resolution_str,
+    delta_exchange_resolution,
+    format_api_payload_for_log,
 )
+
+_log = logging.getLogger(__name__)
 
 # Per-symbol product cache (set by fetch_instrument_info), keyed by normalize_delta_symbol()
 _DELTA_CACHE: dict[str, dict[str, Any]] = {}
@@ -192,8 +196,7 @@ def fetch_historical_klines_delta(
     dsym = normalize_delta_symbol(symbol)
     max_n = max(1, min(int(max_n), 5000))
     rm = bybit_linear_kline_interval_minutes(resolution_minutes)
-    res = delta_candle_resolution_str(resolution_minutes)
-    bar_sec = rm * 60
+    res, bar_sec = delta_exchange_resolution(resolution_minutes)
     by_start: dict[int, dict] = {}
     cur_end = int(time.time())
     base = f"{_REST_BASE_INDIA}/v2/history/candles"
@@ -214,8 +217,36 @@ def fetch_historical_klines_delta(
                 headers={"Accept": "application/json"},
                 timeout=45,
             )
-            data = r.json()
+            try:
+                data = r.json()
+            except Exception as je:
+                txt = (r.text or "")[:8000]
+                _log.warning(
+                    "[Delta] history/candles JSON parse error status=%s resolution=%s: %s body=%s",
+                    r.status_code,
+                    res,
+                    je,
+                    txt,
+                )
+                print(
+                    f"[Delta] history/candles invalid JSON status={r.status_code} resolution={res} body={txt}"
+                )
+                if not by_start:
+                    return False
+                break
             if not data.get("success"):
+                full = format_api_payload_for_log(data)
+                _log.warning(
+                    "[Delta] history/candles success=false status=%s resolution=%s symbol=%s payload=%s",
+                    r.status_code,
+                    res,
+                    dsym,
+                    full,
+                )
+                print(
+                    f"[Delta] history/candles API payload (success=false) status={r.status_code} "
+                    f"resolution={res} symbol={dsym}: {full}"
+                )
                 if not by_start:
                     return False
                 break
@@ -277,8 +308,7 @@ def fetch_incremental_klines_delta(
     """
     dsym = normalize_delta_symbol(symbol)
     rm = bybit_linear_kline_interval_minutes(resolution_minutes)
-    res = delta_candle_resolution_str(resolution_minutes)
-    bar_sec = rm * 60
+    res, bar_sec = delta_exchange_resolution(resolution_minutes)
     if end_ms is None:
         end_ms = int(time.time() * 1000)
     start_sec = (int(since_start_ms_exclusive) // 1000) + bar_sec
@@ -305,10 +335,28 @@ def fetch_incremental_klines_delta(
                 headers={"Accept": "application/json"},
                 timeout=45,
             )
-            data = r.json()
+            try:
+                data = r.json()
+            except Exception as je:
+                txt = (r.text or "")[:8000]
+                _log.warning(
+                    "[Delta] incremental candles JSON parse status=%s resolution=%s: %s body=%s",
+                    r.status_code,
+                    res,
+                    je,
+                    txt,
+                )
+                print(f"[Delta] incremental candles invalid JSON status={r.status_code} body={txt}")
+                break
             if not data.get("success"):
-                if not by_start:
-                    print("[Delta] incremental candles API error:", data.get("error") or data)
+                full = format_api_payload_for_log(data)
+                _log.warning(
+                    "[Delta] incremental candles success=false status=%s resolution=%s payload=%s",
+                    r.status_code,
+                    res,
+                    full,
+                )
+                print(f"[Delta] incremental candles API payload (success=false): {full}")
                 break
             batch_raw = data.get("result") or []
             if not batch_raw:

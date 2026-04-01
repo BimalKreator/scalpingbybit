@@ -17,7 +17,8 @@ from pybit.unified_trading import HTTP, WebSocket, WebSocketTrading
 
 from exchange_kline_intervals import (
     bybit_linear_kline_interval_minutes,
-    bybit_linear_kline_interval_str,
+    format_api_payload_for_log,
+    normalize_bybit_kline_interval_token,
 )
 
 _log = logging.getLogger(__name__)
@@ -139,7 +140,7 @@ def fetch_historical_klines_bybit(
         return False
     max_n = max(1, min(int(max_n), 5000))
     iv = bybit_linear_kline_interval_minutes(interval_minutes)
-    ivs = bybit_linear_kline_interval_str(interval_minutes)
+    ivs = normalize_bybit_kline_interval_token(interval_minutes)
     by_start: dict[int, dict] = {}
     end_cursor: int | None = None
     per_page = 1000
@@ -156,13 +157,16 @@ def fetch_historical_klines_bybit(
                 kw["end"] = end_cursor
             resp = get_kline(**kw)
             if resp.get("retCode") != 0:
+                full = format_api_payload_for_log(resp)
                 _log.warning(
-                    "[Bybit] get_kline failed symbol=%s interval=%s retCode=%s retMsg=%s",
+                    "[Bybit] get_kline failed symbol=%s interval=%s retCode=%s retMsg=%s full_response=%s",
                     symbol,
                     ivs,
                     resp.get("retCode"),
                     resp.get("retMsg", "unknown"),
+                    full,
                 )
+                print(f"[Bybit] get_kline full API response (non-zero retCode): {full}")
                 break
             lst = (resp.get("result") or {}).get("list", [])
             if not lst:
@@ -197,7 +201,7 @@ def fetch_historical_klines_bybit(
         klines_out.clear()
         klines_out.extend(rows[-max_n:])
         _log.info(
-            "[Bybit] Loaded %s historical %sm candles for %s",
+            "[Bybit] Loaded %s historical interval=%s candles for %s",
             len(klines_out),
             ivs,
             symbol,
@@ -227,7 +231,7 @@ def fetch_incremental_klines_bybit(
     if end_ms is None:
         end_ms = int(time.time() * 1000)
     iv = bybit_linear_kline_interval_minutes(interval_minutes)
-    ivs = bybit_linear_kline_interval_str(interval_minutes)
+    ivs = normalize_bybit_kline_interval_token(interval_minutes)
     step_ms = iv * 60_000
     next_start = int(since_start_ms_exclusive) + step_ms
     if next_start > end_ms:
@@ -252,12 +256,15 @@ def fetch_incremental_klines_bybit(
             }
             resp = get_kline(**kw)
             if resp.get("retCode") != 0:
+                full = format_api_payload_for_log(resp)
                 _log.warning(
-                    "[Bybit] incremental get_kline failed interval=%s retCode=%s retMsg=%s",
+                    "[Bybit] incremental get_kline failed interval=%s retCode=%s retMsg=%s full_response=%s",
                     ivs,
                     resp.get("retCode"),
                     resp.get("retMsg", "unknown"),
+                    full,
                 )
+                print(f"[Bybit] incremental get_kline full API response: {full}")
                 break
             lst = (resp.get("result") or {}).get("list", [])
             if not lst:

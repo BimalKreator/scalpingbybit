@@ -3,23 +3,23 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 68136.5,
+      "price": 68103.5,
       "indicators": {
-        "RSI": 27.1,
-        "RSI_SMA": 54.14,
-        "volume_signal_vs_prev": true,
-        "body_size": 8.5,
-        "open": 68128.0,
-        "close": 68136.5,
-        "volume": 2001.0,
-        "Expected_Profit_Pct": 0.08
+        "RSI": 39.96,
+        "RSI_SMA": 40.59,
+        "volume_signal_vs_prev": false,
+        "body_size": 1.0,
+        "open": 68104.5,
+        "close": 68103.5,
+        "volume": 658.0,
+        "Expected_Profit_Pct": 0.01
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
         "long": [
           {
             "name": "Signal Candle Bearish (open > close)",
-            "met": false
+            "met": true
           },
           {
             "name": "Previous Candle Bearish",
@@ -27,11 +27,11 @@
           },
           {
             "name": "Both Bearish",
-            "met": false
+            "met": true
           },
           {
             "name": "Volume: signal > previous",
-            "met": true
+            "met": false
           },
           {
             "name": "RSI < 40.0",
@@ -39,13 +39,13 @@
           },
           {
             "name": "Expected Profit >= 0.02%",
-            "met": true
+            "met": false
           }
         ],
         "short": [
           {
             "name": "Signal Candle Bullish (close > open)",
-            "met": true
+            "met": false
           },
           {
             "name": "Previous Candle Bullish",
@@ -57,7 +57,7 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": true
+            "met": false
           },
           {
             "name": "RSI > 60.0",
@@ -65,7 +65,7 @@
           },
           {
             "name": "Expected Profit >= 0.02%",
-            "met": true
+            "met": false
           }
         ]
       },
@@ -85,7 +85,7 @@
             },
             {
               "text": "2. Current candle made a Lower Low (low < prev_low)",
-              "met": false
+              "met": true
             },
             {
               "text": "3. Current candle is bullish AND closed below previous mid-level",
@@ -107,8 +107,8 @@
             "prev_close": 68169.5,
             "prev_low": 68098.0,
             "curr_open": 68161.5,
-            "curr_close": 68120.0,
-            "curr_low": 68098.5,
+            "curr_close": 68118.5,
+            "curr_low": 68067.5,
             "mid_level": 68169.5,
             "last_bar_start": 1775085300000,
             "last_signal_start": 0,
@@ -122,7 +122,7 @@
           "strategy_type": "long_push_scalping",
           "rules_long": [
             {
-              "text": "Not enough bars to evaluate Price Action",
+              "text": "Waiting for enough historical candles to load (need 2+ closed bars on this timeframe).",
               "met": false
             }
           ],
@@ -132,17 +132,18 @@
               "met": false
             }
           ],
-          "note": "Not enough bars to evaluate Price Action",
+          "note": "Not enough bars loaded yet. If REST history failed, the live WebSocket still streams this interval \u2014 rules appear once two or more closed candles are in the buffer.",
           "monitor_sync": {
             "engine": "long_push_scalping",
             "rows_in_buffer": 0,
+            "insufficient_bars": true,
             "last_signal_start": 0,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
           }
         }
       },
-      "checks_updated_unix": 1775085432.1054416,
+      "checks_updated_unix": 1775085888.1004565,
       "status": "Waiting",
       "sl_price": null,
       "tp_price": null,
