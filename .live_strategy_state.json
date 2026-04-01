@@ -3,16 +3,16 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 68149.0,
+      "price": 68042.5,
       "indicators": {
-        "RSI": 58.13,
-        "RSI_SMA": 50.63,
+        "RSI": 45.07,
+        "RSI_SMA": 44.51,
         "volume_signal_vs_prev": true,
-        "body_size": 14.0,
-        "open": 68135.0,
-        "close": 68149.0,
-        "volume": 3991.0,
-        "Expected_Profit_Pct": 0.06
+        "body_size": 31.0,
+        "open": 68011.5,
+        "close": 68042.5,
+        "volume": 4388.0,
+        "Expected_Profit_Pct": 0.08
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -23,7 +23,7 @@
           },
           {
             "name": "Previous Candle Bearish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bearish",
@@ -49,11 +49,11 @@
           },
           {
             "name": "Previous Candle Bullish",
-            "met": true
+            "met": false
           },
           {
             "name": "Both Bullish",
-            "met": true
+            "met": false
           },
           {
             "name": "Volume: signal > previous",
@@ -69,8 +69,34 @@
           }
         ]
       },
-      "checks": {},
-      "checks_updated_unix": 1775073580.1172442,
+      "checks": {
+        "inst_1775073415942_aabe30": {
+          "name": "Long Push Scalping 5m",
+          "interval": "60m",
+          "strategy_type": "long_push_scalping",
+          "rules_long": [
+            {
+              "text": "Need \u22652 closed bars (OHLC)",
+              "met": false
+            }
+          ],
+          "rules_short": [
+            {
+              "text": "Long Push Scalping is LONG-only \u2014 no short entries",
+              "met": false
+            }
+          ],
+          "note": "minRange=400.0 maxRange=700.0 tp\u00d71.0 maxTP+100.0 pts. Waiting for data.",
+          "monitor_sync": {
+            "engine": "long_push_scalping",
+            "rows_in_buffer": 0,
+            "last_signal_start": 0,
+            "autotrade_enabled": true,
+            "order_pending_for_this_conf_bar": false
+          }
+        }
+      },
+      "checks_updated_unix": 1775074839.5919795,
       "status": "Waiting",
       "sl_price": null,
       "tp_price": null,

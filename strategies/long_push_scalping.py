@@ -203,6 +203,12 @@ def build_entry_checklists(
     params: dict[str, Any],
     state: dict[str, Any],
 ) -> dict[str, Any]:
+    """
+    Live Monitor: three core PA checks as separate rows, plus range / mid-level / gates.
+
+    Return shape matches the hub: ``rules_long`` / ``rules_short`` are lists of
+    ``{"text": str, "met": bool}``.
+    """
     p = {**DEFAULT_PARAMS, **(params or {})}
     st = dict(state or {})
     mode = _trade_mode(p)
@@ -210,10 +216,11 @@ def build_entry_checklists(
     max_range = _float_param(p, "maxRange", 600.0)
     tp_mult = _float_param(p, "tpMultiplier", 1.5)
     max_tp_pts = _float_param(p, "maxTargetPts", 500.0)
+    tm_label = str(p.get("tradeMode", "Both"))
 
     rules_short = [
         {
-            "text": "Long Push Scalping is LONG-only — no short entries",
+            "text": "This strategy only takes LONG trades",
             "met": False,
         },
     ]
@@ -223,23 +230,29 @@ def build_entry_checklists(
     if d is None or len(d) < 2:
         return {
             "rules_long": [
-                {"text": "Need ≥2 closed bars (OHLC)", "met": False},
+                {
+                    "text": "Need ≥2 closed bars (OHLC) for price action",
+                    "met": False,
+                },
             ],
             "rules_short": rules_short,
-            "note": f"minRange={min_range} maxRange={max_range} tp×{tp_mult} maxTP+{max_tp_pts} pts. Waiting for data.",
-            "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": n_buf},
+            "note": "Not enough bars to evaluate price action.",
+            "sync": {
+                "engine": STRATEGY_NAME,
+                "rows_in_buffer": n_buf,
+            },
         }
 
     flat_ok = not bool(st.get("in_position"))
-    curr_row = d.iloc[-1]
+    target_row = d.iloc[-1]
     prev_row = d.iloc[-2]
     try:
         prev_open = float(prev_row["open"])
         prev_close = float(prev_row["close"])
         prev_low = float(prev_row["low"])
-        curr_open = float(curr_row["open"])
-        curr_close = float(curr_row["close"])
-        curr_low = float(curr_row["low"])
+        curr_open = float(target_row["open"])
+        curr_close = float(target_row["close"])
+        curr_low = float(target_row["low"])
     except (TypeError, ValueError, KeyError):
         return {
             "rules_long": [{"text": "Invalid OHLC on last bars", "met": False}],
@@ -248,6 +261,7 @@ def build_entry_checklists(
             "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": n_buf},
         }
 
+    # --- Core price action (three explicit rules for the UI) ---
     prev_is_bearish = prev_close < prev_open
     prev_body_range = (prev_open - prev_close) if prev_is_bearish else 0.0
     range_ok = min_range <= prev_body_range <= max_range
@@ -262,15 +276,30 @@ def build_entry_checklists(
 
     rules_long = [
         {"text": "Instance flat (not in_position)", "met": flat_ok},
-        {"text": "tradeMode allows Long (Both or Long)", "met": mode_ok},
-        {"text": "Prior bar bearish", "met": prev_is_bearish},
         {
-            "text": f"Prior body range in [{min_range}, {max_range}]",
+            "text": f"tradeMode allows LONG (current: {tm_label})",
+            "met": mode_ok,
+        },
+        {
+            "text": "1. Previous candle is bearish (close < open)",
+            "met": prev_is_bearish,
+        },
+        {
+            "text": f"Prior bearish body range in [{min_range}, {max_range}] (points)",
             "met": range_ok,
         },
-        {"text": "Current low < prior low (lower low)", "met": lower_low_ok},
-        {"text": "Current bar bullish", "met": curr_is_bullish},
-        {"text": "Close below mid of prior bearish body", "met": mid_level_ok},
+        {
+            "text": "2. Lower low — current low below previous low",
+            "met": lower_low_ok,
+        },
+        {
+            "text": "3. Current candle is bullish (close > open)",
+            "met": curr_is_bullish,
+        },
+        {
+            "text": "Close below mid-level of prior bearish body",
+            "met": mid_level_ok,
+        },
         {"text": "Positive risk (close > current low)", "met": risk_ok},
     ]
 
@@ -286,19 +315,33 @@ def build_entry_checklists(
     )
 
     note = (
-        f"LONG-only price action. Prior bearish bar body in [{min_range}, {max_range}] "
-        f"(points), then lower low + bullish close below prior body mid. "
+        f"Long Push Scalping (longs only): prior bearish bar body in [{min_range}, {max_range}] pts, "
+        f"then lower low + bullish close below prior body mid. "
         f"TP = min(close+risk×{tp_mult}, close+{max_tp_pts}). SL = current low."
     )
+
+    mid_sync: float | None
+    if prev_is_bearish and math.isfinite(mid_level):
+        mid_sync = float(mid_level)
+    else:
+        mid_sync = None
+
     sync: dict[str, Any] = {
         "engine": STRATEGY_NAME,
         "rows_in_buffer": n_buf,
         "rows_trimmed": len(d),
         "trade_mode": mode,
+        "prev_open": prev_open,
+        "prev_close": prev_close,
+        "prev_low": prev_low,
+        "curr_open": curr_open,
+        "curr_close": curr_close,
+        "curr_low": curr_low,
+        "mid_level": mid_sync,
         "all_conditions_met": all_met,
     }
     try:
-        sync["last_bar_start"] = int(curr_row["start"])
+        sync["last_bar_start"] = int(target_row["start"])
     except (TypeError, ValueError, KeyError):
         sync["last_bar_start"] = None
 
