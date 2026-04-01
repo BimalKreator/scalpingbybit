@@ -8,10 +8,13 @@ risk × tpMultiplier and entry + maxTargetPts.
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any
 
 import pandas as pd
+
+_LOG = logging.getLogger(__name__)
 
 STRATEGY_NAME = "long_push_scalping"
 
@@ -74,14 +77,35 @@ def _ensure_ohlc(df: pd.DataFrame | None) -> pd.DataFrame | None:
     return df.sort_values("start").reset_index(drop=True) if "start" in df.columns else df.reset_index(drop=True)
 
 
+def _lps_instance_tag(state: dict[str, Any]) -> str:
+    iid = str(state.get("instance_id") or "").strip()
+    name = str(state.get("instance_name") or "").strip()
+    if name and iid:
+        return f"{name}|{iid}"
+    if iid:
+        return iid
+    if name:
+        return name
+    return "long_push"
+
+
 def evaluate(
     df: pd.DataFrame | None,
     params: dict[str, Any] | None,
     state: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    """
+    Hub contract: return a dict with ``signal``, ``reason``, ``signal_row``, ``sl_price``,
+    ``tp_price``, ``meta``, etc. (not a tuple — ``main.py`` depends on this).
+    """
     p = {**DEFAULT_PARAMS, **(params or {})}
     st = dict(state or {})
-    mode = _trade_mode(p)
+    tag = _lps_instance_tag(st)
+    # Only emit LPS lines when Hub passes instance context (avoids backtest / import noise).
+    _log_lps = bool(
+        str(st.get("instance_id") or "").strip()
+        or str(st.get("instance_name") or "").strip()
+    )
 
     out: dict[str, Any] = {
         "signal": None,
@@ -95,15 +119,22 @@ def evaluate(
     }
 
     if bool(st.get("in_position")):
+        if _log_lps:
+            _LOG.info("[LPS DEBUG] %s skip: instance_already_in_position", tag)
         out["reason"] = "instance_already_in_position"
         return out
 
+    mode = _trade_mode(p)
     if mode == "Short":
+        if _log_lps:
+            _LOG.info("[LPS DEBUG] %s skip: trade_mode_short_only_disabled", tag)
         out["reason"] = "trade_mode_short_only_disabled"
         return out
 
     d = _ensure_ohlc(df)
     if d is None:
+        if _log_lps:
+            _LOG.info("[LPS DEBUG] %s skip: invalid_df (need OHLC, ≥2 rows)", tag)
         out["reason"] = "invalid_df"
         return out
 
@@ -113,6 +144,13 @@ def evaluate(
     max_tp_pts = max(0.0, _float_param(p, "maxTargetPts", 500.0))
 
     if min_range > max_range:
+        if _log_lps:
+            _LOG.info(
+                "[LPS DEBUG] %s skip: invalid_min_max_range min=%s max=%s",
+                tag,
+                min_range,
+                max_range,
+            )
         out["reason"] = "invalid_min_max_range"
         return out
 
@@ -127,6 +165,8 @@ def evaluate(
         curr_close = float(curr_row["close"])
         curr_low = float(curr_row["low"])
     except (TypeError, ValueError, KeyError):
+        if _log_lps:
+            _LOG.info("[LPS DEBUG] %s skip: invalid_ohlc (read failure)", tag)
         out["reason"] = "invalid_ohlc"
         return out
 
@@ -134,22 +174,47 @@ def evaluate(
         not math.isfinite(x)
         for x in (prev_open, prev_close, prev_low, curr_open, curr_close, curr_low)
     ):
+        if _log_lps:
+            _LOG.info("[LPS DEBUG] %s skip: invalid_ohlc (non-finite)", tag)
         out["reason"] = "invalid_ohlc"
         return out
 
     if math.isnan(prev_close) or math.isnan(curr_close):
+        if _log_lps:
+            _LOG.info("[LPS DEBUG] %s skip: invalid_closes (NaN)", tag)
         out["reason"] = "invalid_closes"
         return out
+
+    trade_mode = str(p.get("tradeMode", "Both")).strip().lower()
+    long_ok = trade_mode in ("both", "long")
 
     prev_is_bearish = prev_close < prev_open
     prev_body_range = (prev_open - prev_close) if prev_is_bearish else 0.0
     range_ok = min_range <= prev_body_range <= max_range
     lower_low_ok = curr_low < prev_low
     curr_is_bullish = curr_close > curr_open
-    mid_level = prev_close + (prev_body_range / 2.0) if prev_is_bearish else float("nan")
-    mid_level_ok = (
-        math.isfinite(mid_level) and curr_close < mid_level if prev_is_bearish else False
-    )
+    mid_level = prev_close + (prev_body_range / 2.0)
+    mid_level_ok = curr_close < mid_level
+
+    if _log_lps:
+        _LOG.info(
+            "[LPS DEBUG] %s P_Bear:%s Rng:%.1f(%s) LL:%s C_Bull:%s Mid:%s | "
+            "C_Close:%s MidLvl:%s long_ok:%s",
+            tag,
+            prev_is_bearish,
+            prev_body_range,
+            range_ok,
+            lower_low_ok,
+            curr_is_bullish,
+            mid_level_ok,
+            curr_close,
+            mid_level,
+            long_ok,
+        )
+
+    if not long_ok:
+        out["reason"] = "trade_mode_blocks_long"
+        return out
 
     if not (
         prev_is_bearish
@@ -158,17 +223,19 @@ def evaluate(
         and curr_is_bullish
         and mid_level_ok
     ):
-        out["reason"] = "no_signal"
-        return out
-
-    if mode not in ("Both", "Long"):
-        out["reason"] = "trade_mode_blocks_long"
+        out["reason"] = "conditions_not_met"
         return out
 
     sl_price = curr_low
     risk = curr_close - sl_price
-    if risk <= 0:
-        out["reason"] = "invalid_risk_0"
+    if risk <= 0.01:
+        if _log_lps:
+            _LOG.info(
+                "[LPS DEBUG] %s reject: invalid_risk risk=%.6g (need > 0.01)",
+                tag,
+                risk,
+            )
+        out["reason"] = "invalid_risk"
         return out
 
     target_1 = curr_close + (risk * tp_mult)
@@ -190,11 +257,20 @@ def evaluate(
         "risk": float(risk),
         "target_tp_r_multiple": float(target_1),
         "target_tp_max_pts": float(target_2),
+        "target_TP": float(final_tp),
         "min_range": float(min_range),
         "max_range": float(max_range),
         "tp_multiplier": float(tp_mult),
         "max_target_pts": float(max_tp_pts),
     }
+    if _log_lps:
+        _LOG.info(
+            "[LPS DEBUG] %s BUY long_push_scalp_entry SL=%.4f TP=%.4f risk=%.4f",
+            tag,
+            float(sl_price),
+            float(final_tp),
+            float(risk),
+        )
     return out
 
 

@@ -1,35 +1,5 @@
 [
   {
-    "id": "inst_1775081977549_4b53ba",
-    "strategy_type": "long_push_scalping",
-    "name": "Long Push Scalping 5m",
-    "enabled": true,
-    "symbol": "BTCUSDT",
-    "timeframe": "60m",
-    "params": {
-      "minRange": 300,
-      "maxRange": 700,
-      "tpMultiplier": 2,
-      "maxTargetPts": 150,
-      "tradeMode": "Both",
-      "tradeCapitalUsd": 100,
-      "leverage": 10,
-      "trailingSlEnabled": false,
-      "partialTpEnabled": false,
-      "breakevenBufferPct": 0.05,
-      "feePct": 0.05,
-      "feeOnEntry": true,
-      "feeOnExit": false
-    },
-    "state": {
-      "in_position": false,
-      "cooldown_until_bar": 0,
-      "bar_seq": 2,
-      "last_evaluated_start": 1775082000000,
-      "last_signal_start": null
-    }
-  },
-  {
     "id": "inst_1775082024142_9a6e15",
     "strategy_type": "long_push_scalping",
     "name": "Long Push Scalping 5m",
@@ -54,8 +24,38 @@
     "state": {
       "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 1,
-      "last_evaluated_start": 1775082000000,
+      "bar_seq": 3,
+      "last_evaluated_start": 1775084400000,
+      "last_signal_start": null
+    }
+  },
+  {
+    "id": "inst_1775083801510_45666f",
+    "strategy_type": "long_push_scalping",
+    "name": "Long Push Scalping 5m",
+    "enabled": true,
+    "symbol": "BTCUSDT",
+    "timeframe": "60m",
+    "params": {
+      "minRange": 300,
+      "maxRange": 700,
+      "tpMultiplier": 2,
+      "maxTargetPts": 150,
+      "tradeMode": "Both",
+      "tradeCapitalUsd": 100,
+      "leverage": 10,
+      "trailingSlEnabled": false,
+      "partialTpEnabled": false,
+      "breakevenBufferPct": 0.05,
+      "feePct": 0.05,
+      "feeOnEntry": true,
+      "feeOnExit": false
+    },
+    "state": {
+      "in_position": false,
+      "cooldown_until_bar": 0,
+      "bar_seq": 0,
+      "last_evaluated_start": null,
       "last_signal_start": null
     }
   }

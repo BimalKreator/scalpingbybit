@@ -6116,8 +6116,13 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             reason = str(ev.get("reason") or "")
             row_dict = ev.get("signal_row")
         elif strat == "long_push_scalping":
+            st_lp = {
+                **st,
+                "instance_id": str(inst.get("id") or ""),
+                "instance_name": str(inst.get("name") or ""),
+            }
             ev = long_push_scalping.evaluate(
-                df_closed, dict(inst.get("params") or {}), st
+                df_closed, dict(inst.get("params") or {}), st_lp
             )
             signal = ev.get("signal")
             reason = str(ev.get("reason") or "")
@@ -6329,9 +6334,6 @@ def check_signals(df: pd.DataFrame) -> None:
     )
 
 
-DISPLAY_COLUMNS = ["close", "volume", "volume_increasing", "RSI", "RSI_SMA"]
-
-
 def _persist_last_signal_candle_start(candle_start: int, symbol: str | None = None) -> None:
     """Persist last_signal_candle_start for a symbol and flush multi-symbol state file."""
     global LAST_SIGNAL_CANDLE_START
@@ -6493,30 +6495,6 @@ def handle_kline_message(
         if not df.empty:
             df = compute_indicators(df)
             _update_live_strategy_state(df, sym_u)
-            last3 = df.tail(3)
-            cols = [c for c in DISPLAY_COLUMNS if c in last3.columns]
-            if cols:
-                print(
-                    "\n--- Last 3 klines (1m "
-                    + sym_u
-                    + ") – Weak Momentum Reversal ---"
-                )
-                print(last3[cols].to_string())
-            if len(df) >= 2:
-                sig = df.iloc[-2]
-                rsi_raw = sig.get("RSI")
-                rsi_ma = sig.get("RSI_SMA")
-                if rsi_raw is not None and not pd.isna(rsi_raw):
-                    ma_s = (
-                        f"{float(rsi_ma):.2f}"
-                        if rsi_ma is not None and not pd.isna(rsi_ma)
-                        else "—"
-                    )
-                    print(
-                        f"[RSI vs TradingView MA] signal candle (closed): "
-                        f"RSI={float(rsi_raw):.2f}  RSI_SMA({RSI_SMA_LENGTH})={ma_s}  "
-                        f"(strategy entries use raw RSI only)\n"
-                    )
     _rebuild_instance_checks_live_state(sym_u)
     _flush_live_state_file_with_tracker()
 

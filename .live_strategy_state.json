@@ -3,31 +3,31 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 68196.0,
+      "price": 68210.5,
       "indicators": {
-        "RSI": 34.69,
-        "RSI_SMA": 52.83,
+        "RSI": 76.01,
+        "RSI_SMA": 52.04,
         "volume_signal_vs_prev": false,
-        "body_size": 35.0,
-        "open": 68231.0,
-        "close": 68196.0,
-        "volume": 367.0,
-        "Expected_Profit_Pct": 0.1
+        "body_size": 10.5,
+        "open": 68200.0,
+        "close": 68210.5,
+        "volume": 1231.0,
+        "Expected_Profit_Pct": 0.06
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
         "long": [
           {
             "name": "Signal Candle Bearish (open > close)",
-            "met": true
+            "met": false
           },
           {
             "name": "Previous Candle Bearish",
-            "met": true
+            "met": false
           },
           {
             "name": "Both Bearish",
-            "met": true
+            "met": false
           },
           {
             "name": "Volume: signal > previous",
@@ -35,7 +35,7 @@
           },
           {
             "name": "RSI < 40.0",
-            "met": true
+            "met": false
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -45,15 +45,15 @@
         "short": [
           {
             "name": "Signal Candle Bullish (close > open)",
-            "met": false
+            "met": true
           },
           {
             "name": "Previous Candle Bullish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bullish",
-            "met": false
+            "met": true
           },
           {
             "name": "Volume: signal > previous",
@@ -61,7 +61,7 @@
           },
           {
             "name": "RSI > 60.0",
-            "met": false
+            "met": true
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -70,38 +70,25 @@
         ]
       },
       "checks": {
-        "inst_1775081977549_4b53ba": {
-          "name": "Long Push Scalping 5m",
-          "interval": "60m",
-          "strategy_type": "long_push_scalping",
-          "rules_long": [
-            {
-              "text": "Need \u22652 closed bars (OHLC) for price action",
-              "met": false
-            }
-          ],
-          "rules_short": [
-            {
-              "text": "This strategy only takes LONG trades",
-              "met": false
-            }
-          ],
-          "note": "Not enough bars to evaluate price action.",
-          "monitor_sync": {
-            "engine": "long_push_scalping",
-            "rows_in_buffer": 0,
-            "last_signal_start": 0,
-            "autotrade_enabled": true,
-            "order_pending_for_this_conf_bar": false
-          }
-        },
         "inst_1775082024142_9a6e15": {
           "name": "Long Push Scalping 5m",
           "interval": "15m",
           "strategy_type": "long_push_scalping",
           "rules_long": [
             {
-              "text": "Need \u22652 closed bars (OHLC) for price action",
+              "text": "tradeMode allows LONG (Both)",
+              "met": true
+            },
+            {
+              "text": "1. Previous candle is bearish (Range 300-700)",
+              "met": false
+            },
+            {
+              "text": "2. Current candle made a Lower Low (low < prev_low)",
+              "met": false
+            },
+            {
+              "text": "3. Current candle is bullish AND closed below previous mid-level",
               "met": false
             }
           ],
@@ -111,7 +98,41 @@
               "met": false
             }
           ],
-          "note": "Not enough bars to evaluate price action.",
+          "note": "Long Push Scalping (Longs Only): Requires previous bearish candle (Range 300-700), followed by a bullish candle making a lower low but closing below the previous candle's mid-level.",
+          "monitor_sync": {
+            "engine": "long_push_scalping",
+            "rows_in_buffer": 1000,
+            "rows_trimmed": 1000,
+            "prev_open": 68220.5,
+            "prev_close": 68094.5,
+            "prev_low": 68046.5,
+            "curr_open": 68098.0,
+            "curr_close": 68171.5,
+            "curr_low": 68098.0,
+            "mid_level": 68157.5,
+            "last_bar_start": 1775084400000,
+            "last_signal_start": 0,
+            "autotrade_enabled": true,
+            "order_pending_for_this_conf_bar": false
+          }
+        },
+        "inst_1775083801510_45666f": {
+          "name": "Long Push Scalping 5m",
+          "interval": "60m",
+          "strategy_type": "long_push_scalping",
+          "rules_long": [
+            {
+              "text": "Not enough bars to evaluate Price Action",
+              "met": false
+            }
+          ],
+          "rules_short": [
+            {
+              "text": "This strategy only takes LONG trades",
+              "met": false
+            }
+          ],
+          "note": "Not enough bars to evaluate Price Action",
           "monitor_sync": {
             "engine": "long_push_scalping",
             "rows_in_buffer": 0,
@@ -121,7 +142,7 @@
           }
         }
       },
-      "checks_updated_unix": 1775083764.5967796,
+      "checks_updated_unix": 1775084788.1155965,
       "status": "Waiting",
       "sl_price": null,
       "tp_price": null,
