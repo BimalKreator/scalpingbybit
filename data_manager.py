@@ -2,6 +2,9 @@
 Local CSV cache for 1m historical klines. Fetches only missing ranges from the exchange.
 
 Live WebSocket kline DataFrames get indicators (RSI, default Supertrend 10/3, etc.) in ``main.compute_indicators``.
+
+Multi-timeframe REST seeds (e.g. 60m, 120m) use ``exchange_kline_intervals`` inside
+``bybit_client`` / ``delta_client`` so interval strings match each exchange API.
 """
 from __future__ import annotations
 

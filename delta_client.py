@@ -17,6 +17,11 @@ from typing import Any, Callable
 import requests
 import websockets
 
+from exchange_kline_intervals import (
+    bybit_linear_kline_interval_minutes,
+    delta_candle_resolution_str,
+)
+
 # Per-symbol product cache (set by fetch_instrument_info), keyed by normalize_delta_symbol()
 _DELTA_CACHE: dict[str, dict[str, Any]] = {}
 _REST_BASE_INDIA = "https://api.india.delta.exchange"
@@ -24,7 +29,8 @@ _WS_BASE_INDIA = "wss://socket.india.delta.exchange"
 
 
 def _delta_candle_channel_name(interval_minutes: int) -> str:
-    return f"candlestick_{max(1, int(interval_minutes))}m"
+    m = bybit_linear_kline_interval_minutes(interval_minutes)
+    return f"candlestick_{m}m"
 
 
 def _delta_interval_from_ws_type(t: str) -> int:
@@ -185,8 +191,8 @@ def fetch_historical_klines_delta(
     """
     dsym = normalize_delta_symbol(symbol)
     max_n = max(1, min(int(max_n), 5000))
-    rm = max(1, int(resolution_minutes))
-    res = f"{rm}m"
+    rm = bybit_linear_kline_interval_minutes(resolution_minutes)
+    res = delta_candle_resolution_str(resolution_minutes)
     bar_sec = rm * 60
     by_start: dict[int, dict] = {}
     cur_end = int(time.time())
@@ -270,8 +276,8 @@ def fetch_incremental_klines_delta(
     Same row shape as fetch_historical_klines_delta / Bybit.
     """
     dsym = normalize_delta_symbol(symbol)
-    rm = max(1, int(resolution_minutes))
-    res = f"{rm}m"
+    rm = bybit_linear_kline_interval_minutes(resolution_minutes)
+    res = delta_candle_resolution_str(resolution_minutes)
     bar_sec = rm * 60
     if end_ms is None:
         end_ms = int(time.time() * 1000)

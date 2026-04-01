@@ -3,16 +3,16 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 68210.5,
+      "price": 68136.5,
       "indicators": {
-        "RSI": 76.01,
-        "RSI_SMA": 52.04,
-        "volume_signal_vs_prev": false,
-        "body_size": 10.5,
-        "open": 68200.0,
-        "close": 68210.5,
-        "volume": 1231.0,
-        "Expected_Profit_Pct": 0.06
+        "RSI": 27.1,
+        "RSI_SMA": 54.14,
+        "volume_signal_vs_prev": true,
+        "body_size": 8.5,
+        "open": 68128.0,
+        "close": 68136.5,
+        "volume": 2001.0,
+        "Expected_Profit_Pct": 0.08
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
@@ -23,7 +23,7 @@
           },
           {
             "name": "Previous Candle Bearish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bearish",
@@ -31,11 +31,11 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": false
+            "met": true
           },
           {
             "name": "RSI < 40.0",
-            "met": false
+            "met": true
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -49,19 +49,19 @@
           },
           {
             "name": "Previous Candle Bullish",
-            "met": true
-          },
-          {
-            "name": "Both Bullish",
-            "met": true
-          },
-          {
-            "name": "Volume: signal > previous",
             "met": false
           },
           {
-            "name": "RSI > 60.0",
+            "name": "Both Bullish",
+            "met": false
+          },
+          {
+            "name": "Volume: signal > previous",
             "met": true
+          },
+          {
+            "name": "RSI > 60.0",
+            "met": false
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -103,14 +103,14 @@
             "engine": "long_push_scalping",
             "rows_in_buffer": 1000,
             "rows_trimmed": 1000,
-            "prev_open": 68220.5,
-            "prev_close": 68094.5,
-            "prev_low": 68046.5,
-            "curr_open": 68098.0,
-            "curr_close": 68171.5,
-            "curr_low": 68098.0,
-            "mid_level": 68157.5,
-            "last_bar_start": 1775084400000,
+            "prev_open": 68098.0,
+            "prev_close": 68169.5,
+            "prev_low": 68098.0,
+            "curr_open": 68161.5,
+            "curr_close": 68120.0,
+            "curr_low": 68098.5,
+            "mid_level": 68169.5,
+            "last_bar_start": 1775085300000,
             "last_signal_start": 0,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
@@ -142,7 +142,7 @@
           }
         }
       },
-      "checks_updated_unix": 1775084788.1155965,
+      "checks_updated_unix": 1775085432.1054416,
       "status": "Waiting",
       "sl_price": null,
       "tp_price": null,

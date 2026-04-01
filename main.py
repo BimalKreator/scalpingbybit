@@ -2142,7 +2142,12 @@ def fetch_historical_klines() -> bool:
                     HTTP_CLIENT, sym, buf, KLINES_MAX, interval_minutes=tfm
                 )
             if not ok:
-                logging.warning("[klines] Historical load failed for %s %sm", sym, tfm)
+                logging.warning(
+                    "[klines] Historical REST load failed for %s %sm — "
+                    "live kline WebSocket still subscribed; buffer fills as closed candles arrive.",
+                    sym,
+                    tfm,
+                )
 
         if len(buf) > MEMORY_CAP_ROWS:
             buf[:] = buf[-MEMORY_KEEP_ROWS:]

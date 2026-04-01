@@ -304,11 +304,21 @@ def build_entry_checklists(
     if d is None or len(d) < 2:
         return {
             "rules_long": [
-                {"text": "Not enough bars to evaluate Price Action", "met": False},
+                {
+                    "text": "Waiting for enough historical candles to load (need 2+ closed bars on this timeframe).",
+                    "met": False,
+                },
             ],
             "rules_short": list(rules_short),
-            "note": "Not enough bars to evaluate Price Action",
-            "sync": {"engine": STRATEGY_NAME, "rows_in_buffer": n_buf},
+            "note": (
+                "Not enough bars loaded yet. If REST history failed, the live WebSocket still streams "
+                "this interval — rules appear once two or more closed candles are in the buffer."
+            ),
+            "sync": {
+                "engine": STRATEGY_NAME,
+                "rows_in_buffer": n_buf,
+                "insufficient_bars": True,
+            },
         }
 
     target_row = d.iloc[-1]

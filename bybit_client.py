@@ -1,7 +1,10 @@
 """
 Bybit REST + WebSocket execution (Phase 1 multi-exchange abstraction).
 """
+from __future__ import annotations
+
 import asyncio
+import logging
 import math
 import os
 import threading
@@ -11,6 +14,13 @@ from typing import Any, Callable
 
 from dotenv import load_dotenv
 from pybit.unified_trading import HTTP, WebSocket, WebSocketTrading
+
+from exchange_kline_intervals import (
+    bybit_linear_kline_interval_minutes,
+    bybit_linear_kline_interval_str,
+)
+
+_log = logging.getLogger(__name__)
 
 _ENV_PATH = Path(__file__).resolve().parent / ".env"
 _ENV_FALLBACK = Path(__file__).resolve().parent / "env"
@@ -65,7 +75,7 @@ def _map_exit_reason(rec: dict) -> str:
 
 def _kline_rest_row_to_dict(arr: list, interval_minutes: int = 1) -> dict:
     """Bybit REST kline item [start_ms, open, high, low, close, volume, turnover]."""
-    start_ms = int(arr[0])
+    start_ms = int(float(arr[0]))
     iv = max(1, int(interval_minutes))
     span_ms = iv * 60_000
     return {
@@ -83,6 +93,36 @@ def _kline_rest_row_to_dict(arr: list, interval_minutes: int = 1) -> dict:
     }
 
 
+def _coerce_bybit_kline_rest_item(item: Any, interval_minutes: int) -> dict | None:
+    """
+    Parse one row from ``get_kline`` ``result.list``: array-shaped (legacy) or dict (some clients).
+    """
+    iv = bybit_linear_kline_interval_minutes(interval_minutes)
+    if isinstance(item, (list, tuple)) and len(item) >= 6:
+        try:
+            return _kline_rest_row_to_dict(list(item), iv)
+        except (TypeError, ValueError, IndexError):
+            return None
+    if isinstance(item, dict):
+        try:
+            st = item.get("startTime", item.get("start"))
+            if st is None:
+                return None
+            start_ms = int(float(st))
+            o = float(item.get("open", item.get("openPrice", 0)))
+            h = float(item.get("high", item.get("highPrice", 0)))
+            l = float(item.get("low", item.get("lowPrice", 0)))
+            c = float(item.get("close", item.get("closePrice", 0)))
+            v = float(item.get("volume", 0))
+            t = item.get("turnover")
+            turnover = float(t) if t is not None else 0.0
+            arr = [start_ms, o, h, l, c, v, turnover]
+            return _kline_rest_row_to_dict(arr, iv)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def fetch_historical_klines_bybit(
     http_client: HTTP,
     symbol: str,
@@ -98,8 +138,8 @@ def fetch_historical_klines_bybit(
         print("[Bybit] HTTP client has no get_kline.")
         return False
     max_n = max(1, min(int(max_n), 5000))
-    iv = max(1, int(interval_minutes))
-    ivs = str(iv)
+    iv = bybit_linear_kline_interval_minutes(interval_minutes)
+    ivs = bybit_linear_kline_interval_str(interval_minutes)
     by_start: dict[int, dict] = {}
     end_cursor: int | None = None
     per_page = 1000
@@ -116,16 +156,34 @@ def fetch_historical_klines_bybit(
                 kw["end"] = end_cursor
             resp = get_kline(**kw)
             if resp.get("retCode") != 0:
-                print("[Bybit] get_kline failed:", resp.get("retMsg", "unknown"))
+                _log.warning(
+                    "[Bybit] get_kline failed symbol=%s interval=%s retCode=%s retMsg=%s",
+                    symbol,
+                    ivs,
+                    resp.get("retCode"),
+                    resp.get("retMsg", "unknown"),
+                )
                 break
             lst = (resp.get("result") or {}).get("list", [])
             if not lst:
+                _log.warning(
+                    "[Bybit] get_kline empty list symbol=%s interval=%s (first page)",
+                    symbol,
+                    ivs,
+                )
                 break
             batch: list[dict] = []
             for item in lst:
-                if isinstance(item, (list, tuple)) and len(item) >= 6:
-                    batch.append(_kline_rest_row_to_dict(list(item), iv))
+                row = _coerce_bybit_kline_rest_item(item, iv)
+                if row is not None:
+                    batch.append(row)
             if not batch:
+                _log.warning(
+                    "[Bybit] get_kline could not parse rows symbol=%s interval=%s sample_type=%s",
+                    symbol,
+                    ivs,
+                    type(lst[0]).__name__ if lst else None,
+                )
                 break
             batch.sort(key=lambda r: r["start"])
             for r in batch:
@@ -138,10 +196,15 @@ def fetch_historical_klines_bybit(
         rows = sorted(by_start.values(), key=lambda r: r["start"])
         klines_out.clear()
         klines_out.extend(rows[-max_n:])
-        print(f"[Bybit] Loaded {len(klines_out)} historical {ivs}m candles for {symbol}.")
+        _log.info(
+            "[Bybit] Loaded %s historical %sm candles for %s",
+            len(klines_out),
+            ivs,
+            symbol,
+        )
         return True
     except Exception as e:
-        print(f"[Bybit] fetch_historical_klines: {e}")
+        _log.warning("[Bybit] fetch_historical_klines: %s", e, exc_info=True)
         return False
 
 
@@ -163,8 +226,8 @@ def fetch_incremental_klines_bybit(
         return []
     if end_ms is None:
         end_ms = int(time.time() * 1000)
-    iv = max(1, int(interval_minutes))
-    ivs = str(iv)
+    iv = bybit_linear_kline_interval_minutes(interval_minutes)
+    ivs = bybit_linear_kline_interval_str(interval_minutes)
     step_ms = iv * 60_000
     next_start = int(since_start_ms_exclusive) + step_ms
     if next_start > end_ms:
@@ -189,15 +252,21 @@ def fetch_incremental_klines_bybit(
             }
             resp = get_kline(**kw)
             if resp.get("retCode") != 0:
-                print("[Bybit] incremental get_kline failed:", resp.get("retMsg", "unknown"))
+                _log.warning(
+                    "[Bybit] incremental get_kline failed interval=%s retCode=%s retMsg=%s",
+                    ivs,
+                    resp.get("retCode"),
+                    resp.get("retMsg", "unknown"),
+                )
                 break
             lst = (resp.get("result") or {}).get("list", [])
             if not lst:
                 break
             batch: list[dict] = []
             for item in lst:
-                if isinstance(item, (list, tuple)) and len(item) >= 6:
-                    batch.append(_kline_rest_row_to_dict(list(item), iv))
+                row = _coerce_bybit_kline_rest_item(item, iv)
+                if row is not None:
+                    batch.append(row)
             if not batch:
                 break
             batch.sort(key=lambda r: r["start"])
@@ -783,7 +852,8 @@ class BybitLiveStream:
         if not sym_list:
             raise ValueError("BybitLiveStream.start: symbols list is empty")
         self.ws_kline_list = []
-        for iv in sorted({max(1, int(x)) for x in kline_intervals}):
+        for iv_raw in sorted({max(1, int(x)) for x in kline_intervals}):
+            iv = bybit_linear_kline_interval_minutes(iv_raw)
             for sym in sym_list:
                 ws_k = WebSocket(
                     testnet=False,
@@ -795,6 +865,7 @@ class BybitLiveStream:
                 def _cb(msg: dict, interval: int = iv, s: str = sym) -> None:
                     on_kline(msg, interval, s)
 
+                # Pybit V5: minute interval must match Bybit enum (1,3,5,15,30,60,...)
                 ws_k.kline_stream(interval=iv, symbol=sym, callback=_cb)
                 self.ws_kline_list.append(ws_k)
                 print(f"Subscribed to {iv}m kline {sym} (public WebSocket).")
