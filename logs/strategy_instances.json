@@ -1,16 +1,16 @@
 [
   {
-    "id": "inst_1775073415942_aabe30",
+    "id": "inst_1775074877190_acf8e9",
     "strategy_type": "long_push_scalping",
     "name": "Long Push Scalping 5m",
     "enabled": true,
     "symbol": "BTCUSDT",
-    "timeframe": "60m",
+    "timeframe": "5m",
     "params": {
-      "minRange": 400,
-      "maxRange": 700,
-      "tpMultiplier": 1,
-      "maxTargetPts": 100,
+      "minRange": 100,
+      "maxRange": 600,
+      "tpMultiplier": 2,
+      "maxTargetPts": 50,
       "tradeMode": "Long",
       "tradeCapitalUsd": 100,
       "leverage": 5,
@@ -24,8 +24,8 @@
     "state": {
       "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 2,
-      "last_evaluated_start": 1775073600000,
+      "bar_seq": 0,
+      "last_evaluated_start": null,
       "last_signal_start": null
     }
   }

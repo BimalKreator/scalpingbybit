@@ -3,27 +3,27 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 68042.5,
+      "price": 68106.5,
       "indicators": {
-        "RSI": 45.07,
-        "RSI_SMA": 44.51,
-        "volume_signal_vs_prev": true,
-        "body_size": 31.0,
-        "open": 68011.5,
-        "close": 68042.5,
-        "volume": 4388.0,
-        "Expected_Profit_Pct": 0.08
+        "RSI": 70.81,
+        "RSI_SMA": 52.18,
+        "volume_signal_vs_prev": false,
+        "body_size": 14.0,
+        "open": 68120.5,
+        "close": 68106.5,
+        "volume": 1039.0,
+        "Expected_Profit_Pct": 0.03
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
         "long": [
           {
             "name": "Signal Candle Bearish (open > close)",
-            "met": false
+            "met": true
           },
           {
             "name": "Previous Candle Bearish",
-            "met": true
+            "met": false
           },
           {
             "name": "Both Bearish",
@@ -31,7 +31,7 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": true
+            "met": false
           },
           {
             "name": "RSI < 40.0",
@@ -45,11 +45,11 @@
         "short": [
           {
             "name": "Signal Candle Bullish (close > open)",
-            "met": true
+            "met": false
           },
           {
             "name": "Previous Candle Bullish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bullish",
@@ -57,11 +57,11 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": true
+            "met": false
           },
           {
             "name": "RSI > 60.0",
-            "met": false
+            "met": true
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -70,23 +70,23 @@
         ]
       },
       "checks": {
-        "inst_1775073415942_aabe30": {
+        "inst_1775074877190_acf8e9": {
           "name": "Long Push Scalping 5m",
-          "interval": "60m",
+          "interval": "5m",
           "strategy_type": "long_push_scalping",
           "rules_long": [
             {
-              "text": "Need \u22652 closed bars (OHLC)",
+              "text": "Need \u22652 closed bars (OHLC) for price action",
               "met": false
             }
           ],
           "rules_short": [
             {
-              "text": "Long Push Scalping is LONG-only \u2014 no short entries",
+              "text": "This strategy only takes LONG trades",
               "met": false
             }
           ],
-          "note": "minRange=400.0 maxRange=700.0 tp\u00d71.0 maxTP+100.0 pts. Waiting for data.",
+          "note": "Not enough bars to evaluate price action.",
           "monitor_sync": {
             "engine": "long_push_scalping",
             "rows_in_buffer": 0,
@@ -96,7 +96,7 @@
           }
         }
       },
-      "checks_updated_unix": 1775074839.5919795,
+      "checks_updated_unix": 1775076118.101036,
       "status": "Waiting",
       "sl_price": null,
       "tp_price": null,

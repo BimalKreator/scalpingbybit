@@ -54,6 +54,7 @@
             <option value="weak_momentum_reversal">Weak Momentum Reversal</option>
             <option value="ema_trap">EMA Trap + Range Filter</option>
             <option value="single_candle">Single Candle</option>
+            <option value="long_push_scalping">Long Push Scalping</option>
           </select>
         </div>
         <p class="text-xs text-slate-500">OHLCV is read from <code class="text-slate-400">logs/market_data_{SYMBOL}_1m.json</code> (local bot cache; legacy <code class="text-slate-400">market_data_1m.json</code> if symbol matches). No exchange fetch during backtest.</p>
@@ -235,6 +236,29 @@
         <p class="text-xs text-slate-500">Fill at next bar open; exit at that bar close or SL if touched (same as engine).</p>
       </div>
 
+      <div id="params-long_push_scalping" class="hidden bg-slate-900/80 rounded-2xl p-5 border border-slate-800 space-y-4">
+        <h2 class="text-sm font-semibold text-slate-200">Long Push Scalping — parameters</h2>
+        <p class="text-xs text-slate-500">LONG-only two-bar pattern; fill next bar open; exit on SL/TP touch or bar close (engine).</p>
+        <div id="params-long-push-grid" class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Min Range (pts)</label>
+            <input type="number" id="bt_lps_minRange" value="300" class="w-full rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-white" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Max Range (pts)</label>
+            <input type="number" id="bt_lps_maxRange" value="600" class="w-full rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-white" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">TP Multiplier</label>
+            <input type="number" step="0.1" id="bt_lps_tpMult" value="1.5" class="w-full rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-white" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Max Target Pts</label>
+            <input type="number" id="bt_lps_maxTarget" value="500" class="w-full rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-white" />
+          </div>
+        </div>
+      </div>
+
       <div id="optimizeSection" class="bg-slate-900/80 rounded-2xl p-5 border border-slate-800 space-y-4">
         <h2 class="text-sm font-semibold text-slate-200">Optimization (grid search)</h2>
         <div>
@@ -334,6 +358,8 @@
       document.getElementById('params-ema-trap').classList.toggle('hidden', st !== 'ema_trap');
       var sc = document.getElementById('params-single-candle');
       if (sc) sc.classList.toggle('hidden', st !== 'single_candle');
+      var lps = document.getElementById('params-long_push_scalping');
+      if (lps) lps.classList.toggle('hidden', st !== 'long_push_scalping');
       var opt = document.getElementById('optimizeSection');
       if (opt) opt.classList.toggle('hidden', st !== 'weak_momentum_reversal');
     }
@@ -404,6 +430,18 @@
             slPoints: numEl(document.getElementById('sc_slPoints'), 100),
             tradeCapitalUsd: numEl(document.getElementById('sc_tradeCapitalUsd'), 100),
             leverage: numEl(document.getElementById('sc_leverage'), 5)
+          };
+          trade_amount_usd = params.tradeCapitalUsd;
+          leverage = params.leverage;
+          allow_reversal = false;
+        } else if (strategy_type === 'long_push_scalping') {
+          params = {
+            minRange: numEl(document.getElementById('bt_lps_minRange'), 300),
+            maxRange: numEl(document.getElementById('bt_lps_maxRange'), 600),
+            tpMultiplier: numEl(document.getElementById('bt_lps_tpMult'), 1.5),
+            maxTargetPts: numEl(document.getElementById('bt_lps_maxTarget'), 500),
+            tradeCapitalUsd: num('trade_amount_usd', 100),
+            leverage: num('leverage', 5)
           };
           trade_amount_usd = params.tradeCapitalUsd;
           leverage = params.leverage;

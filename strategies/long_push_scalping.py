@@ -22,7 +22,7 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "maxTargetPts": 500.0,
     "tradeMode": "Both",
     "tradeCapitalUsd": 100.0,
-    "leverage": 5.0,
+    "leverage": 10.0,
     "trailingSlEnabled": False,
     "partialTpEnabled": False,
     "breakevenBufferPct": 0.05,
