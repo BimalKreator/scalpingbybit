@@ -1,12 +1,16 @@
 """
 Long Push Scalping — LONG-only price-action on the last two **closed** bars.
 
-Prior bar: bearish with body range in [minRange, maxRange]. Current bar: bullish.
-Entry reference: current close (live fill uses signal row / next open per hub).
+Core: prior bearish bar in [minRange, maxRange], current bullish bar.
 
-Stop: risk = max(current close − current open, slFixedPts); SL = current close − risk.
-TP: Target1 = entry + risk × tpMultiplier; Target2 = entry + maxTargetPts;
-final TP is min or max of those depending on targetMode (Lower vs Higher).
+Optional ``strictRejection``: also require lower low vs prior bar and close below
+prior body mid (classic “rejection” rules).
+
+Optional ``useFixedSlMode`` (default on): SL distance = max(close−open, slFixedPts),
+SL = close − risk; TP uses targetMode (min vs max of R-multiple vs cap).
+
+When ``useFixedSlMode`` is off: classic SL at current low, risk = close − low;
+TP = min(Target1, Target2) only (ignores targetMode and slFixedPts for sizing).
 """
 
 from __future__ import annotations
@@ -29,6 +33,8 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "slFixedPts": 150.0,
     "targetMode": "Lower",
     "tradeMode": "Both",
+    "strictRejection": False,
+    "useFixedSlMode": True,
     "tradeCapitalUsd": 100.0,
     "leverage": 10.0,
     "trailingSlEnabled": False,
@@ -64,6 +70,20 @@ def _float_param(p: dict, key: str, default: float) -> float:
     if not math.isfinite(x):
         return default
     return x
+
+
+def _bool_param(p: dict, key: str, default: bool) -> bool:
+    v = p.get(key, default)
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return default
+    s = str(v).strip().lower()
+    if s in ("true", "1", "yes", "on"):
+        return True
+    if s in ("false", "0", "no", "off", ""):
+        return False
+    return default
 
 
 def prepare_dataframe(
@@ -221,6 +241,8 @@ def evaluate(
     max_tp_pts = max(0.0, _float_param(p, "maxTargetPts", 500.0))
     sl_fixed_pts = max(0.0, _float_param(p, "slFixedPts", 150.0))
     tm_label = _target_mode_label(p)
+    strict_rejection = _bool_param(p, "strictRejection", False)
+    use_fixed_sl = _bool_param(p, "useFixedSlMode", True)
 
     if min_range > max_range:
         if _log_lps:
@@ -239,8 +261,10 @@ def evaluate(
     try:
         prev_open = float(prev_row["open"])
         prev_close = float(prev_row["close"])
+        prev_low = float(prev_row["low"])
         curr_open = float(curr_row["open"])
         curr_close = float(curr_row["close"])
+        curr_low = float(curr_row["low"])
     except (TypeError, ValueError, KeyError):
         if _log_lps:
             _LOG.info("[LPS DEBUG] %s skip: invalid_ohlc (read failure)", tag)
@@ -249,7 +273,7 @@ def evaluate(
 
     if any(
         not math.isfinite(x)
-        for x in (prev_open, prev_close, curr_open, curr_close)
+        for x in (prev_open, prev_close, prev_low, curr_open, curr_close, curr_low)
     ):
         if _log_lps:
             _LOG.info("[LPS DEBUG] %s skip: invalid_ohlc (non-finite)", tag)
@@ -270,18 +294,25 @@ def evaluate(
     range_ok = min_range <= prev_body_range <= max_range
     curr_is_bullish = curr_close > curr_open
 
-    # REMOVED (no longer required for entry):
-    # - lower_low_ok: curr_low < prev_low
-    # - mid_level_ok: curr_close < mid of prior bearish body
+    lower_low_ok = True
+    mid_level_ok = True
+    if strict_rejection:
+        lower_low_ok = curr_low < prev_low
+        mid_level = prev_close + (prev_body_range / 2.0)
+        mid_level_ok = curr_close < mid_level
 
     if _log_lps:
         _LOG.info(
-            "[LPS DEBUG] %s P_Bear:%s Rng:%.1f(%s) C_Bull:%s | C_Close:%s long_ok:%s targetMode:%s",
+            "[LPS DEBUG] %s P_Bear:%s Rng:%.1f(%s) C_Bull:%s strict:[LL:%s Mid:%s] fixedSL:%s | "
+            "C_Close:%s long_ok:%s targetMode:%s",
             tag,
             prev_is_bearish,
             prev_body_range,
             range_ok,
             curr_is_bullish,
+            lower_low_ok,
+            mid_level_ok,
+            use_fixed_sl,
             curr_close,
             long_ok,
             tm_label,
@@ -291,13 +322,34 @@ def evaluate(
         out["reason"] = "trade_mode_blocks_long"
         return out
 
-    if not (prev_is_bearish and range_ok and curr_is_bullish):
+    if not (
+        prev_is_bearish
+        and range_ok
+        and curr_is_bullish
+        and lower_low_ok
+        and mid_level_ok
+    ):
         out["reason"] = "conditions_not_met"
         return out
 
-    dist_body = curr_close - curr_open
-    risk = max(dist_body, sl_fixed_pts)
-    sl_price = curr_close - risk
+    if use_fixed_sl:
+        dist_body = curr_close - curr_open
+        risk = max(dist_body, sl_fixed_pts)
+        sl_price = curr_close - risk
+        target_1 = curr_close + (risk * tp_mult)
+        target_2 = curr_close + max_tp_pts
+        if tm_label == "Higher":
+            final_tp = max(target_1, target_2)
+        else:
+            final_tp = min(target_1, target_2)
+        tm_effective = tm_label
+    else:
+        sl_price = curr_low
+        risk = curr_close - sl_price
+        target_1 = curr_close + (risk * tp_mult)
+        target_2 = curr_close + max_tp_pts
+        final_tp = min(target_1, target_2)
+        tm_effective = "Classic"
 
     if risk <= 0.01:
         if _log_lps:
@@ -308,13 +360,6 @@ def evaluate(
             )
         out["reason"] = "invalid_risk"
         return out
-
-    target_1 = curr_close + (risk * tp_mult)
-    target_2 = curr_close + max_tp_pts
-    if tm_label == "Higher":
-        final_tp = max(target_1, target_2)
-    else:
-        final_tp = min(target_1, target_2)
 
     out["signal"] = "Buy"
     out["reason"] = "long_push_scalp_entry"
@@ -350,8 +395,10 @@ def evaluate(
         "target_tp_r_multiple": float(target_1),
         "target_tp_max_pts": float(target_2),
         "target_TP": float(final_tp),
-        "target_mode": tm_label,
-        "sl_fixed_pts": float(sl_fixed_pts),
+        "target_mode": tm_effective,
+        "sl_fixed_pts": float(sl_fixed_pts) if use_fixed_sl else 0.0,
+        "strict_rejection": bool(strict_rejection),
+        "use_fixed_sl_mode": bool(use_fixed_sl),
         "min_range": float(min_range),
         "max_range": float(max_range),
         "tp_multiplier": float(tp_mult),
@@ -362,12 +409,14 @@ def evaluate(
     }
     if _log_lps:
         _LOG.info(
-            "[LPS DEBUG] %s BUY long_push_scalp_entry SL=%.4f TP=%.4f risk=%.4f mode=%s",
+            "[LPS DEBUG] %s BUY long_push_scalp_entry SL=%.4f TP=%.4f risk=%.4f mode=%s strict=%s fixedSL=%s",
             tag,
             float(sl_price),
             float(final_tp),
             float(risk),
-            tm_label,
+            tm_effective,
+            strict_rejection,
+            use_fixed_sl,
         )
     return out
 
@@ -392,6 +441,8 @@ def build_entry_checklists(
     max_range = _float_param(p, "maxRange", 700.0)
     tm_disp = str(p.get("tradeMode", "Both"))
     tm_mode = _target_mode_label(p)
+    strict_rejection = _bool_param(p, "strictRejection", False)
+    use_fixed_sl = _bool_param(p, "useFixedSlMode", True)
 
     rules_short = [
         {"text": "This strategy only takes LONG trades", "met": False},
@@ -426,8 +477,10 @@ def build_entry_checklists(
     try:
         prev_open = float(prev_row["open"])
         prev_close = float(prev_row["close"])
+        prev_low = float(prev_row["low"])
         curr_open = float(target_row["open"])
         curr_close = float(target_row["close"])
+        curr_low = float(target_row["low"])
     except (TypeError, ValueError, KeyError):
         return {
             "rules_long": [{"text": "Invalid OHLC on last bars", "met": False}],
@@ -444,6 +497,13 @@ def build_entry_checklists(
     trade_mode = str(p.get("tradeMode", "Both")).strip().lower()
     long_ok = trade_mode in ("both", "long")
 
+    lower_low_ok = True
+    mid_level_ok = True
+    if strict_rejection:
+        lower_low_ok = curr_low < prev_low
+        mid_level = prev_close + (prev_body_range / 2.0)
+        mid_level_ok = curr_close < mid_level
+
     rules_long = [
         {
             "text": f"tradeMode allows LONG ({tm_disp})",
@@ -458,12 +518,29 @@ def build_entry_checklists(
             "met": bool(curr_is_bullish),
         },
     ]
+    if strict_rejection:
+        rules_long.append(
+            {
+                "text": "Strict: current candle made a lower low (low < prev low)",
+                "met": bool(lower_low_ok),
+            }
+        )
+        rules_long.append(
+            {
+                "text": "Strict: close below previous body mid-level",
+                "met": bool(mid_level_ok),
+            }
+        )
 
+    sl_note = (
+        "SL = max(close−open, slFixedPts); TP uses Target mode"
+        if use_fixed_sl
+        else "Classic SL at current low; TP = min(R×mult, cap)"
+    )
     note = (
-        f"Long Push Scalping (long only): prior bearish bar in range {min_range:g}-{max_range:g}, "
-        f"then bullish bar. SL distance = max(close−open, slFixedPts); TP picks "
-        f"{'max' if tm_mode == 'Higher' else 'min'} of (risk×tpMultiplier) vs maxTargetPts. "
-        f"Target mode: {tm_mode}."
+        f"Long Push Scalping (long only). Strict rejection: {strict_rejection}. "
+        f"Fixed SL / target mode: {use_fixed_sl}. {sl_note}. "
+        f"(Range {min_range:g}-{max_range:g} on prior bearish body.)"
     )
 
     sync: dict[str, Any] = {
@@ -472,9 +549,13 @@ def build_entry_checklists(
         "rows_trimmed": len(d),
         "prev_open": prev_open,
         "prev_close": prev_close,
+        "prev_low": prev_low,
         "curr_open": curr_open,
         "curr_close": curr_close,
-        "target_mode": tm_mode,
+        "curr_low": curr_low,
+        "target_mode": tm_mode if use_fixed_sl else "Classic",
+        "strict_rejection": strict_rejection,
+        "use_fixed_sl_mode": use_fixed_sl,
     }
     try:
         sync["last_bar_start"] = int(target_row["start"])

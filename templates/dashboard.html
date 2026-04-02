@@ -649,7 +649,11 @@
       var tMode = (tModeRaw.toLowerCase() === 'higher') ? 'Higher' : 'Lower';
       return (
         '<p class="text-xs font-semibold text-slate-400 mt-3">Long Push Scalping Settings</p>' +
-        '<p class="text-[10px] text-slate-500 mb-2">Executes ONLY LONG trades. Setup: bearish candle (within range) then bullish candle. SL distance = max(current body, fixed pts). Target from Target Mode (Lower = tighter TP, Higher = wider).</p>' +
+        '<p class="text-[10px] text-slate-500 mb-2">LONG only: bearish prior bar (range) then bullish bar. <strong class="text-slate-400">Strict rejection</strong> adds lower-low + below prior mid. <strong class="text-slate-400">Fixed SL mode</strong> uses max(body, fixed pts) and Target mode; turn off for classic SL at low and min-only TP.</p>' +
+        '<div class="flex flex-wrap gap-4 text-xs text-slate-300 mb-3">' +
+        chkFieldL('Strict rejection (lower low + below prior mid)', 'strictRejection', p.strictRejection, false) +
+        chkFieldL('Fixed SL / target mode (Higher–Lower)', 'useFixedSlMode', p.useFixedSlMode, true) +
+        '</div>' +
         '<div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">' +
         numFieldL('Min Range (pts)', 'minRange', p.minRange, 300) +
         numFieldL('Max Range (pts)', 'maxRange', p.maxRange, 700) +

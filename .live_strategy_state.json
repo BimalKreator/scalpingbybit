@@ -3,27 +3,27 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 66524.5,
+      "price": 66350.0,
       "indicators": {
-        "RSI": 53.18,
-        "RSI_SMA": 27.46,
-        "volume_signal_vs_prev": true,
-        "body_size": 42.5,
-        "open": 66482.0,
-        "close": 66524.5,
-        "volume": 8174.0,
-        "Expected_Profit_Pct": 0.1
+        "RSI": 32.14,
+        "RSI_SMA": 44.68,
+        "volume_signal_vs_prev": false,
+        "body_size": 24.5,
+        "open": 66374.5,
+        "close": 66350.0,
+        "volume": 4123.0,
+        "Expected_Profit_Pct": 0.08
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
         "long": [
           {
             "name": "Signal Candle Bearish (open > close)",
-            "met": false
+            "met": true
           },
           {
             "name": "Previous Candle Bearish",
-            "met": true
+            "met": false
           },
           {
             "name": "Both Bearish",
@@ -31,11 +31,11 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": true
+            "met": false
           },
           {
             "name": "RSI < 40.0",
-            "met": false
+            "met": true
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -45,11 +45,11 @@
         "short": [
           {
             "name": "Signal Candle Bullish (close > open)",
-            "met": true
+            "met": false
           },
           {
             "name": "Previous Candle Bullish",
-            "met": false
+            "met": true
           },
           {
             "name": "Both Bullish",
@@ -57,7 +57,7 @@
           },
           {
             "name": "Volume: signal > previous",
-            "met": true
+            "met": false
           },
           {
             "name": "RSI > 60.0",
@@ -70,7 +70,7 @@
         ]
       },
       "checks": {
-        "inst_1775114930571_26c3bc": {
+        "inst_1775119935668_9d4f8c": {
           "name": "Long Push Scalping 5m",
           "interval": "15m",
           "strategy_type": "long_push_scalping",
@@ -80,16 +80,12 @@
               "met": true
             },
             {
-              "text": "1. Previous candle is bearish (Range 300-700)",
+              "text": "1. Previous candle is bearish (body range 300-700)",
               "met": false
             },
             {
-              "text": "2. Current candle made a Lower Low (low < prev_low)",
+              "text": "2. Current candle is bullish (close > open)",
               "met": false
-            },
-            {
-              "text": "3. Current candle is bullish AND closed below previous mid-level",
-              "met": true
             }
           ],
           "rules_short": [
@@ -98,25 +94,23 @@
               "met": false
             }
           ],
-          "note": "Long Push Scalping (Longs Only): Requires previous bearish candle (Range 300-700), followed by a bullish candle making a lower low but closing below the previous candle's mid-level.",
+          "note": "Long Push Scalping (long only): prior bearish bar in range 300-700, then bullish bar. SL distance = max(close\u2212open, slFixedPts); TP picks min of (risk\u00d7tpMultiplier) vs maxTargetPts. Target mode: Lower.",
           "monitor_sync": {
             "engine": "long_push_scalping",
             "rows_in_buffer": 1000,
             "rows_trimmed": 1000,
-            "prev_open": 66651.5,
-            "prev_close": 66482.0,
-            "prev_low": 66470.0,
-            "curr_open": 66482.0,
-            "curr_close": 66523.5,
-            "curr_low": 66482.0,
-            "mid_level": 66566.75,
-            "last_bar_start": 1775119500000,
+            "prev_open": 66451.5,
+            "prev_close": 66407.5,
+            "curr_open": 66406.5,
+            "curr_close": 66374.0,
+            "target_mode": "Lower",
+            "last_bar_start": 1775123100000,
             "last_signal_start": 0,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
           }
         },
-        "inst_1775114945528_286d85": {
+        "inst_1775119992144_0951eb": {
           "name": "Long Push Scalping 5m",
           "interval": "60m",
           "strategy_type": "long_push_scalping",
@@ -126,15 +120,11 @@
               "met": true
             },
             {
-              "text": "1. Previous candle is bearish (Range 300-700)",
+              "text": "1. Previous candle is bearish (body range 300-700)",
               "met": false
             },
             {
-              "text": "2. Current candle made a Lower Low (low < prev_low)",
-              "met": false
-            },
-            {
-              "text": "3. Current candle is bullish AND closed below previous mid-level",
+              "text": "2. Current candle is bullish (close > open)",
               "met": false
             }
           ],
@@ -144,26 +134,24 @@
               "met": false
             }
           ],
-          "note": "Long Push Scalping (Longs Only): Requires previous bearish candle (Range 300-700), followed by a bullish candle making a lower low but closing below the previous candle's mid-level.",
+          "note": "Long Push Scalping (long only): prior bearish bar in range 300-700, then bullish bar. SL distance = max(close\u2212open, slFixedPts); TP picks min of (risk\u00d7tpMultiplier) vs maxTargetPts. Target mode: Lower.",
           "monitor_sync": {
             "engine": "long_push_scalping",
             "rows_in_buffer": 1000,
             "rows_trimmed": 1000,
-            "prev_open": 66564.5,
-            "prev_close": 66660.0,
-            "prev_low": 66524.0,
-            "curr_open": 66660.0,
-            "curr_close": 66743.0,
-            "curr_low": 66527.5,
-            "mid_level": 66660.0,
-            "last_bar_start": 1775113200000,
+            "prev_open": 66660.0,
+            "prev_close": 66895.0,
+            "curr_open": 66893.0,
+            "curr_close": 66489.0,
+            "target_mode": "Lower",
+            "last_bar_start": 1775116800000,
             "last_signal_start": 0,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
           }
         }
       },
-      "checks_updated_unix": 1775119586.1106071,
+      "checks_updated_unix": 1775123534.6396203,
       "status": "Waiting",
       "sl_price": null,
       "tp_price": null,

@@ -239,6 +239,16 @@
       <div id="params-long_push_scalping" class="hidden bg-slate-900/80 rounded-2xl p-5 border border-slate-800 space-y-4">
         <h2 class="text-sm font-semibold text-slate-200">Long Push Scalping — parameters</h2>
         <p class="text-xs text-slate-500">LONG-only two-bar pattern; fill next bar open; exit on SL/TP touch or bar close (engine).</p>
+        <div class="flex flex-col sm:flex-row gap-3 mt-2">
+          <label class="flex items-center justify-between gap-3 flex-1 bg-slate-800/50 p-3 rounded-xl border border-slate-700/50 cursor-pointer">
+            <span class="text-xs text-slate-300 font-medium">Strict rejection mode</span>
+            <input type="checkbox" id="bt_lps_strictRejection" class="w-4 h-4 rounded border-slate-600 text-emerald-600 focus:ring-emerald-500 bg-slate-700" />
+          </label>
+          <label class="flex items-center justify-between gap-3 flex-1 bg-slate-800/50 p-3 rounded-xl border border-slate-700/50 cursor-pointer">
+            <span class="text-xs text-slate-300 font-medium">Fixed SL / target mode</span>
+            <input type="checkbox" id="bt_lps_useFixedSl" checked class="w-4 h-4 rounded border-slate-600 text-emerald-600 focus:ring-emerald-500 bg-slate-700" />
+          </label>
+        </div>
         <div id="params-long-push-grid" class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
           <div>
             <label class="block text-xs font-medium text-slate-400 mb-1">Min Range (pts)</label>
@@ -447,7 +457,11 @@
           allow_reversal = false;
         } else if (strategy_type === 'long_push_scalping') {
           var tmEl = document.getElementById('bt_lps_targetMode');
+          var elStrict = document.getElementById('bt_lps_strictRejection');
+          var elFixed = document.getElementById('bt_lps_useFixedSl');
           params = {
+            strictRejection: !!(elStrict && elStrict.checked),
+            useFixedSlMode: elFixed ? elFixed.checked : true,
             minRange: numEl(document.getElementById('bt_lps_minRange'), 300),
             maxRange: numEl(document.getElementById('bt_lps_maxRange'), 700),
             slFixedPts: numEl(document.getElementById('bt_lps_slFixedPts'), 150),

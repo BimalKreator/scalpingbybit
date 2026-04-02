@@ -1,6 +1,6 @@
 [
   {
-    "id": "inst_1775114930571_26c3bc",
+    "id": "inst_1775119935668_9d4f8c",
     "strategy_type": "long_push_scalping",
     "name": "Long Push Scalping 5m",
     "enabled": true,
@@ -9,8 +9,10 @@
     "params": {
       "minRange": 300,
       "maxRange": 700,
-      "tpMultiplier": 2,
-      "maxTargetPts": 150,
+      "tpMultiplier": 1,
+      "maxTargetPts": 300,
+      "slFixedPts": 200,
+      "targetMode": "Lower",
       "tradeMode": "Both",
       "tradeCapitalUsd": 100,
       "leverage": 10,
@@ -24,13 +26,13 @@
     "state": {
       "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 7,
-      "last_evaluated_start": 1775119500000,
+      "bar_seq": 5,
+      "last_evaluated_start": 1775123100000,
       "last_signal_start": null
     }
   },
   {
-    "id": "inst_1775114945528_286d85",
+    "id": "inst_1775119992144_0951eb",
     "strategy_type": "long_push_scalping",
     "name": "Long Push Scalping 5m",
     "enabled": true,
@@ -39,8 +41,10 @@
     "params": {
       "minRange": 300,
       "maxRange": 700,
-      "tpMultiplier": 2,
+      "tpMultiplier": 3,
       "maxTargetPts": 150,
+      "slFixedPts": 300,
+      "targetMode": "Lower",
       "tradeMode": "Both",
       "tradeCapitalUsd": 100,
       "leverage": 10,
