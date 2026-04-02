@@ -645,14 +645,22 @@
     /** Long Push Scalping: two-bar PA; LONG-only; absolute SL/TP at execution. */
     function longPushScalpingExecutionBlock(p) {
       p = p || {};
+      var tModeRaw = (p.targetMode != null && p.targetMode !== '') ? String(p.targetMode).trim() : 'Lower';
+      var tMode = (tModeRaw.toLowerCase() === 'higher') ? 'Higher' : 'Lower';
       return (
         '<p class="text-xs font-semibold text-slate-400 mt-3">Long Push Scalping Settings</p>' +
-        '<p class="text-[10px] text-slate-500 mb-2">Executes ONLY LONG trades based on pure price action (bearish exhaustion → bullish lower low). Target is min(Risk × Multiplier, Max Pts).</p>' +
+        '<p class="text-[10px] text-slate-500 mb-2">Executes ONLY LONG trades. Setup: bearish candle (within range) then bullish candle. SL distance = max(current body, fixed pts). Target from Target Mode (Lower = tighter TP, Higher = wider).</p>' +
         '<div class="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">' +
         numFieldL('Min Range (pts)', 'minRange', p.minRange, 300) +
-        numFieldL('Max Range (pts)', 'maxRange', p.maxRange, 600) +
+        numFieldL('Max Range (pts)', 'maxRange', p.maxRange, 700) +
+        numFieldL('SL Fixed Pts', 'slFixedPts', p.slFixedPts, 150) +
         numFieldL('TP Multiplier', 'tpMultiplier', p.tpMultiplier, 1.5, '0.1') +
         numFieldL('Max Target Pts', 'maxTargetPts', p.maxTargetPts, 500) +
+        '<label class="block text-slate-400">Target Mode<select data-p="targetMode" class="mt-1 w-full rounded-lg bg-slate-900 border border-slate-600 px-2 py-1.5 text-sm text-white">' +
+        ['Lower', 'Higher'].map(function (x) {
+          return '<option value="' + x + '"' + (tMode === x ? ' selected' : '') + '>' + x + '</option>';
+        }).join('') +
+        '</select></label>' +
         numFieldL('Trade capital (USD)', 'tradeCapitalUsd', p.tradeCapitalUsd, 100) +
         numFieldL('Leverage (×)', 'leverage', p.leverage, 10) +
         '</div>' +

@@ -1,9 +1,12 @@
 """
-Long Push Scalping — LONG-only price-action setup on the last two **closed** bars.
+Long Push Scalping — LONG-only price-action on the last two **closed** bars.
 
-Bearish exhaustion (prior bar: body range within min/max) + lower low + bullish rejection
-(current bar bullish, close below mid of prior body). SL at current low; TP = min of
-risk × tpMultiplier and entry + maxTargetPts.
+Prior bar: bearish with body range in [minRange, maxRange]. Current bar: bullish.
+Entry reference: current close (live fill uses signal row / next open per hub).
+
+Stop: risk = max(current close − current open, slFixedPts); SL = current close − risk.
+TP: Target1 = entry + risk × tpMultiplier; Target2 = entry + maxTargetPts;
+final TP is min or max of those depending on targetMode (Lower vs Higher).
 """
 
 from __future__ import annotations
@@ -20,9 +23,11 @@ STRATEGY_NAME = "long_push_scalping"
 
 DEFAULT_PARAMS: dict[str, Any] = {
     "minRange": 300.0,
-    "maxRange": 600.0,
+    "maxRange": 700.0,
     "tpMultiplier": 1.5,
     "maxTargetPts": 500.0,
+    "slFixedPts": 150.0,
+    "targetMode": "Lower",
     "tradeMode": "Both",
     "tradeCapitalUsd": 100.0,
     "leverage": 10.0,
@@ -43,6 +48,11 @@ def _trade_mode(params: dict) -> str:
     if raw in ("Long", "Short", "Both"):
         return raw
     return "Both"
+
+
+def _target_mode_label(p: dict) -> str:
+    s = str(p.get("targetMode") or "Lower").strip().lower()
+    return "Higher" if s == "higher" else "Lower"
 
 
 def _float_param(p: dict, key: str, default: float) -> float:
@@ -137,7 +147,6 @@ def evaluate(
     p = {**DEFAULT_PARAMS, **(params or {})}
     st = dict(state or {})
     tag = _lps_instance_tag(st)
-    # Only emit LPS lines when Hub passes instance context (avoids backtest / import noise).
     _log_lps = bool(
         str(st.get("instance_id") or "").strip()
         or str(st.get("instance_name") or "").strip()
@@ -207,9 +216,11 @@ def evaluate(
         return out
 
     min_range = _float_param(p, "minRange", 300.0)
-    max_range = _float_param(p, "maxRange", 600.0)
+    max_range = _float_param(p, "maxRange", 700.0)
     tp_mult = max(1e-12, _float_param(p, "tpMultiplier", 1.5))
     max_tp_pts = max(0.0, _float_param(p, "maxTargetPts", 500.0))
+    sl_fixed_pts = max(0.0, _float_param(p, "slFixedPts", 150.0))
+    tm_label = _target_mode_label(p)
 
     if min_range > max_range:
         if _log_lps:
@@ -228,10 +239,8 @@ def evaluate(
     try:
         prev_open = float(prev_row["open"])
         prev_close = float(prev_row["close"])
-        prev_low = float(prev_row["low"])
         curr_open = float(curr_row["open"])
         curr_close = float(curr_row["close"])
-        curr_low = float(curr_row["low"])
     except (TypeError, ValueError, KeyError):
         if _log_lps:
             _LOG.info("[LPS DEBUG] %s skip: invalid_ohlc (read failure)", tag)
@@ -240,7 +249,7 @@ def evaluate(
 
     if any(
         not math.isfinite(x)
-        for x in (prev_open, prev_close, prev_low, curr_open, curr_close, curr_low)
+        for x in (prev_open, prev_close, curr_open, curr_close)
     ):
         if _log_lps:
             _LOG.info("[LPS DEBUG] %s skip: invalid_ohlc (non-finite)", tag)
@@ -259,43 +268,37 @@ def evaluate(
     prev_is_bearish = prev_close < prev_open
     prev_body_range = (prev_open - prev_close) if prev_is_bearish else 0.0
     range_ok = min_range <= prev_body_range <= max_range
-    lower_low_ok = curr_low < prev_low
     curr_is_bullish = curr_close > curr_open
-    mid_level = prev_close + (prev_body_range / 2.0)
-    mid_level_ok = curr_close < mid_level
+
+    # REMOVED (no longer required for entry):
+    # - lower_low_ok: curr_low < prev_low
+    # - mid_level_ok: curr_close < mid of prior bearish body
 
     if _log_lps:
         _LOG.info(
-            "[LPS DEBUG] %s P_Bear:%s Rng:%.1f(%s) LL:%s C_Bull:%s Mid:%s | "
-            "C_Close:%s MidLvl:%s long_ok:%s",
+            "[LPS DEBUG] %s P_Bear:%s Rng:%.1f(%s) C_Bull:%s | C_Close:%s long_ok:%s targetMode:%s",
             tag,
             prev_is_bearish,
             prev_body_range,
             range_ok,
-            lower_low_ok,
             curr_is_bullish,
-            mid_level_ok,
             curr_close,
-            mid_level,
             long_ok,
+            tm_label,
         )
 
     if not long_ok:
         out["reason"] = "trade_mode_blocks_long"
         return out
 
-    if not (
-        prev_is_bearish
-        and range_ok
-        and lower_low_ok
-        and curr_is_bullish
-        and mid_level_ok
-    ):
+    if not (prev_is_bearish and range_ok and curr_is_bullish):
         out["reason"] = "conditions_not_met"
         return out
 
-    sl_price = curr_low
-    risk = curr_close - sl_price
+    dist_body = curr_close - curr_open
+    risk = max(dist_body, sl_fixed_pts)
+    sl_price = curr_close - risk
+
     if risk <= 0.01:
         if _log_lps:
             _LOG.info(
@@ -308,7 +311,10 @@ def evaluate(
 
     target_1 = curr_close + (risk * tp_mult)
     target_2 = curr_close + max_tp_pts
-    final_tp = min(target_1, target_2)
+    if tm_label == "Higher":
+        final_tp = max(target_1, target_2)
+    else:
+        final_tp = min(target_1, target_2)
 
     out["signal"] = "Buy"
     out["reason"] = "long_push_scalp_entry"
@@ -344,6 +350,8 @@ def evaluate(
         "target_tp_r_multiple": float(target_1),
         "target_tp_max_pts": float(target_2),
         "target_TP": float(final_tp),
+        "target_mode": tm_label,
+        "sl_fixed_pts": float(sl_fixed_pts),
         "min_range": float(min_range),
         "max_range": float(max_range),
         "tp_multiplier": float(tp_mult),
@@ -354,11 +362,12 @@ def evaluate(
     }
     if _log_lps:
         _LOG.info(
-            "[LPS DEBUG] %s BUY long_push_scalp_entry SL=%.4f TP=%.4f risk=%.4f",
+            "[LPS DEBUG] %s BUY long_push_scalp_entry SL=%.4f TP=%.4f risk=%.4f mode=%s",
             tag,
             float(sl_price),
             float(final_tp),
             float(risk),
+            tm_label,
         )
     return out
 
@@ -380,8 +389,9 @@ def build_entry_checklists(
     _ = dict(state or {})
 
     min_range = _float_param(p, "minRange", 300.0)
-    max_range = _float_param(p, "maxRange", 600.0)
+    max_range = _float_param(p, "maxRange", 700.0)
     tm_disp = str(p.get("tradeMode", "Both"))
+    tm_mode = _target_mode_label(p)
 
     rules_short = [
         {"text": "This strategy only takes LONG trades", "met": False},
@@ -416,10 +426,8 @@ def build_entry_checklists(
     try:
         prev_open = float(prev_row["open"])
         prev_close = float(prev_row["close"])
-        prev_low = float(prev_row["low"])
         curr_open = float(target_row["open"])
         curr_close = float(target_row["close"])
-        curr_low = float(target_row["low"])
     except (TypeError, ValueError, KeyError):
         return {
             "rules_long": [{"text": "Invalid OHLC on last bars", "met": False}],
@@ -431,12 +439,7 @@ def build_entry_checklists(
     prev_is_bearish = prev_close < prev_open
     prev_body_range = (prev_open - prev_close) if prev_is_bearish else 0.0
     range_ok = min_range <= prev_body_range <= max_range
-
-    lower_low_ok = curr_low < prev_low
     curr_is_bullish = curr_close > curr_open
-
-    mid_level = prev_close + (prev_body_range / 2.0)
-    mid_level_ok = curr_close < mid_level
 
     trade_mode = str(p.get("tradeMode", "Both")).strip().lower()
     long_ok = trade_mode in ("both", "long")
@@ -447,22 +450,20 @@ def build_entry_checklists(
             "met": bool(long_ok),
         },
         {
-            "text": f"1. Previous candle is bearish (Range {min_range:g}-{max_range:g})",
+            "text": f"1. Previous candle is bearish (body range {min_range:g}-{max_range:g})",
             "met": bool(prev_is_bearish and range_ok),
         },
         {
-            "text": "2. Current candle made a Lower Low (low < prev_low)",
-            "met": bool(lower_low_ok),
-        },
-        {
-            "text": "3. Current candle is bullish AND closed below previous mid-level",
-            "met": bool(curr_is_bullish and mid_level_ok),
+            "text": "2. Current candle is bullish (close > open)",
+            "met": bool(curr_is_bullish),
         },
     ]
 
     note = (
-        f"Long Push Scalping (Longs Only): Requires previous bearish candle (Range {min_range:g}-{max_range:g}), "
-        f"followed by a bullish candle making a lower low but closing below the previous candle's mid-level."
+        f"Long Push Scalping (long only): prior bearish bar in range {min_range:g}-{max_range:g}, "
+        f"then bullish bar. SL distance = max(close−open, slFixedPts); TP picks "
+        f"{'max' if tm_mode == 'Higher' else 'min'} of (risk×tpMultiplier) vs maxTargetPts. "
+        f"Target mode: {tm_mode}."
     )
 
     sync: dict[str, Any] = {
@@ -471,11 +472,9 @@ def build_entry_checklists(
         "rows_trimmed": len(d),
         "prev_open": prev_open,
         "prev_close": prev_close,
-        "prev_low": prev_low,
         "curr_open": curr_open,
         "curr_close": curr_close,
-        "curr_low": curr_low,
-        "mid_level": float(mid_level) if math.isfinite(mid_level) else None,
+        "target_mode": tm_mode,
     }
     try:
         sync["last_bar_start"] = int(target_row["start"])

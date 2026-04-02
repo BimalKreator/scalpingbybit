@@ -3,23 +3,23 @@
   "symbols": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "price": 66742.0,
+      "price": 66524.5,
       "indicators": {
-        "RSI": 80.12,
-        "RSI_SMA": 62.78,
+        "RSI": 53.18,
+        "RSI_SMA": 27.46,
         "volume_signal_vs_prev": true,
-        "body_size": 2.0,
-        "open": 66744.0,
-        "close": 66742.0,
-        "volume": 6236.0,
-        "Expected_Profit_Pct": 0.06
+        "body_size": 42.5,
+        "open": 66482.0,
+        "close": 66524.5,
+        "volume": 8174.0,
+        "Expected_Profit_Pct": 0.1
       },
       "indicators_note": "Top RSI/body rules are 1m legacy monitor fields only. Strategy instances use the timeframe on each card (see monitor_sync.sig_rsi).",
       "conditions": {
         "long": [
           {
             "name": "Signal Candle Bearish (open > close)",
-            "met": true
+            "met": false
           },
           {
             "name": "Previous Candle Bearish",
@@ -27,7 +27,7 @@
           },
           {
             "name": "Both Bearish",
-            "met": true
+            "met": false
           },
           {
             "name": "Volume: signal > previous",
@@ -45,7 +45,7 @@
         "short": [
           {
             "name": "Signal Candle Bullish (close > open)",
-            "met": false
+            "met": true
           },
           {
             "name": "Previous Candle Bullish",
@@ -61,7 +61,7 @@
           },
           {
             "name": "RSI > 60.0",
-            "met": true
+            "met": false
           },
           {
             "name": "Expected Profit >= 0.02%",
@@ -89,7 +89,7 @@
             },
             {
               "text": "3. Current candle is bullish AND closed below previous mid-level",
-              "met": false
+              "met": true
             }
           ],
           "rules_short": [
@@ -103,14 +103,14 @@
             "engine": "long_push_scalping",
             "rows_in_buffer": 1000,
             "rows_trimmed": 1000,
-            "prev_open": 66552.0,
-            "prev_close": 66653.5,
-            "prev_low": 66551.5,
-            "curr_open": 66653.5,
-            "curr_close": 66751.0,
-            "curr_low": 66650.5,
-            "mid_level": 66653.5,
-            "last_bar_start": 1775115000000,
+            "prev_open": 66651.5,
+            "prev_close": 66482.0,
+            "prev_low": 66470.0,
+            "curr_open": 66482.0,
+            "curr_close": 66523.5,
+            "curr_low": 66482.0,
+            "mid_level": 66566.75,
+            "last_bar_start": 1775119500000,
             "last_signal_start": 0,
             "autotrade_enabled": true,
             "order_pending_for_this_conf_bar": false
@@ -153,7 +153,7 @@
             "prev_close": 66660.0,
             "prev_low": 66524.0,
             "curr_open": 66660.0,
-            "curr_close": 66639.0,
+            "curr_close": 66743.0,
             "curr_low": 66527.5,
             "mid_level": 66660.0,
             "last_bar_start": 1775113200000,
@@ -163,7 +163,7 @@
           }
         }
       },
-      "checks_updated_unix": 1775115314.126519,
+      "checks_updated_unix": 1775119586.1106071,
       "status": "Waiting",
       "sl_price": null,
       "tp_price": null,

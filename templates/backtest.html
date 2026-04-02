@@ -246,7 +246,11 @@
           </div>
           <div>
             <label class="block text-xs font-medium text-slate-400 mb-1">Max Range (pts)</label>
-            <input type="number" id="bt_lps_maxRange" value="600" class="w-full rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-white" />
+            <input type="number" id="bt_lps_maxRange" value="700" class="w-full rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-white" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">SL Fixed Pts</label>
+            <input type="number" id="bt_lps_slFixedPts" value="150" class="w-full rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-white" />
           </div>
           <div>
             <label class="block text-xs font-medium text-slate-400 mb-1">TP Multiplier</label>
@@ -255,6 +259,13 @@
           <div>
             <label class="block text-xs font-medium text-slate-400 mb-1">Max Target Pts</label>
             <input type="number" id="bt_lps_maxTarget" value="500" class="w-full rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-white" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-1">Target Mode</label>
+            <select id="bt_lps_targetMode" class="w-full rounded-xl bg-slate-900 border border-slate-700 px-3 py-2 text-white">
+              <option value="Lower" selected>Lower</option>
+              <option value="Higher">Higher</option>
+            </select>
           </div>
         </div>
       </div>
@@ -435,11 +446,14 @@
           leverage = params.leverage;
           allow_reversal = false;
         } else if (strategy_type === 'long_push_scalping') {
+          var tmEl = document.getElementById('bt_lps_targetMode');
           params = {
             minRange: numEl(document.getElementById('bt_lps_minRange'), 300),
-            maxRange: numEl(document.getElementById('bt_lps_maxRange'), 600),
+            maxRange: numEl(document.getElementById('bt_lps_maxRange'), 700),
+            slFixedPts: numEl(document.getElementById('bt_lps_slFixedPts'), 150),
             tpMultiplier: numEl(document.getElementById('bt_lps_tpMult'), 1.5),
             maxTargetPts: numEl(document.getElementById('bt_lps_maxTarget'), 500),
+            targetMode: tmEl && tmEl.value ? tmEl.value : 'Lower',
             tradeCapitalUsd: num('trade_amount_usd', 100),
             leverage: num('leverage', 5)
           };

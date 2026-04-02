@@ -980,7 +980,16 @@ def _run_backtest_long_push_scalping(
         "best_params": {
             **{
                 k: p.get(k)
-                for k in ("minRange", "maxRange", "tpMultiplier", "maxTargetPts", "tradeCapitalUsd", "leverage")
+                for k in (
+                    "minRange",
+                    "maxRange",
+                    "slFixedPts",
+                    "targetMode",
+                    "tpMultiplier",
+                    "maxTargetPts",
+                    "tradeCapitalUsd",
+                    "leverage",
+                )
             },
             "strategy_type": "long_push_scalping",
         },
@@ -1118,7 +1127,16 @@ def _run_backtest_long_push_scalping(
         "best_params": {
             **{
                 k: p.get(k)
-                for k in ("minRange", "maxRange", "tpMultiplier", "maxTargetPts", "tradeCapitalUsd", "leverage")
+                for k in (
+                    "minRange",
+                    "maxRange",
+                    "slFixedPts",
+                    "targetMode",
+                    "tpMultiplier",
+                    "maxTargetPts",
+                    "tradeCapitalUsd",
+                    "leverage",
+                )
             },
             "strategy_type": "long_push_scalping",
         },
