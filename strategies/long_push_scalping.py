@@ -77,6 +77,42 @@ def _ensure_ohlc(df: pd.DataFrame | None) -> pd.DataFrame | None:
     return df.sort_values("start").reset_index(drop=True) if "start" in df.columns else df.reset_index(drop=True)
 
 
+def _expected_bar_spacing_ms(eval_interval_minutes: int | None) -> int | None:
+    if eval_interval_minutes is None:
+        return None
+    try:
+        m = int(eval_interval_minutes)
+    except (TypeError, ValueError):
+        return None
+    if m <= 0:
+        return None
+    return m * 60 * 1000
+
+
+def _closed_bars_match_eval_interval(
+    df: pd.DataFrame, eval_interval_minutes: int | None
+) -> tuple[bool, str]:
+    """
+    Reject wrong kline buffers (e.g. 1m rows fed to a 15m instance). Skipped when
+    eval_interval_minutes is unset (backtests / callers without WS context).
+    """
+    exp_ms = _expected_bar_spacing_ms(eval_interval_minutes)
+    if exp_ms is None:
+        return True, ""
+    if df is None or len(df) < 2 or "start" not in df.columns:
+        return True, ""
+    try:
+        s0 = int(df.iloc[-2]["start"])
+        s1 = int(df.iloc[-1]["start"])
+    except (TypeError, ValueError, KeyError):
+        return True, ""
+    delta = s1 - s0
+    tol = max(2000, exp_ms // 25)
+    if abs(delta - exp_ms) <= tol:
+        return True, ""
+    return False, f"bar_spacing_mismatch delta_ms={delta} expected_ms={exp_ms}"
+
+
 def _lps_instance_tag(state: dict[str, Any]) -> str:
     iid = str(state.get("instance_id") or "").strip()
     name = str(state.get("instance_name") or "").strip()
@@ -131,11 +167,43 @@ def evaluate(
         out["reason"] = "trade_mode_short_only_disabled"
         return out
 
+    ev_iv_raw = st.get("eval_interval_minutes")
+    try:
+        ev_iv = int(ev_iv_raw) if ev_iv_raw is not None else None
+    except (TypeError, ValueError):
+        ev_iv = None
+    pf_tf = p.get("timeframe")
+    if pf_tf not in (None, "") and ev_iv is not None:
+        try:
+            from instance_storage import timeframe_to_minutes as _tfm
+
+            pm = _tfm(str(pf_tf))
+        except Exception:
+            pm = None
+        if pm is not None and pm != ev_iv:
+            if _log_lps:
+                _LOG.info(
+                    "[LPS DEBUG] %s skip: params_timeframe_mismatch params_tf=%s -> %sm vs eval_iv=%sm",
+                    tag,
+                    pf_tf,
+                    pm,
+                    ev_iv,
+                )
+            out["reason"] = "params_timeframe_mismatch"
+            return out
+
     d = _ensure_ohlc(df)
     if d is None:
         if _log_lps:
             _LOG.info("[LPS DEBUG] %s skip: invalid_df (need OHLC, ≥2 rows)", tag)
         out["reason"] = "invalid_df"
+        return out
+
+    ok_spacing, sp_reason = _closed_bars_match_eval_interval(d, ev_iv)
+    if not ok_spacing:
+        if _log_lps:
+            _LOG.info("[LPS DEBUG] %s skip: %s", tag, sp_reason)
+        out["reason"] = sp_reason
         return out
 
     min_range = _float_param(p, "minRange", 300.0)
@@ -249,8 +317,10 @@ def evaluate(
     )
     out["sl_price"] = float(sl_price)
     out["tp_price"] = float(final_tp)
+    iid = str(st.get("instance_id") or "").strip() or "manual"
+    disp = str(st.get("instance_name") or "").strip() or "Long Push"
+    tf_meta = str(st.get("instance_timeframe") or p.get("timeframe") or "unknown")
     out["meta"] = {
-        "strategy_name": STRATEGY_NAME,
         "strategy_type": STRATEGY_NAME,
         "sl_price": float(sl_price),
         "tp_price": float(final_tp),
@@ -262,6 +332,9 @@ def evaluate(
         "max_range": float(max_range),
         "tp_multiplier": float(tp_mult),
         "max_target_pts": float(max_tp_pts),
+        "instance_id": iid,
+        "strategy_name": disp,
+        "timeframe": tf_meta,
     }
     if _log_lps:
         _LOG.info(

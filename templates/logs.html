@@ -139,6 +139,14 @@
       var bybitWrap = document.getElementById('bybit-wrap');
       var virtualWrap = document.getElementById('virtual-wrap');
 
+      function escapeHtml(s) {
+        if (s === undefined || s === null) return '';
+        return String(s)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
       function formatNum(x) {
         if (x === undefined || x === null || x === '') return '–';
         var n = Number(x);
@@ -186,14 +194,21 @@
         var pnlClass = pnl >= 0 ? 'text-success' : 'text-danger';
         var side = (row.side || '').toUpperCase();
         var sideClass = side === 'BUY' ? 'text-success' : 'text-danger';
-        var strat = (row.strategy_name != null && row.strategy_name !== '') ? row.strategy_name : 'Manual';
+        var stratName = (row.strategy_name != null && row.strategy_name !== '') ? row.strategy_name : 'Manual';
+        var tf = row.timeframe || '–';
+        var iid = row.instance_id || '';
+        var stratBadge = '<span class="px-2 py-1 bg-slate-700 text-slate-300 rounded text-[10px] uppercase">' +
+          escapeHtml(stratName) + ' <span class="text-slate-500 normal-case">(' + escapeHtml(tf) + ')</span></span>';
+        var stratCell = '<div class="d-flex flex-column gap-1">' + stratBadge +
+          (iid ? '<span class="text-[10px] text-slate-500 font-monospace">' + escapeHtml(iid) + '</span>' : '') +
+          '</div>';
         var feeVal = row.fee != null ? parseFloat(row.fee) : (row.fees != null ? parseFloat(row.fees) : 0);
         if (isNaN(feeVal)) feeVal = 0;
         return '<tr>' +
           '<td class="text-white fw-medium">' + (row.symbol || '–') + '</td>' +
           '<td class="text-white font-monospace">' + formatClosedTradeQty(row) + '</td>' +
           '<td class="' + sideClass + ' fw-medium">' + (row.side || '–') + '</td>' +
-          '<td class="text-white fw-medium">' + strat + '</td>' +
+          '<td class="text-white">' + stratCell + '</td>' +
           '<td class="text-white">' + toIST(row.createdTime) + '</td>' +
           '<td class="text-white">' + toIST(row.updatedTime) + '</td>' +
           '<td class="text-white">' + (row.avgEntryPrice || '–') + '</td>' +

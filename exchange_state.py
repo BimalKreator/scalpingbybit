@@ -96,6 +96,8 @@ def _empty_tracker() -> dict[str, Any]:
         "paper_fee_on_entry": None,
         "paper_fee_on_exit": None,
         "paper_entry_notional_usd": None,
+        "position_instance_id": None,
+        "position_timeframe": None,
     }
 
 

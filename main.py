@@ -1006,6 +1006,8 @@ def _append_virtual_closed_trade_row(
     trade_symbol: str | None = None,
     fee: float = 0.0,
     gross_pnl: float | None = None,
+    instance_id: str | None = None,
+    timeframe: str | None = None,
 ) -> None:
     try:
         VIRTUAL_CLOSED_TRADES_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -1038,6 +1040,8 @@ def _append_virtual_closed_trade_row(
             "fees": round(fee_f, 8),
             "exitReason": exit_reason,
             "strategy_name": (strategy_name or "Manual").strip(),
+            "instance_id": (instance_id or "").strip(),
+            "timeframe": (timeframe or "").strip(),
         }
         with _closed_trades_file_lock:
             existing: list = []
@@ -1247,6 +1251,7 @@ def _finalize_virtual_position_close(
     entry = float(entry_raw or 0.0)
     if snap_sz <= 0:
         return
+    tr_pre = xst.tracker(sym, SYMBOL)
     ex = float(exit_price)
     want_partial = close_qty is not None
     cq_req = float(close_qty) if want_partial else float(snap_sz)
@@ -1274,7 +1279,15 @@ def _finalize_virtual_position_close(
         total_fee = entry_fee + exit_fee
         net_pnl = float(gross_pnl) - float(total_fee)
         update_virtual_wallet(pnl_change=net_pnl)
-        strat_snap = (_active_trade_strategy_name or "Manual").strip()
+        strat_snap = (
+            str(tr_pre.get("strategy_name") or "").strip()
+            or (_active_trade_strategy_name or "Manual").strip()
+        )
+        inst_snap = (
+            str(tr_pre.get("position_instance_id") or "").strip()
+            or str(_active_order_instance_id or "").strip()
+        )
+        tf_snap = str(tr_pre.get("position_timeframe") or "").strip()
         _append_virtual_closed_trade_row(
             entry_price=entry,
             exit_price=ex,
@@ -1286,6 +1299,8 @@ def _finalize_virtual_position_close(
             trade_symbol=sym,
             fee=total_fee,
             gross_pnl=gross_pnl,
+            instance_id=inst_snap or None,
+            timeframe=tf_snap or None,
         )
         if sym == _norm_sym(SYMBOL):
             _monitor_had_position = False
@@ -1321,7 +1336,15 @@ def _finalize_virtual_position_close(
     total_fee = entry_fee + exit_fee
     net_pnl = float(gross_pnl) - float(total_fee)
     update_virtual_wallet(pnl_change=net_pnl)
-    strat_snap = (_active_trade_strategy_name or "Manual").strip()
+    strat_snap = (
+        str(tr_pre.get("strategy_name") or "").strip()
+        or (_active_trade_strategy_name or "Manual").strip()
+    )
+    inst_snap = (
+        str(tr_pre.get("position_instance_id") or "").strip()
+        or str(_active_order_instance_id or "").strip()
+    )
+    tf_snap = str(tr_pre.get("position_timeframe") or "").strip()
     er = str(exit_reason or "")
     row_reason = er if "partial" in er.lower() else f"Partial Close (paper) — {er}"
     _append_virtual_closed_trade_row(
@@ -1335,6 +1358,8 @@ def _finalize_virtual_position_close(
         trade_symbol=sym,
         fee=total_fee,
         gross_pnl=gross_pnl,
+        instance_id=inst_snap or None,
+        timeframe=tf_snap or None,
     )
     new_sz = max(0.0, snap_sz - cq)
     tr_rem = xst.tracker(sym, SYMBOL)
@@ -3763,9 +3788,18 @@ def _xst_record_filled_entry(
     sl_mx: float,
     exchange_sl_ok: bool,
     paper_notional_usd: float | None = None,
+    meta: dict[str, Any] | None = None,
 ) -> None:
     """Persist open position + SL/TP tracker in exchange_state (multi-coin)."""
     now = time.time()
+    m = dict(meta or {})
+    pid = str(m.get("instance_id") or _active_order_instance_id or "").strip()
+    ptf = str(m.get("timeframe") or "").strip()
+    if not ptf and pid:
+        inst_fb = instance_storage.get_instance_by_id(pid)
+        if inst_fb:
+            ptf = str(inst_fb.get("timeframe") or "").strip()
+    strat_tr = str(m.get("strategy_name") or _active_trade_strategy_name or "Manual").strip()
     xst.set_position_fields(
         order_sym,
         SYMBOL,
@@ -3773,7 +3807,9 @@ def _xst_record_filled_entry(
         entry=float(ent),
         side=side,
     )
-    _fp, _fe, _fx = _virtual_paper_fee_params_from_instance_id(_active_order_instance_id)
+    _fp, _fe, _fx = _virtual_paper_fee_params_from_instance_id(
+        (pid or str(_active_order_instance_id or "").strip()) or None
+    )
     pn = None
     if paper_notional_usd is not None:
         try:
@@ -3801,7 +3837,9 @@ def _xst_record_filled_entry(
         last_position_was_reverse=bool(is_reverse),
         base_risk_dist=abs(float(ent) - float(sl_wide)) / max(float(sl_mx), 1e-12),
         monitor_had_position=True,
-        strategy_name=str(_active_trade_strategy_name or "Manual").strip(),
+        strategy_name=strat_tr or str(_active_trade_strategy_name or "Manual").strip(),
+        position_instance_id=pid or None,
+        position_timeframe=ptf or None,
         paper_fee_pct=float(_fp),
         paper_fee_on_entry=bool(_fe),
         paper_fee_on_exit=bool(_fx),
@@ -4070,6 +4108,7 @@ async def _place_order_async(
                 sl_mx=float(sl_mx),
                 exchange_sl_ok=True,
                 paper_notional_usd=float(trade_amount_usd) * float(leverage),
+                meta=meta,
             )
             _set_exchange_sl_health("ok", "")
             _merge_instance_in_position_true_from_meta(meta, total_qty)
@@ -4184,6 +4223,7 @@ async def _place_order_async(
                 tp=float(tp),
                 sl_mx=float(sl_mx),
                 exchange_sl_ok=bool(ok_rev),
+                meta=meta,
             )
             _merge_instance_in_position_true_from_meta(meta, total_qty)
             _sync_position_risk_to_state()
@@ -4248,6 +4288,7 @@ async def _place_order_async(
             tp=float(tp),
             sl_mx=float(sl_mx),
             exchange_sl_ok=bool(ok),
+            meta=meta,
         )
         _merge_instance_in_position_true_from_meta(meta, total_qty)
         _sync_position_risk_to_state()
@@ -4722,6 +4763,11 @@ def register_manual_trade(
             pass
 
     strat_nm = str(_active_trade_strategy_name or "Manual").strip() or "Manual"
+    ptf_man = ""
+    if iid:
+        inst_man = instance_storage.get_instance_by_id(iid)
+        if inst_man:
+            ptf_man = str(inst_man.get("timeframe") or "").strip()
     fp, fe, fx = _virtual_paper_fee_params_from_instance_id(iid)
     try:
         now = float(_entry_time)
@@ -4747,6 +4793,8 @@ def register_manual_trade(
             base_risk_dist=float(_base_risk_dist),
             monitor_had_position=True,
             strategy_name=strat_nm,
+            position_instance_id=iid or None,
+            position_timeframe=ptf_man or None,
             paper_fee_pct=float(fp),
             paper_fee_on_entry=bool(fe),
             paper_fee_on_exit=bool(fx),
@@ -5577,6 +5625,7 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
         if instance_storage.timeframe_to_minutes(str(inst.get("timeframe") or "1m")) != int(interval_minutes):
             continue
         st0 = dict(inst.get("state") or {})
+        prev_last_eval_start = int(st0.get("last_evaluated_start") or 0)
         st_new = _bump_instance_bar_state(inst["id"], conf_start, st0)
         st = _maybe_autoreset_stale_in_position(sym_u, inst, st_new)
         inst = {**inst, "state": st}
@@ -6121,14 +6170,29 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             reason = str(ev.get("reason") or "")
             row_dict = ev.get("signal_row")
         elif strat == "long_push_scalping":
-            st_lp = {
-                **st,
-                "instance_id": str(inst.get("id") or ""),
-                "instance_name": str(inst.get("name") or ""),
-            }
-            ev = long_push_scalping.evaluate(
-                df_closed, dict(inst.get("params") or {}), st_lp
-            )
+            # Only evaluate on the first WS pass after the closed candle advances (same df otherwise).
+            if prev_last_eval_start == int(conf_start):
+                ev = {
+                    "signal": None,
+                    "reason": "same_closed_bar_ws_tick",
+                    "signal_row": None,
+                    "sl_price": None,
+                    "tp_price": None,
+                    "strategy_name": long_push_scalping.STRATEGY_NAME,
+                    "meta": {},
+                    "state_updates": {},
+                }
+            else:
+                st_lp = {
+                    **st,
+                    "instance_id": str(inst.get("id") or ""),
+                    "instance_name": str(inst.get("name") or ""),
+                    "eval_interval_minutes": int(interval_minutes),
+                    "instance_timeframe": str(inst.get("timeframe") or "1m"),
+                }
+                ev = long_push_scalping.evaluate(
+                    df_closed, dict(inst.get("params") or {}), st_lp
+                )
             signal = ev.get("signal")
             reason = str(ev.get("reason") or "")
             row_dict = ev.get("signal_row")
@@ -6264,6 +6328,11 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             sn = ev.get("strategy_name")
             if sn:
                 meta["strategy_name"] = str(sn)
+        meta["instance_id"] = str(inst.get("id") or meta.get("instance_id") or "")
+        meta["strategy_name"] = str(
+            inst.get("name") or meta.get("strategy_name") or "Manual"
+        )
+        meta["timeframe"] = str(inst.get("timeframe") or meta.get("timeframe") or "1m")
         _loop.call_soon_threadsafe(
             _signal_queue.put_nowait,
             ("entry", signal, row_dict, False, meta),

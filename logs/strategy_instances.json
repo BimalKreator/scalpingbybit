@@ -24,9 +24,15 @@
     "state": {
       "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 4,
-      "last_evaluated_start": 1775085300000,
-      "last_signal_start": null
+      "bar_seq": 36,
+      "last_evaluated_start": 1775114100000,
+      "last_signal_start": null,
+      "partial_steps_taken": 0,
+      "partial_qty_closed_total": 0.0,
+      "initial_entry_qty": null,
+      "realized_pnl_current_trade": 0.0,
+      "breakeven_sl_triggered": false,
+      "forming_bar_start": null
     }
   },
   {
