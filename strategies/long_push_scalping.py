@@ -146,13 +146,23 @@ def _closed_bars_match_eval_interval(
 def _lps_instance_tag(state: dict[str, Any]) -> str:
     iid = str(state.get("instance_id") or "").strip()
     name = str(state.get("instance_name") or "").strip()
+    tf_hint = str(state.get("instance_timeframe") or "").strip()
+    if not tf_hint and state.get("eval_interval_minutes") is not None:
+        try:
+            from instance_storage import minutes_to_timeframe as _mtf_tag
+
+            tf_hint = str(_mtf_tag(int(state["eval_interval_minutes"])))
+        except Exception:
+            tf_hint = ""
     if name and iid:
-        return f"{name}|{iid}"
-    if iid:
-        return iid
-    if name:
-        return name
-    return "long_push"
+        core = f"{name}|{iid}"
+    elif iid:
+        core = iid
+    elif name:
+        core = name
+    else:
+        core = "long_push"
+    return f"{core} [{tf_hint}]" if tf_hint else core
 
 
 def evaluate(

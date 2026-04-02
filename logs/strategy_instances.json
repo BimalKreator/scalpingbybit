@@ -9,8 +9,8 @@
     "params": {
       "minRange": 300,
       "maxRange": 700,
-      "tpMultiplier": 1,
-      "maxTargetPts": 300,
+      "tpMultiplier": 2,
+      "maxTargetPts": 150,
       "slFixedPts": 200,
       "targetMode": "Lower",
       "tradeMode": "Both",
@@ -21,13 +21,15 @@
       "breakevenBufferPct": 0.05,
       "feePct": 0.05,
       "feeOnEntry": true,
-      "feeOnExit": false
+      "feeOnExit": false,
+      "strictRejection": true,
+      "useFixedSlMode": false
     },
     "state": {
       "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 5,
-      "last_evaluated_start": 1775123100000,
+      "bar_seq": 10,
+      "last_evaluated_start": 1775127600000,
       "last_signal_start": null
     }
   },
@@ -53,7 +55,9 @@
       "breakevenBufferPct": 0.05,
       "feePct": 0.05,
       "feeOnEntry": true,
-      "feeOnExit": false
+      "feeOnExit": false,
+      "strictRejection": false,
+      "useFixedSlMode": true
     },
     "state": {
       "in_position": false,

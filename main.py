@@ -2182,6 +2182,10 @@ def fetch_historical_klines() -> bool:
             print(f"Loaded {len(buf)} klines in RAM for {sym} ({tfm}m).")
         _sync_closed_kline_df_cache(sym, tfm)
 
+    if _kline_aggregate_higher_tf_from_1m_enabled():
+        for sym_u in sorted({s for s, _ in keys}):
+            _rollup_higher_tf_buffers_from_1m(sym_u)
+
     KLINES = kline_buffer(SYMBOL, 1)
     if not any_ok:
         print("Warning: no klines in memory after multi-TF load.")
@@ -2201,6 +2205,110 @@ def ensure_updated_into(target_list: list, rows: list) -> None:
         target_list[:] = target_list[-MEMORY_KEEP_ROWS:]
     elif len(target_list) > KLINES_MAX:
         target_list[:] = target_list[-KLINES_MAX:]
+
+
+def _kline_aggregate_higher_tf_from_1m_enabled() -> bool:
+    """When true (default), only the 1m kline WebSocket is used; higher TFs are rebuilt from 1m RAM."""
+    v = (os.getenv("KLINE_AGGREGATE_HIGHER_TF_FROM_1M", "true") or "").strip().lower()
+    return v not in ("0", "false", "no", "off")
+
+
+def _tf_period_ms(interval_minutes: int) -> int:
+    return max(1, int(interval_minutes)) * 60_000
+
+
+def _aggregate_1m_rows_to_interval(sorted_1m: list[dict], interval_minutes: int) -> list[dict]:
+    """OHLCV bars aligned to exchange-style bucket starts: ``start // period * period``."""
+    tfm = max(1, int(interval_minutes))
+    if tfm <= 1 or not sorted_1m:
+        return []
+    period = _tf_period_ms(tfm)
+    buckets: dict[int, list[dict]] = {}
+    for r in sorted_1m:
+        try:
+            st = int(r["start"])
+        except (TypeError, ValueError):
+            continue
+        b0 = (st // period) * period
+        buckets.setdefault(b0, []).append(r)
+    if not buckets:
+        return []
+    try:
+        max_st = max(int(r["start"]) for r in sorted_1m)
+    except (TypeError, ValueError):
+        return []
+    out: list[dict] = []
+    for bstart in sorted(buckets.keys()):
+        chunk = sorted(buckets[bstart], key=lambda x: int(x["start"]))
+        o = float(chunk[0]["open"])
+        h = max(float(x["high"]) for x in chunk)
+        lo = min(float(x["low"]) for x in chunk)
+        c = float(chunk[-1]["close"])
+        vol = sum(float(x.get("volume", 0) or 0) for x in chunk)
+        tov = sum(float(x.get("turnover", 0) or 0) for x in chunk)
+        bucket_closed = max_st >= bstart + period
+        out.append(
+            {
+                "start": bstart,
+                "end": bstart + period,
+                "interval": str(tfm),
+                "open": o,
+                "high": h,
+                "low": lo,
+                "close": c,
+                "volume": vol,
+                "turnover": tov,
+                "confirm": bucket_closed,
+                "timestamp": bstart,
+            }
+        )
+    return out
+
+
+def _rollup_higher_tf_buffers_from_1m(sym_u: str) -> None:
+    """Rebuild instance timeframes >1m from the live 1m buffer so strategy eval matches chart TF."""
+    buf1 = kline_buffer(sym_u, 1)
+    if len(buf1) < 1:
+        return
+    sorted_1m = sorted(buf1, key=lambda x: int(x["start"]))
+    keys = _required_kline_keys_from_instances()
+    for sym_k, tfm in sorted(keys):
+        if sym_k != sym_u or tfm <= 1:
+            continue
+        agg = _aggregate_1m_rows_to_interval(sorted_1m, tfm)
+        if not agg:
+            continue
+        tgt = kline_buffer(sym_u, tfm)
+        tgt.clear()
+        if len(agg) > MEMORY_CAP_ROWS:
+            agg = agg[-MEMORY_KEEP_ROWS:]
+        elif len(agg) > KLINES_MAX:
+            agg = agg[-KLINES_MAX:]
+        tgt.extend(agg)
+        _sync_closed_kline_df_cache(sym_u, tfm)
+
+
+def _higher_instance_intervals_for_symbol(sym_u: str) -> list[int]:
+    found: set[int] = set()
+    for sym_k, tfm in _required_kline_keys_from_instances():
+        if sym_k == sym_u and tfm > 1:
+            found.add(tfm)
+    return sorted(found)
+
+
+def _kline_ws_intervals_for_subscribe() -> tuple[int, ...]:
+    if _kline_aggregate_higher_tf_from_1m_enabled():
+        return (1,)
+    return tuple(
+        sorted(
+            {1}
+            | {
+                instance_storage.timeframe_to_minutes(str(ins.get("timeframe") or "1m"))
+                for ins in get_strategy_instances()
+                if ins.get("enabled", True)
+            }
+        )
+    )
 
 
 def ensure_updated(rows: list) -> None:
@@ -5621,7 +5729,10 @@ def _run_strategy_instances_for_kline(symbol: str, interval_minutes: int) -> Non
             continue
         if _norm_sym(str(inst.get("symbol") or "")) != sym_u:
             continue
-        if instance_storage.timeframe_to_minutes(str(inst.get("timeframe") or "1m")) != int(interval_minutes):
+        instance_tf_mins = instance_storage.timeframe_to_minutes(
+            str(inst.get("timeframe") or "1m")
+        )
+        if int(interval_minutes) != int(instance_tf_mins):
             continue
         st0 = dict(inst.get("state") or {})
         prev_last_eval_start = int(st0.get("last_evaluated_start") or 0)
@@ -6561,7 +6672,12 @@ def handle_kline_message(
             _queue_closed_candle_rows_for_cache(rows, sym_u, interval_minutes=1)
     except Exception as e:
         logging.debug("[candle_cache] WS persist skip: %s", e)
+    if iv == 1 and _kline_aggregate_higher_tf_from_1m_enabled():
+        _rollup_higher_tf_buffers_from_1m(sym_u)
     _run_strategy_instances_for_kline(sym_u, iv)
+    if iv == 1 and _kline_aggregate_higher_tf_from_1m_enabled():
+        for _tf_roll in _higher_instance_intervals_for_symbol(sym_u):
+            _run_strategy_instances_for_kline(sym_u, _tf_roll)
     if iv == 1:
         buf1m = kline_buffer(sym_u, 1)
         df = pd.DataFrame(buf1m)
@@ -7022,17 +7138,12 @@ async def main_async() -> None:
     print(f"STRATEGY START: [{EXCHANGE_ID}] Monitoring {SYMBOL}")
     reload_strategy_instances_cache()
     _purge_stale_live_and_paper_state_if_requested()
-    kline_ivs = tuple(
-        sorted(
-            {1}
-            | {
-                instance_storage.timeframe_to_minutes(str(ins.get("timeframe") or "1m"))
-                for ins in get_strategy_instances()
-                if ins.get("enabled", True)
-            }
-        )
+    kline_ivs = _kline_ws_intervals_for_subscribe()
+    logging.info(
+        "[instances] Subscribing kline intervals (minutes): %s (aggregate_higher_from_1m=%s)",
+        kline_ivs,
+        _kline_aggregate_higher_tf_from_1m_enabled(),
     )
-    logging.info("[instances] Subscribing kline intervals (minutes): %s", kline_ivs)
     # Load last signal candle from file (per-symbol under multi_v1, else legacy root key)
     try:
         boot_raw = _read_live_state_json_safe()
