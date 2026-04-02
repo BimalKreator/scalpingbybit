@@ -195,10 +195,11 @@
         var side = (row.side || '').toUpperCase();
         var sideClass = side === 'BUY' ? 'text-success' : 'text-danger';
         var stratName = (row.strategy_name != null && row.strategy_name !== '') ? row.strategy_name : 'Manual';
-        var tf = row.timeframe || '–';
+        var tf = row.timeframe;
+        var tfText = (tf && String(tf) !== 'unknown' && String(tf) !== '-') ? (' (' + escapeHtml(String(tf)) + ')') : '';
         var iid = row.instance_id || '';
         var stratBadge = '<span class="px-2 py-1 bg-slate-700 text-slate-300 rounded text-[10px] uppercase">' +
-          escapeHtml(stratName) + ' <span class="text-slate-500 normal-case">(' + escapeHtml(tf) + ')</span></span>';
+          escapeHtml(stratName) + tfText + '</span>';
         var stratCell = '<div class="d-flex flex-column gap-1">' + stratBadge +
           (iid ? '<span class="text-[10px] text-slate-500 font-monospace">' + escapeHtml(iid) + '</span>' : '') +
           '</div>';

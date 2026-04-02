@@ -1,6 +1,6 @@
 [
   {
-    "id": "inst_1775082024142_9a6e15",
+    "id": "inst_1775114930571_26c3bc",
     "strategy_type": "long_push_scalping",
     "name": "Long Push Scalping 5m",
     "enabled": true,
@@ -24,19 +24,13 @@
     "state": {
       "in_position": false,
       "cooldown_until_bar": 0,
-      "bar_seq": 36,
-      "last_evaluated_start": 1775114100000,
-      "last_signal_start": null,
-      "partial_steps_taken": 0,
-      "partial_qty_closed_total": 0.0,
-      "initial_entry_qty": null,
-      "realized_pnl_current_trade": 0.0,
-      "breakeven_sl_triggered": false,
-      "forming_bar_start": null
+      "bar_seq": 2,
+      "last_evaluated_start": 1775115000000,
+      "last_signal_start": null
     }
   },
   {
-    "id": "inst_1775083801510_45666f",
+    "id": "inst_1775114945528_286d85",
     "strategy_type": "long_push_scalping",
     "name": "Long Push Scalping 5m",
     "enabled": true,

@@ -242,7 +242,6 @@ def reload_active_strategies_from_env() -> list[str]:
     """Re-read ACTIVE_STRATEGIES from .env (call after dashboard saves .env)."""
     global ACTIVE_STRATEGIES
     ACTIVE_STRATEGIES = _parse_active_strategies_from_env()
-    logging.info("[strategies] ACTIVE_STRATEGIES=%s", ACTIVE_STRATEGIES)
     return ACTIVE_STRATEGIES
 
 

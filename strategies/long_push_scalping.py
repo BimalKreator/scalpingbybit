@@ -317,9 +317,25 @@ def evaluate(
     )
     out["sl_price"] = float(sl_price)
     out["tp_price"] = float(final_tp)
+    extracted_tf = p.get("timeframe")
+    if extracted_tf in (None, ""):
+        extracted_tf = st.get("instance_timeframe") or st.get("timeframe")
+    if extracted_tf in (None, "") and ev_iv is not None:
+        try:
+            from instance_storage import minutes_to_timeframe as _mtf
+
+            extracted_tf = _mtf(int(ev_iv))
+        except Exception:
+            pass
+    if extracted_tf in (None, ""):
+        extracted_tf = "unknown"
+    tf_meta = str(extracted_tf)
+
     iid = str(st.get("instance_id") or "").strip() or "manual"
-    disp = str(st.get("instance_name") or "").strip() or "Long Push"
-    tf_meta = str(st.get("instance_timeframe") or p.get("timeframe") or "unknown")
+    disp = (
+        str(st.get("instance_name") or st.get("name") or "").strip()
+        or "Long Push Scalping"
+    )
     out["meta"] = {
         "strategy_type": STRATEGY_NAME,
         "sl_price": float(sl_price),
